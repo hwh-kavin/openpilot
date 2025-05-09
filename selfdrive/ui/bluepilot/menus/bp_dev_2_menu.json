@@ -1,0 +1,351 @@
+{
+  "type": "navigation",
+  "menuName": "BluePilot",
+  "menuIcon": "icon_ford.png",
+  "menuDescription": "BluePilot Panel",
+  "equalWidth": true,
+  "iconPosition": "top",
+  "tabs": [
+    {
+      "name": "Preferences",
+      "icon": "../assets/offroad/icon_user_prefs.png",
+      "groups": [
+        {
+          "groupName": "systemPreferencesGroup",
+          "title": "System Preferences:",
+          "enableResetButton": false,
+          "controls": [
+            {
+              "type": "selection",
+              "param": "FordSelectedVehicleModel",
+              "title": "Vehicle Model",
+              "desc": "This will for the FINGERPRINT for the vehicle so it exits the Dashcam Mode and allows the vehicle to drive.",
+              "requiresReboot": true,
+              "hidden": false,
+              "options": [
+                {
+                  "name": "Ford Bronco Sport (2021-2024)",
+                  "value": "FORD_BRONCO_SPORT_MK1"
+                },
+                {
+                  "name": "Ford Edge (2022)",
+                  "value": "FORD_EDGE_MK2"
+                },
+                {
+                  "name": "Ford Explorer (2020-2024)",
+                  "value": "FORD_EXPLODER_MK6"
+                },
+                {
+                  "name": "Ford F-150 (2021-2023)",
+                  "value": "FORD_F_150_MK14"
+                },
+                {
+                  "name": "Ford F-150 Lightning (2022-2023)",
+                  "value": "FORD_F_150_LIGHTNING_MK1"
+                },
+                {
+                  "name": "Ford Mustang Mach-E (2021-2023)",
+                  "value": "FORD_MUSTANG_MACH_E_MK1"
+                },
+
+                {
+                  "name": "Ford Maverick 1st Gen",
+                  "value": "FORD_MAVERICK_MK1"
+                },
+                {
+                  "name": "Ford Ranger (2023-2024)",
+                  "value": "FORD_RANGER_MK2"
+                }
+              ]
+            },
+            {
+              "type": "toggle",
+              "param": "QuietMode",
+              "title": "Quiet Mode - Warnings/Alerts Only",
+              "desc": "BluePilot displays alerts but only plays important warning sounds.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            }
+          ]
+        },
+        {
+          "groupName": "visualOnroadPreferencesGroup",
+          "title": "Visual Onroad Preferences:",
+          "enableResetButton": false,
+          "keepScreenAwake": true,
+          "controls": [
+            {
+              "type": "toggle",
+              "param": "FordPrefShowAnimatedWheelAngle",
+              "title": "Show Animated Steer Angle Icon",
+              "desc": "Animates Comma icon based on steering angle.",
+              "hidden": false,
+              "conditions": {
+                "allConditionsTrue": [
+                  { "git_remote": ["any"] },
+                  { "git_branch": [] }
+                ]
+              }
+            },
+            {
+              "type": "selection",
+              "param": "CustomModelPathColor",
+              "title": "Custom Model Path Color",
+              "desc": "Customize the color of the driving path overlay",
+              "requiresReboot": false,
+              "hidden": false,
+              "options": [
+                { "name": "Stock", "value": "Stock" },
+                { "name": "Rainbow", "value": "Rainbow" },
+                { "name": "Blue", "value": "Blue" },
+                { "name": "Green", "value": "Green" },
+                { "name": "Purple", "value": "Purple" },
+                { "name": "Orange", "value": "Orange" },
+                { "name": "Red", "value": "Red" },
+                { "name": "Cyan", "value": "Cyan" },
+                { "name": "Yellow", "value": "Yellow" }
+              ],
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            },
+            {
+              "type": "toggle",
+              "param": "FordPrefShowRadarLeadOverlay",
+              "title": "Show Radar Lead Vehicle Overlay",
+              "desc": "Displays radar data lead vehicle overlay.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            },
+            {
+              "type": "toggle",
+              "param": "FordPrefHybridDriveOverlay",
+              "title": "Show Hybrid Electric Data Overlays",
+              "desc": "Displays hybrid electric vehicle data.",
+              "hidden": false,
+              "conditions": {
+                "allConditionsTrue": [
+                  { "paramValueEquals": { "FordPrefHevDataAvailable": "1" } },
+                  { "git_remote": ["any"] },
+                  { "git_branch": [] }
+                ]
+              }
+            },
+            {
+              "type": "toggle",
+              "param": "FordPrefHybridBatteryOverlay",
+              "title": "Show Hybrid Battery Data Overlays",
+              "desc": "Displays hybrid battery data.",
+              "hidden": false,
+              "conditions": {
+                "allConditionsTrue": [
+                  { "paramValueEquals": { "FordPrefHybridDriveOverlay": "1" } },
+                  { "paramValueEquals": { "FordPrefHevDataAvailable": "1" } },
+                  {
+                    "paramValueEquals": { "FordPrefHevBattDataAvailable": "1" }
+                  },
+                  { "git_remote": ["any"] },
+                  { "git_branch": [] }
+                ]
+              }
+            },
+            {
+              "type": "segmented_control",
+              "param": "FordPrefHybridDriveGaugeSize",
+              "title": "Hybrid Drive Gauge Size",
+              "desc": "Adjusts the size of the hybrid drive gauge",
+              "hidden": false,
+              "options": [
+                { "name": "Small", "value": "1", "default": true },
+                { "name": "Medium", "value": "2" },
+                { "name": "Large", "value": "3" }
+              ],
+              "conditions": {
+                "allConditionsTrue": [
+                  { "git_remote": ["any"] },
+                  { "git_branch": [] },
+                  {
+                    "paramValueEquals": {
+                      "FordPrefHybridDriveOverlay": "1"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "toggle",
+              "param": "StandstillTimer",
+              "title": "Show Standstill Timer",
+              "desc": "Displays a timer when the vehicle is in standstill.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            },
+            {
+              "type": "toggle",
+              "param": "ShowBlindspotIndicators",
+              "title": "Show Blindspot Indicators",
+              "desc": "Displays blindspot indicators on the road model.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            },
+            {
+              "type": "toggle",
+              "param": "ShowStopIndicatorOverlay",
+              "title": "Show Stop Indicator Overlay",
+              "desc": "Displays a stop indicator overlay when it detects a stop point.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            }
+          ]
+        },
+        {
+          "groupName": "clusterPreferencesGroup",
+          "title": "Cluster Preferences:",
+          "enableResetButton": false,
+          "controls": [
+            {
+              "type": "toggle",
+              "param": "FordPrefSendHandsFreeCanMsg",
+              "title": "Show Hands-Free UI (On Supported Vehicles)",
+              "desc": "Enables hands-free UI for supported vehicles.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            },
+            {
+              "type": "toggle",
+              "param": "FordPrefLaneDepartCanMsg",
+              "title": "Send Lane Departure Signals to Vehicle",
+              "desc": "Send Openpilot lane departure signals for native cluster alerts.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            },
+            {
+              "type": "toggle",
+              "param": "FordPrefDriverMonitorCanMsg",
+              "title": "Send Driver Monitor Signals",
+              "desc": "Send driver monitor notice signals to the vehicle for native cluster alerts.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Lat. Tuning",
+      "icon": "../assets/offroad/icon_steering.png",
+      "groups": [
+        {
+          "groupName": "lateralControlsGroup",
+          "title": "Lateral Controls:",
+          "enableResetButton": true,
+          "controls": [
+            {
+              "type": "toggle",
+              "param": "FordPrefHumanTurnDetectionEnable",
+              "title": "Enable Human Turn Detection",
+              "desc": "Reset steering so you don't fight the wheel making manual turns.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            },
+            {
+              "type": "float",
+              "param": "FordLatTuningLaneChgFactorHigh",
+              "title": "Lane Change Factor High",
+              "desc": "Adjust lane change curvature aggressiveness (lower = slower).",
+              "hidden": false,
+              "min": 0.0,
+              "max": 1.0,
+              "increment": 0.05,
+              "division": 100.0,
+              "conditions": {
+                "allConditionsTrue": [
+                  { "git_remote": ["any"] },
+                  { "git_branch": [] }
+                ]
+              }
+            },
+            {
+              "type": "float",
+              "param": "FordLatTuningPCBlendRatio",
+              "title": "Predicted Curvature Blend Ratio",
+              "desc": "Adjust the blend ratio of predicted and desired curvature.",
+              "hidden": false,
+              "min": 0.0,
+              "max": 1.0,
+              "increment": 0.05,
+              "division": 100.0,
+              "conditions": {
+                "allConditionsTrue": [
+                  { "git_remote": ["any"] },
+                  { "git_branch": [] }
+                ]
+              }
+            },
+            {
+              "type": "toggle",
+              "param": "FordLatTuningEnableAdvLatCtrl",
+              "title": "Enable Advanced Lateral Control",
+              "desc": "Allows advanced lateral control such as in lane positioning.",
+              "hidden": false,
+              "conditions": {
+                "git_remote": ["any"],
+                "git_branch": []
+              }
+            },
+            {
+              "type": "float",
+              "param": "FordLatTuningCustomPathOffset",
+              "title": "In Lane Offset",
+              "desc": "Adjusts lane position - left (-) / right (+)",
+              "hidden": false,
+              "min": -0.5,
+              "max": 0.5,
+              "increment": 0.01,
+              "division": 100.0,
+              "conditions": {
+                "allConditionsTrue": [
+                  { "git_remote": ["any"] },
+                  { "git_branch": [] },
+                  {
+                    "paramValueEquals": {
+                      "FordLatTuningEnableAdvLatCtrl": "1"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
