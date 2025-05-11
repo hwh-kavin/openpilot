@@ -300,35 +300,24 @@ class CarController(CarControllerBase):
         current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)  # use canbus data to calculate current_curvature
         desired_curvature = actuators.curvature  # get desired curvature from model
 
-        if self.enable_AdvLatCtrl:
-          # extract predicted curvature from modelV2
-          if self.model is not None and len(self.model.orientation.x) >= 17:
-            # compute curvature from model predicted orientationRate, and blend with desired curvature based on max predicted curvature magnitude
-            curvatures = np.array(self.model.orientationRate.z) / max(0.01, CS.out.vEgoRaw)
-            predicted_steering_angle_curvature = interp(self.wheel_angle_lookup_time, ModelConstants.T_IDXS, curvatures)
-            predicted_curvature = interp(self.path_lookup_time, ModelConstants.T_IDXS, curvatures)
-            max_abs_predicted_curvature = max(np.abs(curvatures[:17]))  # max curvature magnitude over next 2.5s
-          else:
-            predicted_curvature = 0.0
-
-          # calculate predicted steering angle
-          self.predictedSteeringAngleDeg_SP = math.degrees(self.VM.get_steer_from_curvature(-predicted_steering_angle_curvature, CS.out.vEgoRaw, self.lp.roll))
-          self.predictedSteeringAngleDeg_SP += self.lp.angleOffsetDeg
-
+        # extract predicted curvature from modelV2
+        if self.model is not None and len(self.model.orientation.x) >= 17:
+          # compute curvature from model predicted orientationRate, and blend with desired curvature based on max predicted curvature magnitude
+          curvatures = np.array(self.model.orientationRate.z) / max(0.01, CS.out.vEgoRaw)
+          predicted_steering_angle_curvature = interp(self.wheel_angle_lookup_time, ModelConstants.T_IDXS, curvatures)
+          predicted_curvature = interp(self.path_lookup_time, ModelConstants.T_IDXS, curvatures)
+          max_abs_predicted_curvature = max(np.abs(curvatures[:17]))  # max curvature magnitude over next 2.5s
         else:
           predicted_curvature = 0.0
           predicted_steering_angle_curvature = 0.0
-          self.pc_blend_ratio = 0.0
           max_abs_predicted_curvature = 0.0
-          self.predictedSteeringAngleDeg_SP = 0.0
-          self.pswa_blend_ratio = 0.0
 
-        # determine requested curvature
-        if self.enable_AdvLatCtrl:
-          # equate apply_curvature to a blend of desired and predicted_curvature and apply curvature limits
-          requested_curvature = (predicted_curvature * self.pc_blend_ratio) + (desired_curvature * (1 - self.pc_blend_ratio))
-        else:
-          requested_curvature = desired_curvature
+        # calculate predicted steering angle
+        self.predictedSteeringAngleDeg_SP = math.degrees(self.VM.get_steer_from_curvature(-predicted_steering_angle_curvature, CS.out.vEgoRaw, self.lp.roll))
+        self.predictedSteeringAngleDeg_SP += self.lp.angleOffsetDeg
+
+        # equate requested_curvature to a blend of desired and predicted_curvature and apply curvature limits
+        requested_curvature = (predicted_curvature * self.pc_blend_ratio) + (desired_curvature * (1 - self.pc_blend_ratio))
 
         # determine if a lane change is active
         if (self.model.meta.laneChangeState == 1 or self.model.meta.laneChangeState == 2 or self.model.meta.laneChangeState == 3):
