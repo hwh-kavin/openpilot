@@ -443,10 +443,11 @@ class CarController(CarControllerBase):
 
         # Determine if a human is making a turn and trap the value
         # if a human turn is active, reset steering to prevent windup
-        if steeringPressed and abs(steeringAngleDeg_PV) > 45:
-          self.human_turn = True
+        # Determine when to reset steering
+        if ((self.human_turn) and self.enable_human_turn_detection) or (CS.out.vEgoRaw < 0.1):
+          reset_steering = 1
         else:
-          self.human_turn = False
+          reset_steering = 0
 
         # Determine when to reset steering
         if (self.human_turn) and self.enable_human_turn_detection:
