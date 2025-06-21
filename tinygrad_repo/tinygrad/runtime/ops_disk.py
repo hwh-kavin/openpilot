@@ -67,12 +67,12 @@ class DiskBuffer:
     self.device, self.size, self.offset = device, size, offset
   def __repr__(self): return f"<DiskBuffer size={self.size} offset={self.offset}>"
   def _buf(self) -> memoryview:
-    assert self.device.mem is not None, "DiskBuffer wasn't opened"
+    assert hasattr(self.device, "mem"), f"DiskBuffer wasn't opened: {self.device.device}"
     return memoryview(self.device.mem)[self.offset:self.offset+self.size]
 
 MAP_LOCKED, MAP_POPULATE = 0 if OSX else 0x2000, getattr(mmap, "MAP_POPULATE", 0 if OSX else 0x008000)
 class DiskAllocator(Allocator):
-  def __init__(self, dev:DiskDevice): self.dev = dev
+  def __init__(self, dev:DiskDevice): super().__init__(dev)
   def _alloc(self, size:int, options):
     self.dev._might_open(size)
     return DiskBuffer(self.dev, size)
@@ -84,7 +84,8 @@ class DiskAllocator(Allocator):
       # OSX doesn't seem great at mmap, this is faster
       with io.FileIO(self.dev.fd, "a+b", closefd=False) as fo:
         fo.seek(src.offset)
-        fo.readinto(dest)
+        bytes_read = 0
+        while (n := fo.readinto(dest[bytes_read:])) is not None and n > 0: bytes_read += n
     else:
       dest[:] = src._buf()
 

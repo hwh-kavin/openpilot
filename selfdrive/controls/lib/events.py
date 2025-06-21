@@ -13,7 +13,7 @@ from openpilot.common.git import get_short_branch
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.locationd.calibrationd import MIN_SPEED_FILTER
 
-from openpilot.selfdrive.frogpilot.frogpilot_variables import params
+from openpilot.frogpilot.common.frogpilot_variables import params
 
 AlertSize = log.ControlsState.AlertSize
 AlertStatus = log.ControlsState.AlertStatus
@@ -316,9 +316,12 @@ def modeld_lagging_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubM
 
 
 def wrong_car_mode_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, frogpilot_toggles: SimpleNamespace) -> Alert:
-  text = "Enable Adaptive Cruise to Engage"
-  if CP.carName == "honda":
+  if frogpilot_toggles.has_cc_long:
+    text = "Enable Cruise Control to Engage"
+  elif CP.carName == "honda":
     text = "Enable Main Switch to Engage"
+  else:
+    text = "Enable Adaptive Cruise to Engage"
   return NoEntryAlert(text)
 
 

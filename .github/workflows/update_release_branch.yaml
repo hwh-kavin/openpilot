@@ -2,9 +2,11 @@ name: Update FrogPilot Branch
 
 on:
   schedule:
-    - cron: "0 18 * * *"
+    - cron: "0 18 * * 6"
 
 env:
+  GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
   BRANCH_FROGPILOT: FrogPilot
   BRANCH_PREVIOUS: FrogPilot-Previous
   BRANCH_STAGING: FrogPilot-Staging
@@ -20,7 +22,7 @@ jobs:
       update_due: ${{ steps.check_update.outputs.update_due }}
       scheduled_date: ${{ steps.check_update.outputs.scheduled_date }}
     steps:
-      - name: Download the 'update_date' File
+      - name: Download the "update_date" File
         id: download_update
         run: |
           curl -fLsS "https://raw.githubusercontent.com/FrogAi/FrogPilot/${{ env.BRANCH_STAGING }}/${{ env.UPDATE_FILE }}" -o update_date || touch update_date_missing
@@ -29,18 +31,14 @@ jobs:
         id: check_update
         run: |
           if [ -f update_date_missing ]; then
-            echo "No update_date file found in FrogPilot-Staging."
             echo "update_due=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           SCHEDULED_DATE=$(cat update_date)
           CURRENT_DATE=$(TZ="${{ env.TZ }}" date +%F)
-          echo "Scheduled Date: $SCHEDULED_DATE"
-          echo "Current Date: $CURRENT_DATE"
 
           if [ "$SCHEDULED_DATE" != "$CURRENT_DATE" ]; then
-            echo "Update not due."
             echo "update_due=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -61,10 +59,17 @@ jobs:
       - name: Checkout ${{ env.BRANCH_STAGING }}
         uses: actions/checkout@v3
         with:
+          persist-credentials: false
+
           fetch-depth: 0
+
           ref: ${{ env.BRANCH_STAGING }}
 
-      - name: Update README Date and Remove (${{ env.UPDATE_FILE }})
+      - name: Authenticate with GITHUB_TOKEN
+        run: |
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
+
+      - name: Update README Date and Remove update file
         run: |
           DAY=$(TZ="${{ env.TZ }}" date +'%d' | sed 's/^0//')
           case "$DAY" in
@@ -77,7 +82,6 @@ jobs:
           YEAR=$(TZ="${{ env.TZ }}" date +'%Y')
           NEW_DATE="**${MONTH} ${DAY}${SUFFIX}, ${YEAR}**"
 
-          echo "Updating README date to ${NEW_DATE}"
           sed -i "/FrogPilot was last updated on:/ { N; N; s/\(\n\)\n.*$/\1\n${NEW_DATE}/; }" README.md
 
           git add README.md
@@ -102,18 +106,12 @@ jobs:
         run: |
           git fetch origin ${{ env.BRANCH_PREVIOUS }} ${{ env.BRANCH_FROGPILOT }}
 
-      - name: Wait Until Noon ${{ env.TZ }} Before Continuing
+      - name: Wait Until Noon ${{ env.TZ }}
         run: |
           NOW=$(TZ="${{ env.TZ }}" date +%s)
           TARGET=$(TZ="${{ env.TZ }}" date -d "12:00" +%s)
 
-          if [ "$NOW" -lt "$TARGET" ]; then
-            SLEEP_TIME=$((TARGET - NOW))
-            echo "Sleeping for $SLEEP_TIME seconds until noon..."
-            sleep $SLEEP_TIME
-          else
-            echo "It is already noon or past noon, proceeding immediately."
-          fi
+          [ "$NOW" -lt "$TARGET" ] && sleep $((TARGET - NOW))
 
       - name: Push ${{ env.BRANCH_STAGING }}
         run: |

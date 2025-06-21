@@ -193,10 +193,10 @@ class Generator:
     x = self.conv_pre(x)
     if g is not None:  x = x + self.cond(g)
     for i in range(self.num_upsamples):
-      x = self.ups[i](x.leakyrelu(LRELU_SLOPE))
+      x = self.ups[i](x.leaky_relu(LRELU_SLOPE))
       xs = sum(self.resblocks[i * self.num_kernels + j].forward(x) for j in range(self.num_kernels))
       x = (xs / self.num_kernels).realize()
-    res = self.conv_post(x.leakyrelu()).tanh().realize()
+    res = self.conv_post(x.leaky_relu()).tanh().realize()
     return res
 
 class LayerNorm(nn.LayerNorm):
@@ -238,8 +238,8 @@ class ResBlock1:
     self.convs2 = [nn.Conv1d(channels, channels, kernel_size, 1, dilation=1, padding=get_padding(kernel_size, 1)) for _ in range(3)]
   def forward(self, x: Tensor, x_mask=None):
     for c1, c2 in zip(self.convs1, self.convs2):
-      xt = x.leakyrelu(LRELU_SLOPE)
-      xt = c1(xt if x_mask is None else xt * x_mask).leakyrelu(LRELU_SLOPE)
+      xt = x.leaky_relu(LRELU_SLOPE)
+      xt = c1(xt if x_mask is None else xt * x_mask).leaky_relu(LRELU_SLOPE)
       x = c2(xt if x_mask is None else xt * x_mask) + x
     return x if x_mask is None else x * x_mask
 
@@ -651,7 +651,7 @@ class TextMapper: # Based on https://github.com/keithito/tacotron
 VITS_PATH = Path(__file__).parents[1] / "weights/VITS/"
 MODELS = { # config_url, weights_url
   "ljs": ("https://raw.githubusercontent.com/jaywalnut310/vits/main/configs/ljs_base.json", "https://drive.google.com/uc?export=download&id=1q86w74Ygw2hNzYP9cWkeClGT5X25PvBT&confirm=t"),
-  "vctk": ("https://raw.githubusercontent.com/jaywalnut310/vits/main/configs/vctk_base.json", "https://drive.google.com/uc?export=download&id=11aHOlhnxzjpdWDpsz1vFDCzbeEfoIxru&confirm=t"),
+  "vctk": ("https://huggingface.co/csukuangfj/vits-vctk/resolve/main/vctk_base.json", "https://huggingface.co/csukuangfj/vits-vctk/resolve/main/pretrained_vctk.pth"),
   "mmts-tts": ("https://huggingface.co/facebook/mms-tts/raw/main/full_models/eng/config.json", "https://huggingface.co/facebook/mms-tts/resolve/main/full_models/eng/G_100000.pth"),
   "uma_trilingual": ("https://huggingface.co/spaces/Plachta/VITS-Umamusume-voice-synthesizer/raw/main/configs/uma_trilingual.json", "https://huggingface.co/spaces/Plachta/VITS-Umamusume-voice-synthesizer/resolve/main/pretrained_models/G_trilingual.pth"),
   "cjks": ("https://huggingface.co/spaces/skytnt/moe-tts/resolve/main/saved_model/14/config.json", "https://huggingface.co/spaces/skytnt/moe-tts/resolve/main/saved_model/14/model.pth"),
@@ -707,7 +707,6 @@ if __name__ == '__main__':
   text_mapper = TextMapper(apply_cleaners=True, symbols=symbols)
 
   # Load the model.
-  Tensor.no_grad = True
   if args.seed is not None:
     Tensor.manual_seed(args.seed)
     np.random.seed(args.seed)

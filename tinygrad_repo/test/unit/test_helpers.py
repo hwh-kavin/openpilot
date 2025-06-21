@@ -1,10 +1,9 @@
 import gzip, unittest
-from PIL import Image
 from tinygrad import Variable
-from tinygrad.helpers import Context, ContextVar
-from tinygrad.helpers import merge_dicts, strip_parens, prod, round_up, fetch, fully_flatten, from_mv, to_mv, polyN
+from tinygrad.helpers import Context, ContextVar, argfix
+from tinygrad.helpers import merge_dicts, strip_parens, prod, round_up, fetch, fully_flatten, from_mv, to_mv, polyN, time_to_str, cdiv, cmod, getbits
 from tinygrad.tensor import get_shape
-from tinygrad.codegen.lowerer import get_contraction
+from tinygrad.codegen.lowerer import get_contraction, get_contraction_with_reduce
 import numpy as np
 
 VARIABLE = ContextVar("VARIABLE", 0)
@@ -126,11 +125,13 @@ class TestFetch(unittest.TestCase):
     assert (len(fetch('https://google.com', allow_caching=False).read_bytes())>0)
 
   def test_fetch_img(self):
+    from PIL import Image
     img = fetch("https://avatars.githubusercontent.com/u/132956020", allow_caching=False)
     with Image.open(img) as pimg:
       assert pimg.size == (77, 77), pimg.size
 
   def test_fetch_subdir(self):
+    from PIL import Image
     img = fetch("https://avatars.githubusercontent.com/u/132956020", allow_caching=False, subdir="images")
     with Image.open(img) as pimg:
       assert pimg.size == (77, 77), pimg.size
@@ -153,6 +154,10 @@ class TestFetch(unittest.TestCase):
     no_gzip_url: str = 'https://ftp.gnu.org/gnu/gzip/gzip-1.13.zip'
     with self.assertRaises(gzip.BadGzipFile):
       fetch(no_gzip_url, gunzip=True)
+
+  def test_fetch_user_agent(self):
+    fetch("https://csrc.nist.gov/CSRC/media/Projects/lightweight-cryptography/documents/finalist-round/updated-submissions/sparkle.zip",
+          allow_caching=False)
 
 class TestFullyFlatten(unittest.TestCase):
   def test_fully_flatten(self):
@@ -182,6 +187,20 @@ class TestMemoryview(unittest.TestCase):
     assert base[0] == 2
 
 class TestGetContraction(unittest.TestCase):
+  def test_contraction_with_reduce(self):
+    r = get_contraction((16, 1, 1, 1), (16, 1, 1))
+    self.assertEqual(r, [[0], [], [1, 2, 3]])
+    r = get_contraction_with_reduce((16, 1, 1, 1), (16, 1, 1), (1,))
+    self.assertEqual(r, [[0], [1, 2], [3]])
+
+    r = get_contraction((16, 1, 1, 1, 1), (16, 1, 1, 1))
+    self.assertEqual(r, [[0], [], [], [1, 2, 3, 4]])
+    r = get_contraction_with_reduce((16, 1, 1, 1, 1), (16, 1, 1, 1), (1,))
+    self.assertEqual(r, [[0], [1, 2], [3], [4]])
+
+    r = get_contraction_with_reduce((2, 512, 1, 1), (2, 1, 512), (1,))
+    self.assertIsNone(r)
+
   def test_contraction(self):
     r = get_contraction((1,2,3,4), (2,3,4))
     self.assertEqual(r, [[0, 1], [2], [3]])
@@ -275,12 +294,74 @@ class TestPolyN(unittest.TestCase):
 
   def test_uop(self):
     from tinygrad.dtype import dtypes
-    from tinygrad.ops import UOp
+    from tinygrad.uop.ops import UOp
     from test.helpers import eval_uop
     np.testing.assert_allclose(eval_uop(polyN(UOp.const(dtypes.float, 1.0), [1.0, -2.0, 1.0])), 0.0)
     np.testing.assert_allclose(eval_uop(polyN(UOp.const(dtypes.float, 2.0), [1.0, -2.0, 1.0])), 1.0)
     np.testing.assert_allclose(eval_uop(polyN(UOp.const(dtypes.float, 3.0), [1.0, -2.0, 1.0])), 4.0)
     np.testing.assert_allclose(eval_uop(polyN(UOp.const(dtypes.float, 4.0), [1.0, -2.0, 1.0])), 9.0)
+
+class TestTimeToStr(unittest.TestCase):
+  def test_seconds(self):           self.assertEqual("   10.01s ", time_to_str(10.01))
+  def test_boundary_sec_ms(self):   self.assertEqual("10000.00ms", time_to_str(10))
+  def test_milliseconds(self):      self.assertEqual("  500.00ms", time_to_str(0.5))
+  def test_boundary_ms_us(self):    self.assertEqual("10000.00us", time_to_str(0.01))
+  def test_microseconds(self):      self.assertEqual("  100.00us", time_to_str(0.0001))
+  def test_zero(self):              self.assertEqual("    0.00us", time_to_str(0))
+  def test_width_formatting(self):  self.assertEqual(" 10.01s ", time_to_str(10.01, w=6))
+
+class TestCStyleDivMod(unittest.TestCase):
+  def test_div_pos(self):
+    self.assertEqual(cdiv(-9, 5), -1)
+    self.assertEqual(cdiv(-4, 5), 0)
+    self.assertEqual(cdiv(0, 5), 0)
+    self.assertEqual(cdiv(4, 5), 0)
+    self.assertEqual(cdiv(9, 5), 1)
+  def test_div_neg(self):
+    self.assertEqual(cdiv(-9, -5), 1)
+    self.assertEqual(cdiv(-4, -5), 0)
+    self.assertEqual(cdiv(0, -5), 0)
+    self.assertEqual(cdiv(4, -5), 0)
+    self.assertEqual(cdiv(9, -5), -1)
+  def test_mod_pos(self):
+    self.assertEqual(cmod(-9, 5), -4)
+    self.assertEqual(cmod(-4, 5), -4)
+    self.assertEqual(cmod(0, 5), 0)
+    self.assertEqual(cmod(4, 5), 4)
+    self.assertEqual(cmod(9, 5), 4)
+  def test_mod_neg(self):
+    self.assertEqual(cmod(-9, -5), -4)
+    self.assertEqual(cmod(-4, -5), -4)
+    self.assertEqual(cmod(0, -5), 0)
+    self.assertEqual(cmod(4, -5), 4)
+    self.assertEqual(cmod(9, -5), 4)
+
+class TestGetBits(unittest.TestCase):
+  def test_low_bits(self):
+    self.assertEqual(getbits(0b11010110, 0, 3), 0b0110)
+
+  def test_high_bits(self):
+    self.assertEqual(getbits(0b11010110, 4, 7), 0b1101)
+
+  def test_middle_bits(self):
+    self.assertEqual(getbits(0b11010110, 3, 5), 0b010)
+
+  def test_full_range(self):
+    self.assertEqual(getbits(0b11010110, 0, 7), 0b11010110)
+
+  def test_single_bit(self):
+    self.assertEqual(getbits(0b100000000, 8, 8), 1)
+
+class TestArgFix(unittest.TestCase):
+  def test_none(self):
+    self.assertEqual(argfix(None), (None, ))
+    self.assertEqual(argfix(None, None), (None, None))
+  def test_positional_arguments(self):
+    self.assertEqual(argfix(1, 2, 3), (1, 2, 3))
+  def test_tuple(self):
+    self.assertEqual(argfix((1., 2., 3.)), (1., 2., 3.))
+  def test_list(self):
+    self.assertEqual(argfix([True, False]), (True, False))
 
 if __name__ == '__main__':
   unittest.main()

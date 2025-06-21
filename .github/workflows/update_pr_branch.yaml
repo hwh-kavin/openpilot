@@ -6,6 +6,8 @@ on:
       - FrogPilot-Staging
 
 env:
+  GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+
   SOURCE_BRANCH: FrogPilot-Staging
   TARGET_BRANCH: MAKE-PRS-HERE
 
@@ -21,30 +23,25 @@ jobs:
       - name: Checkout ${{ env.SOURCE_BRANCH }}
         uses: actions/checkout@v3
         with:
-          ref: "${{ env.SOURCE_BRANCH }}"
+          persist-credentials: false
+
           fetch-depth: 0
+
+          ref: ${{ env.SOURCE_BRANCH }}
 
       - name: Find "Compile FrogPilot" Commit in ${{ env.SOURCE_BRANCH }}
         id: find_parent
         run: |
           COMMIT=$(git rev-list HEAD -n 1 --grep="Compile FrogPilot")
-          if [ -z "$COMMIT" ]; then
-            echo "Commit with message 'Compile FrogPilot' not found." >&2
-            exit 1
-          fi
+          [ -z "$COMMIT" ] && echo "Compile commit not found." >&2 && exit 1
 
           PARENT=$(git rev-list --parents -n 1 "$COMMIT" | awk '{print $2}')
-          if [ -z "$PARENT" ]; then
-            echo "Parent commit not found." >&2
-            exit 1
-          fi
+          [ -z "$PARENT" ] && echo "Parent commit not found." >&2 && exit 1
 
-          echo "Compile commit: $COMMIT"
-          echo "Parent commit: $PARENT"
           echo "parent_commit=$PARENT" >> "$GITHUB_OUTPUT"
           echo "compile_commit=$COMMIT" >> "$GITHUB_OUTPUT"
 
-      - name: Checkout ${{ env.TARGET_BRANCH }}
+      - name: Fetch and Checkout ${{ env.TARGET_BRANCH }}
         run: |
           git fetch origin "${{ env.TARGET_BRANCH }}"
           git checkout "${{ env.TARGET_BRANCH }}"
@@ -53,17 +50,12 @@ jobs:
         run: |
           git rm -r --ignore-unmatch .
           git clean -fdx
-
-          PARENT_COMMIT="${{ steps.find_parent.outputs.parent_commit }}"
-          git checkout "$PARENT_COMMIT" -- .
+          git checkout "${{ steps.find_parent.outputs.parent_commit }}" -- .
 
           COMPILE_COMMIT="${{ steps.find_parent.outputs.compile_commit }}"
           SOURCE_HEAD=$(git rev-parse "origin/${{ env.SOURCE_BRANCH }}")
 
-          if [ "$COMPILE_COMMIT" != "$SOURCE_HEAD" ]; then
-            echo "Applying changes from '${{ env.SOURCE_BRANCH }}' branch..."
-            git cherry-pick --no-commit "${COMPILE_COMMIT}".."$SOURCE_HEAD"
-          fi
+          [ "$COMPILE_COMMIT" != "$SOURCE_HEAD" ] && git cherry-pick --no-commit "${COMPILE_COMMIT}".."$SOURCE_HEAD"
 
           rm -f .github/update_date
 
@@ -72,28 +64,22 @@ jobs:
       - name: Commit and Push to ${{ env.TARGET_BRANCH }}
         run: |
           TZ_VALUE="America/Phoenix"
-          current_day=$(TZ="$TZ_VALUE" date +"%-d")
+          day=$(TZ="$TZ_VALUE" date +"%-d")
           month=$(TZ="$TZ_VALUE" date +"%B")
           year=$(TZ="$TZ_VALUE" date +"%Y")
 
-          if [[ "$current_day" =~ ^1[123]$ ]]; then
-            suffix="th"
-          else
-            case $(($current_day % 10)) in
-              1) suffix="st" ;;
-              2) suffix="nd" ;;
-              3) suffix="rd" ;;
-              *) suffix="th" ;;
-            esac
-          fi
+          case $day in
+            11|12|13) s=th ;;
+            *) case $((day % 10)) in 1) s=st ;; 2) s=nd ;; 3) s=rd ;; *) s=th ;; esac ;;
+          esac
 
-          commit_message="${month} ${current_day}${suffix}, ${year} Update"
-          echo "Commit message: $commit_message"
+          commit_message="${month} ${day}${s}, ${year} Update"
 
-          if git log --oneline --format="%s" | grep -q "$commit_message"; then
-            echo "Existing commit found with message: $commit_message"
+          if git log -1 --pretty=%s | grep -q "$commit_message"; then
             git commit --amend --no-edit
           else
             git commit -m "$commit_message"
           fi
+
+          git remote set-url origin https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}
           git push origin "${{ env.TARGET_BRANCH }}" --force

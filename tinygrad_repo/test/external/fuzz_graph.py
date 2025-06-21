@@ -16,7 +16,7 @@ def gen_prg(device, inputs_cnt):
   with Context(DEBUG=0):
     fst = [Tensor.randn(BUF_LEN, dtype=dtypes.int).realize() for i in range(inputs_cnt)]
     s = fst[0]
-    for i in range(1, inputs_cnt): s = s.xor(fst[i])
+    for i in range(1, inputs_cnt): s = s.bitwise_xor(fst[i])
 
     si = s.schedule()[-1]
     prg = get_runner(device, si.ast)
@@ -28,7 +28,7 @@ def alloc_rawbuffer(device, fill=False):
   if fill:
     with Context(DEBUG=0):
       data = np.random.randint(-10000, 10000, size=rawbuf.size, dtype=_to_np_dtype(rawbuf.dtype))
-      rawbuf.copyin(Tensor(data).realize().lazydata.base.realized.as_buffer())
+      rawbuf.copyin(Tensor(data).realize().uop.base.realized.as_buffer())
   return rawbuf
 
 def gen_kernel_ji(device, deps):
@@ -121,7 +121,7 @@ if __name__ == "__main__":
   np.random.seed(SEED)
 
   next_graph_id = 0
-  while True:
+  for i in range(getenv("ITERS", 1000)):
     print("Running graph", next_graph_id)
     jis, all_buffers, input_buffers = gen_graph()
     fuzz_graph(jis, all_buffers, input_buffers)
