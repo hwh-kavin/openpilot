@@ -177,20 +177,48 @@ class HudRenderer:
     img_pos = rl.Vector2(center_x - self._wheel_texture.width / 2, center_y - self._wheel_texture.height / 2)
     rl.draw_texture_v(self._wheel_texture, img_pos, rl.Color(255, 255, 255, int(255 * opacity)))
 
-    # Draw steering pressed indicator (Ford only)   2025年6月26日 kavin
+    # Draw steering info (Ford only)   2025年6月26日 kavin
     if (hasattr(ui_state, 'carState') and 
-        getattr(ui_state.carState, 'steeringPressed', False) and
         hasattr(ui_state, 'carParams') and
         getattr(ui_state.carParams, 'carName', '').lower().startswith('ford')):
-      indicator_size = 24
-      indicator_x = center_x + UI_CONFIG.button_size // 3
-      indicator_y = center_y - UI_CONFIG.button_size // 3
-      rl.draw_circle(indicator_x, indicator_y, indicator_size, COLORS.engaged if ui_state.status == UIStatus.ENGAGED else COLORS.override)
+      # Steering pressed indicator
+      if getattr(ui_state.carState, 'steeringPressed', False):
+        indicator_size = 24
+        indicator_x = center_x + UI_CONFIG.button_size // 3
+        indicator_y = center_y - UI_CONFIG.button_size // 3
+        rl.draw_circle(indicator_x, indicator_y, indicator_size, COLORS.engaged if ui_state.status == UIStatus.ENGAGED else COLORS.override)
+        rl.draw_text_ex(
+          self._font_bold,
+          "!",
+          rl.Vector2(indicator_x - indicator_size//3, indicator_y - indicator_size//2),
+          indicator_size,
+          0,
+          COLORS.white
+        )
+      
+      # Steering angle display
+      angle = getattr(ui_state.carState, 'steeringAngleDeg', 0)
+      angle_text = f"{abs(angle):.1f}°"
+      angle_text_size = measure_text_cached(self._font_medium, angle_text, 24)
+      angle_x = center_x - angle_text_size.x//2
+      angle_y = center_y + UI_CONFIG.button_size//2 + 10
       rl.draw_text_ex(
-        self._font_bold,
-        "!",
-        rl.Vector2(indicator_x - indicator_size//3, indicator_y - indicator_size//2),
-        indicator_size,
+        self._font_medium,
+        angle_text,
+        rl.Vector2(angle_x, angle_y),
+        24,
         0,
-        COLORS.white
+        COLORS.white if ui_state.status == UIStatus.ENGAGED else COLORS.white_translucent
       )
+      # Steering direction indicator
+      arrow = "←" if angle > 0 else "→" if angle < 0 else ""
+      if arrow:
+        arrow_x = angle_x - 20 if angle > 0 else angle_x + angle_text_size.x + 5
+        rl.draw_text_ex(
+          self._font_bold,
+          arrow,
+          rl.Vector2(arrow_x, angle_y),
+          24,
+          0,
+          COLORS.engaged if ui_state.status == UIStatus.ENGAGED else COLORS.white_translucent
+        )
