@@ -176,3 +176,21 @@ class HudRenderer:
     opacity = 0.7 if ui_state.status == UIStatus.DISENGAGED else 1.0
     img_pos = rl.Vector2(center_x - self._wheel_texture.width / 2, center_y - self._wheel_texture.height / 2)
     rl.draw_texture_v(self._wheel_texture, img_pos, rl.Color(255, 255, 255, int(255 * opacity)))
+
+    # Draw steering pressed indicator (Ford only)   2025年6月26日 kavin
+    if (hasattr(ui_state, 'carState') and 
+        getattr(ui_state.carState, 'steeringPressed', False) and
+        hasattr(ui_state, 'carParams') and
+        getattr(ui_state.carParams, 'carName', '').lower().startswith('ford')):
+      indicator_size = 24
+      indicator_x = center_x + UI_CONFIG.button_size // 3
+      indicator_y = center_y - UI_CONFIG.button_size // 3
+      rl.draw_circle(indicator_x, indicator_y, indicator_size, COLORS.engaged if ui_state.status == UIStatus.ENGAGED else COLORS.override)
+      rl.draw_text_ex(
+        self._font_bold,
+        "!",
+        rl.Vector2(indicator_x - indicator_size//3, indicator_y - indicator_size//2),
+        indicator_size,
+        0,
+        COLORS.white
+      )
