@@ -178,7 +178,7 @@ class HudRenderer:
     rl.draw_texture_v(self._wheel_texture, img_pos, rl.Color(255, 255, 255, int(255 * opacity)))
 
     # Draw steering info (Ford only)   2025年6月26日 kavin
-    if (hasattr(ui_state, 'carState') and 
+    if (hasattr(ui_state, 'carState') and
         hasattr(ui_state, 'carParams') and
         getattr(ui_state.carParams, 'carName', '').lower().startswith('ford')):
       # Steering pressed indicator
@@ -195,7 +195,7 @@ class HudRenderer:
           0,
           COLORS.white
         )
-      
+
       # Steering angle display
       angle = getattr(ui_state.carState, 'steeringAngleDeg', 0)
       angle_text = f"{abs(angle):.1f}°"
@@ -222,3 +222,47 @@ class HudRenderer:
           0,
           COLORS.engaged if ui_state.status == UIStatus.ENGAGED else COLORS.white_translucent
         )
+
+      # Desired and predicted steering angles (Ford only)
+      if hasattr(ui_state, 'controlsState'):
+        # Desired angle (from path planner)
+        desired_angle = getattr(ui_state.controlsState, 'steeringAngleDesiredDeg', 0)
+        desired_text = f"期望角度: {abs(desired_angle):.1f}°"
+        desired_y = angle_y + 30
+        rl.draw_text_ex(
+          self._font_medium,
+          desired_text,
+          rl.Vector2(angle_x, desired_y),
+          20,
+          0,
+          COLORS.engaged
+        )
+
+        # Predicted angle (from model)
+        predicted_angle = getattr(ui_state.controlsState, 'steeringAngleModelDeg', 0)
+        predicted_text = f"预测角度: {abs(predicted_angle):.1f}°"
+        predicted_y = desired_y + 25
+        rl.draw_text_ex(
+          self._font_medium,
+          predicted_text,
+          rl.Vector2(angle_x, predicted_y),
+          20,
+          0,
+          COLORS.white_translucent
+        )
+
+        # Add direction indicators
+        for a, y_pos, col in [(desired_angle, desired_y, COLORS.engaged),
+                             (predicted_angle, predicted_y, COLORS.white_translucent)]:
+          dir_arrow = "←" if a > 0 else "→" if a < 0 else ""
+          if dir_arrow:
+            arrow_x = angle_x - 25 if a > 0 else angle_x + measure_text_cached(self._font_medium,
+                          f"Mod: {abs(predicted_angle):.1f}°", 20).x + 5
+            rl.draw_text_ex(
+              self._font_bold,
+              dir_arrow,
+              rl.Vector2(arrow_x, y_pos),
+              20,
+              0,
+              col
+            )
