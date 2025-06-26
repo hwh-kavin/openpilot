@@ -2010,11 +2010,11 @@ This may take up to a minute.</source>
     </message>
     <message>
         <source>Enable Dynamic Experimental Control</source>
-        <translation type="unfinished"></translation>
+        <translation>启用动态实验控制</translation>
     </message>
     <message>
         <source>Enable toggle to allow the model to determine when to use sunnypilot ACC or sunnypilot End to End Longitudinal.</source>
-        <translation type="unfinished"></translation>
+        <translation>启用切换允许模型确定何时使用sunnypilot ACC或者sunnypilot 端到端纵向</translation>
     </message>
     <message>
         <source>Enable sunnypilot</source>
@@ -2022,7 +2022,7 @@ This may take up to a minute.</source>
     </message>
     <message>
         <source>Use the sunnypilot system for adaptive cruise control and lane keep driver assistance. Your attention is required at all times to use this feature.</source>
-        <translation type="unfinished"></translation>
+        <translation>使用sunnypilot系统进行自适应巡航控制和车道保持驾驶员辅助。使用此功能时，您必须时刻注意！</translation>
     </message>
     <message>
         <source> Changing this setting will restart openpilot if the car is powered on.</source>
