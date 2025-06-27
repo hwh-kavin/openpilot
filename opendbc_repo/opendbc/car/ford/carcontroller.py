@@ -64,21 +64,21 @@ class CarController(CarControllerBase):
     hud_control = CC.hudControl
 
     # Predict curvature for next 3 seconds (simple linear extrapolation)
-    current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
-    curvature_rate = (current_curvature - self.apply_curvature_last) / DT_CTRL
-    predicted_curvature = current_curvature + curvature_rate * 3.0  # 3 seconds ahead
+    # current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
+    # curvature_rate = (current_curvature - self.apply_curvature_last) / DT_CTRL
+    # predicted_curvature = current_curvature + curvature_rate * 3.0  # 3 seconds ahead
 
     # Calculate maximum safe speed based on predicted curvature
-    if self.CP.flags & FordFlags.CANFD:
-      max_lateral_accel = MAX_LATERAL_ACCEL
-      max_safe_speed = math.sqrt(abs(max_lateral_accel / predicted_curvature)) if abs(predicted_curvature) > 1e-3 else V_CRUISE_MAX
-      max_safe_speed = min(max_safe_speed, V_CRUISE_MAX)
+    # if self.CP.flags & FordFlags.CANFD:
+      # max_lateral_accel = MAX_LATERAL_ACCEL
+      # max_safe_speed = math.sqrt(abs(max_lateral_accel / predicted_curvature)) if abs(predicted_curvature) > 1e-3 else V_CRUISE_MAX
+      #max_safe_speed = min(max_safe_speed, V_CRUISE_MAX)
 
       # Adjust speed if current speed exceeds safe speed
-      if CS.out.vEgo > max_safe_speed:
-        actuators.accel = min(actuators.accel, -1.0)  # Decelerate
-      elif actuators.accel < 0:  # If we were decelerating and now safe, return to normal
-        actuators.accel = 0.0
+      # if CS.out.vEgo > max_safe_speed:
+        # actuators.accel = min(actuators.accel, -1.0)  # Decelerate
+      # elif actuators.accel < 0:  # If we were decelerating and now safe, return to normal
+        # actuators.accel = 0.0
 
     main_on = CS.out.cruiseState.available
     steer_alert = hud_control.visualAlert in (VisualAlert.steerRequired, VisualAlert.ldw)
