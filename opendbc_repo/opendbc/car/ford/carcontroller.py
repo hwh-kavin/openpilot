@@ -128,16 +128,17 @@ class CarController(CarControllerBase):
       gas = accel
 
       # 获取前车距离（假设通过雷达或视觉模型）
-      lead_distance = self.model.lead.dRel if hasattr(self.model, 'lead') else 100.0  # 默认100米
+      # lead_distance = self.model.lead.dRel if hasattr(self.model, 'lead') else 100.0  # 默认100米
 
-      if CC.longActive:
-        if lead_distance < 50.0:
-          self.longActive = False
-        elif lead_distance > 60.0:
-          self.longActive = True
-      else:
-        self.longActive = False
+      # if CC.longActive:
+        # if lead_distance < 50.0:
+          # self.longActive = False
+        # elif lead_distance > 60.0:
+          # self.longActive = True
+      # else:
+        # self.longActive = False
 
+      self.longActive = CC.longActive
       if self.longActive:
         # Compensate for engine creep at low speed.
         # Either the ABS does not account for engine creep, or the correction is very slow
