@@ -125,14 +125,34 @@ class CarController(CarControllerBase):
           # 纯视觉控制模式
           use_openpilot_long = self.CP.openpilotLongitudinalControl
         else:
-          # 过渡区线性混合 (8.33-11.11m/s)
-          blend_factor = (CS.out.vEgo - LOW_SPEED_THRESHOLD) / (HIGH_SPEED_THRESHOLD - LOW_SPEED_THRESHOLD)
-          use_openpilot_long = self.CP.openpilotLongitudinalControl and blend_factor > 0.5
+          # 过渡区优化混合 (8.33-11.11m/s)
+          blend_factor = min(1.0, max(0.0,
+              (CS.out.vEgo - LOW_SPEED_THRESHOLD) / (HIGH_SPEED_THRESHOLD - LOW_SPEED_THRESHOLD)))
 
-          # 在过渡区应用混合控制
+          # 增强型拥堵检测 (速度<15kph且在5秒内制动3次)
+          is_low_speed = CS.out.vEgo < 4.17  # 15kph
+          recent_braking = self.frame - self.last_brake_frame < 250  # 5秒(50Hz*5)
+          is_traffic_jam = is_low_speed and (self.brake_request_count > 3 and recent_braking)
+
+          # 动态混合阈值 (根据制动频率调整)
+          dynamic_threshold = 0.5 - (self.brake_request_count * 0.05)  # 每多一次制动降低5%阈值
+          use_openpilot_long = self.CP.openpilotLongitudinalControl and (
+              blend_factor > max(0.3, dynamic_threshold) or
+              is_traffic_jam
+          )
+
           if use_openpilot_long:
-            stock_accel = ... # 获取原车加速度值
-            accel = blend_factor * accel + (1 - blend_factor) * stock_accel
+            stock_accel = CS.out.aEgo  # 获取原车加速度
+            blended_accel = blend_factor * accel + (1 - blend_factor) * stock_accel
+
+            # 加速度变化率限制 (最大3.5m/s³)
+            accel_delta = blended_accel - self.last_accel
+            max_delta = 3.5 * DT_CTRL * CarControllerParams.ACC_CONTROL_STEP
+            accel = self.last_accel + np.clip(accel_delta, -max_delta, max_delta)
+
+            # 平滑过渡曲线 (Sigmoid函数)
+            smooth_blend = 1 / (1 + np.exp(-12*(blend_factor-0.5)))
+            accel = smooth_blend * accel + (1-smooth_blend) * stock_accel
 
         if use_openpilot_long:
         # 补偿低速时的发动机爬行。
@@ -191,6 +211,12 @@ class CarController(CarControllerBase):
     self.lkas_enabled_last = CC.latActive
     self.steer_alert_last = steer_alert
     self.lead_distance_bars_last = hud_control.leadDistanceBars
+    self.last_accel = accel  # 记录当前加速度
+    if self.brake_request:
+        self.brake_request_count += 1
+        self.last_brake_frame = self.frame
+    elif self.frame - self.last_brake_frame > 250:  # 5秒无制动则清零
+        self.brake_request_count = 0
 
     new_actuators = actuators.as_builder()
     new_actuators.curvature = self.apply_curvature_last
