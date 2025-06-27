@@ -53,6 +53,8 @@ class ModelRenderer:
     self._road_edge_stds = np.zeros(2, dtype=np.float32)
     self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
     self._path_offset_z = HEIGHT_INIT[0]
+    self._wheel_icon = rl.load_texture("icons/steering_wheel.png")  # Load steering wheel icon
+    self._font_medium = rl.load_font("fonts/Roboto-Medium.ttf", 24)  # Add font for text rendering
 
     # Initialize ModelPoints objects
     self._path = ModelPoints()
@@ -83,21 +85,58 @@ class ModelRenderer:
       self._longitudinal_control = cp.openpilotLongitudinalControl
 
   def set_transform(self, transform: np.ndarray):
+    # 将输入的 transform 数组转换为 float32 类型，并赋值给 _car_space_transform 属性
     self._car_space_transform = transform.astype(np.float32)
+    # 设置 _transform_dirty 属性为 True，表示变换信息已修改
     self._transform_dirty = True
 
   def draw(self, rect: rl.Rectangle, sm: messaging.SubMaster):
+    # Store sm reference for later use
+    self.sm = sm
+    self._rect = rect
+
     # Check if data is up-to-date
     if (sm.recv_frame["liveCalibration"] < ui_state.started_frame or
         sm.recv_frame["modelV2"] < ui_state.started_frame):
       return
 
+    # Draw steering wheel icon
+    if sm.alive.get('carState', False) and sm.alive.get('controlsState', False):
+      cs = sm['carState']
+      controls_state = sm['controlsState']
+
+      # Calculate center position between lane lines
+      if len(self._lane_lines) >= 2 and len(self._lane_lines[0].projected_points) > 0 and len(self._lane_lines[1].projected_points) > 0:
+        left_lane = self._lane_lines[0].projected_points[-1]  # Get farthest point of left lane
+        right_lane = self._lane_lines[1].projected_points[-1]  # Get farthest point of right lane
+        center_x = (left_lane[0] + right_lane[0]) / 2
+        center_y = (left_lane[1] + right_lane[1]) / 2
+
+        # Set color and transparency based on lateral control state
+        if controls_state.lateralControlActive:
+          wheel_color = rl.Color(0, 122, 255, 255) if cs.steeringPressed else rl.Color(0, 200, 0, 255)  # Blue or Green
+        else:
+          wheel_color = rl.Color(255, 255, 255, 128)  # White with 50% transparency
+
+        # Draw steering wheel icon (40x40 pixels)
+        rl.draw_texture_pro(
+          self._wheel_icon,
+          rl.Rectangle(0, 0, self._wheel_icon.width, self._wheel_icon.height),
+          rl.Rectangle(center_x - 20, center_y - 20, 40, 40),
+          rl.Vector2(0, 0),
+          0,
+          wheel_color
+        )
+      return
+
+    # 设置裁剪区域
     # Set up clipping region
     self._rect = rect
     self._clip_region = rl.Rectangle(
       rect.x - CLIP_MARGIN, rect.y - CLIP_MARGIN, rect.width + 2 * CLIP_MARGIN, rect.height + 2 * CLIP_MARGIN
     )
 
+    # 更新状态
     # Update state
     self._experimental_mode = sm['selfdriveState'].experimentalMode
 
@@ -112,6 +151,7 @@ class ModelRenderer:
     lead_one = radar_state.leadOne if radar_state else None
     render_lead_indicator = self._longitudinal_control and radar_state is not None
 
+    # 当需要时更新模型数据
     # Update model data when needed
     model_updated = sm.updated['modelV2']
     if model_updated or sm.updated['radarState'] or self._transform_dirty:
@@ -128,6 +168,7 @@ class ModelRenderer:
       self._transform_dirty = False
 
 
+    # 绘制元素
     # Draw elements
     self._draw_lane_lines()
     self._draw_path(sm)
@@ -137,21 +178,32 @@ class ModelRenderer:
 
   def _update_raw_points(self, model):
     """Update raw 3D points from model data"""
+    # 更新模型路径的原始点
     self._path.raw_points = np.array([model.position.x, model.position.y, model.position.z], dtype=np.float32).T
 
+    # 遍历模型的车道线
     for i, lane_line in enumerate(model.laneLines):
+      # 更新车道线的原始点
       self._lane_lines[i].raw_points = np.array([lane_line.x, lane_line.y, lane_line.z], dtype=np.float32).T
 
+    # 遍历模型的道路边缘
     for i, road_edge in enumerate(model.roadEdges):
+      # 更新道路边缘的原始点
       self._road_edges[i].raw_points = np.array([road_edge.x, road_edge.y, road_edge.z], dtype=np.float32).T
 
+    # 更新车道线的概率
     self._lane_line_probs = np.array(model.laneLineProbs, dtype=np.float32)
+
+    # 更新道路边缘的标准差
     self._road_edge_stds = np.array(model.roadEdgeStds, dtype=np.float32)
+
+    # 更新加速度的x分量
     self._acceleration_x = np.array(model.acceleration.x, dtype=np.float32)
 
   def _update_leads(self, radar_state, path_x_array):
     """Update positions of lead vehicles"""
-    self._lead_vehicles = [LeadVehicle(), LeadVehicle()]
+    self._lead_vehicles = [LeadVehicle(), LeadVehicle()]  # 初始化两个前车对象
+
     leads = [radar_state.leadOne, radar_state.leadTwo]
 
     for i, lead_data in enumerate(leads):
@@ -159,37 +211,48 @@ class ModelRenderer:
         d_rel, y_rel, v_rel = lead_data.dRel, lead_data.yRel, lead_data.vRel
         idx = self._get_path_length_idx(path_x_array, d_rel)
 
+        # 从路径中获取前车位置的z坐标
         # Get z-coordinate from path at the lead vehicle position
         z = self._path.raw_points[idx, 2] if idx < len(self._path.raw_points) else 0.0
         point = self._map_to_screen(d_rel, -y_rel, z + self._path_offset_z)
         if point:
+          # 更新前车对象
           self._lead_vehicles[i] = self._update_lead_vehicle(d_rel, v_rel, point, self._rect)
 
   def _update_model(self, lead, path_x_array):
     """Update model visualization data based on model message"""
+    # 将路径最后一个点的距离限制在最小和最大绘制距离之间
     max_distance = np.clip(path_x_array[-1], MIN_DRAW_DISTANCE, MAX_DRAW_DISTANCE)
+    # 获取路径长度的索引，用于后续处理
     max_idx = self._get_path_length_idx(self._lane_lines[0].raw_points[:, 0], max_distance)
 
+    # 使用原始点更新车道线
     # Update lane lines using raw points
     for i, lane_line in enumerate(self._lane_lines):
       lane_line.projected_points = self._map_line_to_polygon(
         lane_line.raw_points, 0.025 * self._lane_line_probs[i], 0.0, max_idx
       )
 
+    # 使用原始点更新道路边缘
     # Update road edges using raw points
     for road_edge in self._road_edges:
       road_edge.projected_points = self._map_line_to_polygon(road_edge.raw_points, 0.025, 0.0, max_idx)
 
+    # 使用原始点更新路径
     # Update path using raw points
     if lead and lead.status:
       lead_d = lead.dRel * 2.0
+      # 更新最大距离，基于前车的相对距离
       max_distance = np.clip(lead_d - min(lead_d * 0.35, 10.0), 0.0, max_distance)
 
+    # 获取路径长度的索引，基于新的最大距离
     max_idx = self._get_path_length_idx(path_x_array, max_distance)
+    # 更新路径的投影点
     self._path.projected_points = self._map_line_to_polygon(
       self._path.raw_points, 0.9, self._path_offset_z, max_idx, allow_invert=False
     )
 
+    # 更新实验性梯度
     self._update_experimental_gradient(self._rect.height)
 
   def _update_experimental_gradient(self, height):
@@ -210,9 +273,11 @@ class ModelRenderer:
         i += 1
         continue
 
+          # 计算基于加速度的颜色
       # Calculate color based on acceleration
       lin_grad_point = (height - track_y) / height
 
+          # 加速：120，减速：0
       # speed up: 120, slow down: 0
       path_hue = max(min(60 + self._acceleration_x[i] * 35, 120), 0)
       path_hue = int(path_hue * 100 + 0.5) / 100
@@ -221,15 +286,18 @@ class ModelRenderer:
       lightness = self._map_val(saturation, 0.0, 1.0, 0.95, 0.62)
       alpha = self._map_val(lin_grad_point, 0.75 / 2.0, 0.75, 0.4, 0.0)
 
+          # 使用HSL到RGB的转换
       # Use HSL to RGB conversion
       color = self._hsla_to_color(path_hue / 360.0, saturation, lightness, alpha)
 
       gradient_stops.append(lin_grad_point)
       segment_colors.append(color)
 
+          # 除非下一个是最后一个，否则跳过一个点
       # Skip a point, unless next is last
       i += 1 + (1 if (i + 2) < max_len else 0)
 
+      # 将梯度存储在路径对象中
     # Store the gradient in the path object
     self._exp_gradient['colors'] = segment_colors
     self._exp_gradient['stops'] = gradient_stops
@@ -256,24 +324,43 @@ class ModelRenderer:
     glow = [(x + (sz * 1.35) + g_xo, y + sz + g_yo), (x, y - g_yo), (x - (sz * 1.35) - g_xo, y + sz + g_yo)]
     chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]
 
-    return LeadVehicle(glow=glow,chevron=chevron, fill_alpha=int(fill_alpha))
+    # Store distance and speed for text display
+    lead = LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha))
+    lead.d_rel = d_rel
+    lead.v_rel = v_rel
+    return lead
+    # 箭头形状位置
+    chevron = [(x + (sz * 1.25), y + sz), (x, y), (x - (sz * 1.25), y + sz)]
+
+    # 返回前车对象
+    return LeadVehicle(glow=glow, chevron=chevron, fill_alpha=int(fill_alpha))
 
   def _draw_lane_lines(self):
-    """Draw lane lines and road edges"""
+    """绘制车道线和道路边缘"""
+    # 遍历车道线列表
     for i, lane_line in enumerate(self._lane_lines):
+      # 如果车道线投影点为空，则跳过当前车道线
       if lane_line.projected_points.size == 0:
         continue
 
+      # 计算车道线的透明度
       alpha = np.clip(self._lane_line_probs[i], 0.0, 0.7)
+      # 根据透明度计算颜色
       color = rl.Color(255, 255, 255, int(alpha * 255))
+      # 绘制车道线多边形
       draw_polygon(self._rect, lane_line.projected_points, color)
 
+    # 遍历道路边缘列表
     for i, road_edge in enumerate(self._road_edges):
+      # 如果道路边缘投影点为空，则跳过当前道路边缘
       if road_edge.projected_points.size == 0:
         continue
 
+      # 计算道路边缘的透明度
       alpha = np.clip(1.0 - self._road_edge_stds[i], 0.0, 1.0)
+      # 根据透明度计算颜色
       color = rl.Color(255, 0, 0, int(alpha * 255))
+      # 绘制道路边缘多边形
       draw_polygon(self._rect, road_edge.projected_points, color)
 
   def _draw_path(self, sm):
@@ -282,20 +369,24 @@ class ModelRenderer:
       return
 
     if self._experimental_mode:
+      # 绘制带有加速度色彩的路径
       # Draw with acceleration coloring
       if len(self._exp_gradient['colors']) > 2:
         draw_polygon(self._rect, self._path.projected_points, gradient=self._exp_gradient)
       else:
         draw_polygon(self._rect, self._path.projected_points, rl.Color(255, 255, 255, 30))
     else:
+      # 绘制带有油门/无油门渐变色的路径
       # Draw with throttle/no throttle gradient
       allow_throttle = sm['longitudinalPlan'].allowThrottle or not self._longitudinal_control
 
+      # 如果油门状态改变，则开始过渡
       # Start transition if throttle state changes
       if allow_throttle != self._prev_allow_throttle:
         self._prev_allow_throttle = allow_throttle
         self._blend_factor = max(1.0 - self._blend_factor, 0.0)
 
+      # 更新混合因子
       # Update blend factor
       if self._blend_factor < 1.0:
         self._blend_factor = min(self._blend_factor + PATH_BLEND_INCREMENT, 1.0)
@@ -303,11 +394,14 @@ class ModelRenderer:
       begin_colors = NO_THROTTLE_COLORS if allow_throttle else THROTTLE_COLORS
       end_colors = THROTTLE_COLORS if allow_throttle else NO_THROTTLE_COLORS
 
+      # 根据过渡混合颜色
       # Blend colors based on transition
       blended_colors = self._blend_colors(begin_colors, end_colors, self._blend_factor)
       gradient = {
-        'start': (0.0, 1.0),  # Bottom of path
-        'end': (0.0, 0.0),  # Top of path
+        'start': (0.0, 1.0),  # 路径底部
+        # Bottom of path
+        'end': (0.0, 0.0),  # 路径顶部
+        # Top of path
         'colors': blended_colors,
         'stops': [0.0, 0.5, 1.0],
       }
@@ -315,12 +409,67 @@ class ModelRenderer:
 
   def _draw_lead_indicator(self):
     # Draw lead vehicles if available
-    for lead in self._lead_vehicles:
+    for i, lead in enumerate(self._lead_vehicles):
       if not lead.glow or not lead.chevron:
         continue
 
       rl.draw_triangle_fan(lead.glow, len(lead.glow), rl.Color(218, 202, 37, 255))
       rl.draw_triangle_fan(lead.chevron, len(lead.chevron), rl.Color(201, 34, 49, lead.fill_alpha))
+
+      # Calculate text position below the triangle
+      text_y = lead.chevron[0][1] + 30  # 30 pixels below triangle
+      text_x = lead.chevron[0][0] - 20  # centered below triangle
+
+      # Draw distance text (blue)
+      distance_text = f"{lead.d_rel:.1f}m"
+      rl.draw_text_ex(
+        self._font_medium,
+        distance_text,
+        rl.Vector2(text_x, text_y),
+        24,  # font size
+        0,
+        rl.Color(0, 122, 255, 255)  # Blue color
+      )
+
+      # Draw relative speed text (blue)
+      speed_text = f"{lead.v_rel:+.1f}m/s"
+      rl.draw_text_ex(
+        self._font_medium,
+        speed_text,
+        rl.Vector2(text_x, text_y + 30),  # 30px below distance
+        24,  # font size
+        0,
+        rl.Color(0, 122, 255, 255)  # Blue color
+      )
+
+    # Draw vehicle dynamics info at bottom
+    if hasattr(self, 'sm') and self.sm.alive.get('carState', False) and self.sm.alive.get('controlsState', False):
+      car_state = self.sm['carState']
+      controls_state = self.sm['controlsState']
+
+      # Format and display info
+      info_lines = [
+        f"预测曲率: {controls_state.curvature:.4f} m⁻¹",
+        f"期望曲率: {controls_state.desiredCurvature:.4f} m⁻¹",
+        f"当前曲率: {-car_state.yawRate/max(car_state.vEgoRaw,0.1):.4f} m⁻¹",
+        f"方向盘角度: {car_state.steeringAngleDeg:.1f}°",
+        f"输出扭矩: {controls_state.actuatorsOutput.steer:.2f} Nm",
+        f"横滚角: {math.degrees(car_state.roll):.1f}°" if hasattr(car_state, 'roll') else "横滚角: N/A",
+        f"俯仰角: {math.degrees(car_state.pitch):.1f}°" if hasattr(car_state, 'pitch') else "俯仰角: N/A",
+        f"偏航角: {math.degrees(car_state.yaw):.1f}°" if hasattr(car_state, 'yaw') else "偏航角: N/A"
+      ]
+
+      # Draw each line with 50% transparent black text
+      start_y = self._rect.y + self._rect.height - 180 + 20  # Same position as before
+      for i, line in enumerate(info_lines):
+        rl.draw_text_ex(
+          self._font_medium,
+          line,
+          rl.Vector2(self._rect.x + 20, start_y + i * 22),
+          20,  # font size
+          0,
+          rl.Color(0, 0, 0, 128)  # 50% transparency black
+        )
 
   @staticmethod
   def _get_path_length_idx(pos_x_array: np.ndarray, path_height: float) -> int:
