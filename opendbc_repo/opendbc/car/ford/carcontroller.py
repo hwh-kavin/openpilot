@@ -63,6 +63,23 @@ class CarController(CarControllerBase):
     actuators = CC.actuators
     hud_control = CC.hudControl
 
+    # Predict curvature for next 3 seconds (simple linear extrapolation)
+    current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
+    curvature_rate = (current_curvature - self.apply_curvature_last) / DT_CTRL
+    predicted_curvature = current_curvature + curvature_rate * 3.0  # 3 seconds ahead
+
+    # Calculate maximum safe speed based on predicted curvature
+    if self.CP.flags & FordFlags.CANFD:
+      max_lateral_accel = MAX_LATERAL_ACCEL
+      max_safe_speed = math.sqrt(abs(max_lateral_accel / predicted_curvature)) if abs(predicted_curvature) > 1e-3 else V_CRUISE_MAX
+      max_safe_speed = min(max_safe_speed, V_CRUISE_MAX)
+
+      # Adjust speed if current speed exceeds safe speed
+      if CS.out.vEgo > max_safe_speed:
+        actuators.accel = min(actuators.accel, -1.0)  # Decelerate
+      elif actuators.accel < 0:  # If we were decelerating and now safe, return to normal
+        actuators.accel = 0.0
+
     main_on = CS.out.cruiseState.available
     steer_alert = hud_control.visualAlert in (VisualAlert.steerRequired, VisualAlert.ldw)
     fcw_alert = hud_control.visualAlert == VisualAlert.fcw
@@ -110,7 +127,18 @@ class CarController(CarControllerBase):
       accel = actuators.accel
       gas = accel
 
+      # 获取前车距离（假设通过雷达或视觉模型）
+      lead_distance = self.model.lead.dRel if hasattr(self.model, 'lead') else 100.0  # 默认100米
+
       if CC.longActive:
+        if lead_distance < 50.0:
+          self.longActive = False
+        elif lead_distance > 60.0:
+          self.longActive = True
+      else:
+        self.longActive = False
+
+      if self.longActive:
         # Compensate for engine creep at low speed.
         # Either the ABS does not account for engine creep, or the correction is very slow
         # TODO: verify this applies to EV/hybrid
@@ -124,7 +152,7 @@ class CarController(CarControllerBase):
       gas = float(np.clip(gas, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
 
       # Both gas and accel are in m/s^2, accel is used solely for braking
-      if not CC.longActive or gas < CarControllerParams.MIN_GAS:
+      if not self.longActive or gas < CarControllerParams.MIN_GAS:
         gas = CarControllerParams.INACTIVE_GAS
 
       # PCM applies pitch compensation to gas/accel, but we need to compensate for the brake/pre-charge bits
@@ -133,14 +161,14 @@ class CarController(CarControllerBase):
         accel_due_to_pitch = math.sin(CC.orientationNED[1]) * ACCELERATION_DUE_TO_GRAVITY
 
       accel_pitch_compensated = accel + accel_due_to_pitch
-      if accel_pitch_compensated > 0.3 or not CC.longActive:
+      if accel_pitch_compensated > 0.3 or not self.longActive:
         self.brake_request = False
       elif accel_pitch_compensated < 0.0:
         self.brake_request = True
 
       stopping = CC.actuators.longControlState == LongCtrlState.stopping
       # TODO: look into using the actuators packet to send the desired speed
-      can_sends.append(fordcan.create_acc_msg(self.packer, self.CAN, CC.longActive, gas, accel, stopping, self.brake_request, v_ego_kph=V_CRUISE_MAX))
+      can_sends.append(fordcan.create_acc_msg(self.packer, self.CAN, self.longActive, gas, accel, stopping, self.brake_request, v_ego_kph=V_CRUISE_MAX))
 
       self.accel = accel
       self.gas = gas
