@@ -46,6 +46,7 @@ class CarController(CarControllerBase):
     super().__init__(dbc_names, CP, CP_SP)
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.CAN = fordcan.CanBus(CP)
+    self.human_turn = False
 
     self.apply_curvature_last = 0
     self.accel = 0.0
@@ -58,119 +59,103 @@ class CarController(CarControllerBase):
     self.distance_bar_frame = 0
 
   def update(self, CC, CC_SP, CS, now_nanos):
+    # 存储将要发送的CAN消息列表
     can_sends = []
 
+    # 获取CC对象中的执行器和HUD控制器
     actuators = CC.actuators
     hud_control = CC.hudControl
 
-    main_on = CS.out.cruiseState.available
-    steer_alert = hud_control.visualAlert in (VisualAlert.steerRequired, VisualAlert.ldw)
-    fcw_alert = hud_control.visualAlert == VisualAlert.fcw
+    # 表示车辆的巡航控制系统是否可用/激活
+    main_on = CS.out.cruiseState.available  # 表示车辆的巡航控制系统是否可用/激活
+    # HUD视觉警报 类型
+    steer_alert = hud_control.visualAlert in (VisualAlert.steerRequired, VisualAlert.ldw)  # HUD视觉警报 类型
+    # FCW视觉警报
+    fcw_alert = hud_control.visualAlert == VisualAlert.fcw  # FCW视觉警报
 
     ### acc buttons ###
-    # Handle cruise control cancellation
+    # 如果CC的巡航控制取消，则发送取消按钮消息
     if CC.cruiseControl.cancel:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, cancel=True))
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, cancel=True))
-    # Handle cruise control resume with frame rate limit
+    # 如果CC的巡航控制恢复且帧号满足条件，则发送恢复按钮消息
     elif CC.cruiseControl.resume and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, resume=True))
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, resume=True))
-    # Disable stock lane centering if active
-    # Stock system checks steering wheel press and may disengage cruise
+    # 如果原车车道保持未关闭，且帧号满足条件，则发送切换车道保持按钮消息
+    # the stock system checks for steering pressed, and eventually disengages cruise control
     elif CS.acc_tja_status_stock_values["Tja_D_Stat"] != 0 and (self.frame % CarControllerParams.ACC_UI_STEP) == 0:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, tja_toggle=True))
 
     ### lateral control ###
-    # Send steering commands at 20Hz
+    # 以20Hz的频率发送横向控制消息
     if (self.frame % CarControllerParams.STEER_STEP) == 0:
-      # Apply rate limits, curvature error limits, and clip to signal range
-      current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
+      if CC.latActive:
+        # 检测驾驶员是否在手动转向(True/False)
+        steeringPressed = CS.out.steeringPressed  # 检测驾驶员是否在手动转向(True/False)
+        # 当前实际方向盘角度(来自车辆传感器)
+        steeringAngleDeg_PV = CS.out.steeringAngleDeg  # 当前实际方向盘角度(来自车辆传感器)
+        # 期望的方向盘角度(来自模型计算)
+        steeringAngleDeg_SP = actuators.steeringAngleDeg  # 期望的方向盘角度(来自模型计算)
+        
+        if steeringPressed and abs(steeringAngleDeg_PV - steeringAngleDeg_SP) > 10:
+          self.human_turn = True
+          self.apply_curvature = 0
+          self.apply_curvature_last = 0
+          current_curvature = 0
+        else:
+          self.human_turn = False
+
+          # 应用速率限制、曲率误差限制，并裁剪到信号范围
+          current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)  # 横摆率(yawRate)/ 车速(vEgoRaw)
+
       self.apply_curvature_last = apply_ford_curvature_limits(actuators.curvature, self.apply_curvature_last, current_curvature,
                                                               CS.out.vEgoRaw, 0., CC.latActive, self.CP)
 
+      # 如果CP标志包含CANFD，则执行扩展模式
       if self.CP.flags & FordFlags.CANFD:
-        # TODO: Implement extended mode
-        # Ford uses four individual signals for lateral control. Curvature alone (limited to 0.02m/s^2)
-        # can actuate steering for most lateral movements. The other three signals provide finer control.
-        # Ford's control strategy differs from other manufacturers.
-        # Detailed explanation: https://www.f150gen14.com/forum/threads/introducing-bluepilot-a-ford-specific-fork-for-comma3x-openpilot.24241/#post-457706
+        # TODO: extended mode
+        # Ford uses four individual signals to dictate how to drive to the car. Curvature alone (limited to 0.02m/s^2)
+        # can actuate the steering for a large portion of any lateral movements. However, in order to get further control on
+        # steer actuation, the other three signals are necessary. Ford controls vehicles differently than most other makes.
+        # A detailed explanation on ford control can be found here:
+        # https://www.f150gen14.com/forum/threads/introducing-bluepilot-a-ford-specific-fork-for-comma3x-openpilot.24241/#post-457706
         mode = 1 if CC.latActive else 0
         counter = (self.frame // CarControllerParams.STEER_STEP) % 0x10
         can_sends.append(fordcan.create_lat_ctl2_msg(self.packer, self.CAN, mode, 0., 0., -self.apply_curvature_last, 0., counter))
       else:
+        # 否则发送标准的横向控制消息
         can_sends.append(fordcan.create_lat_ctl_msg(self.packer, self.CAN, CC.latActive, 0., 0., -self.apply_curvature_last, 0.))
 
-    # Send LKA status at 33Hz
+    # 以33Hz的频率发送LKA消息
     if (self.frame % CarControllerParams.LKA_STEP) == 0:
       can_sends.append(fordcan.create_lka_msg(self.packer, self.CAN))
 
     ### longitudinal control ###
-    # send acc msg at 50Hz
-    if (self.frame % CarControllerParams.ACC_CONTROL_STEP) == 0:
+    # 以50Hz的频率发送纵向控制消息
+    if self.CP.openpilotLongitudinalControl and (self.frame % CarControllerParams.ACC_CONTROL_STEP) == 0:
       accel = actuators.accel
       gas = accel
 
-      # Speed thresholds (8.33m/s=30kph, 11.11m/s=40kph)
-      LOW_SPEED_THRESHOLD = 8.33
-      HIGH_SPEED_THRESHOLD = 11.11
-
       if CC.longActive:
-        # Hybrid control mode: stock at low speed, vision at high speed, blended in between
-        if CS.out.vEgo < LOW_SPEED_THRESHOLD:
-          # Pure stock control mode
-          use_openpilot_long = False
-        elif CS.out.vEgo > HIGH_SPEED_THRESHOLD:
-          # Pure vision control mode
-          use_openpilot_long = self.CP.openpilotLongitudinalControl
-        else:
-          # Optimized blending in transition zone (8.33-11.11m/s)
-          blend_factor = min(1.0, max(0.0,
-              (CS.out.vEgo - LOW_SPEED_THRESHOLD) / (HIGH_SPEED_THRESHOLD - LOW_SPEED_THRESHOLD)))
+        # 在低速时补偿发动机蠕变。
+        # 要么ABS没有考虑发动机蠕变，要么校正非常慢
+        # TODO: verify this applies to EV/hybrid
+        accel = apply_creep_compensation(accel, CS.out.vEgo)
 
-          # Enhanced traffic jam detection (speed<15kph and 3+ brakes in 5sec)
-          is_low_speed = CS.out.vEgo < 4.17  # 15kph
-          recent_braking = self.frame - self.last_brake_frame < 250  # 5sec(50Hz*5)
-          is_traffic_jam = is_low_speed and (self.brake_request_count > 3 and recent_braking)
-
-          # Dynamic blending threshold (adjusted by brake frequency)
-          dynamic_threshold = 0.5 - (self.brake_request_count * 0.05)  # 5% threshold reduction per brake
-          use_openpilot_long = self.CP.openpilotLongitudinalControl and (
-              blend_factor > max(0.3, dynamic_threshold) or
-              is_traffic_jam
-          )
-
-          if use_openpilot_long:
-            stock_accel = CS.out.aEgo  # Get stock acceleration
-            blended_accel = blend_factor * accel + (1 - blend_factor) * stock_accel
-
-            # Acceleration rate limit (max 3.5m/s³)
-            accel_delta = blended_accel - self.last_accel
-            max_delta = 3.5 * DT_CTRL * CarControllerParams.ACC_CONTROL_STEP
-            accel = self.last_accel + np.clip(accel_delta, -max_delta, max_delta)
-
-            # Smooth transition curve (Sigmoid function)
-            smooth_blend = 1 / (1 + np.exp(-12*(blend_factor-0.5)))
-            accel = smooth_blend * accel + (1-smooth_blend) * stock_accel
-
-        if use_openpilot_long:
-            # Compensate for engine creep at low speed
-            # Either ABS doesn't account for engine creep or correction is slow
-            # TODO: verify EV/hybrid compatibility
-            accel = apply_creep_compensation(accel, CS.out.vEgo)
-
-        # Stock system limits brake accel to 5 m/s^3,
-        # but even 3.5 m/s^3 causes overshoot in step response
+        # 原车系统被观察到将制动加速度限制为5 m/s^3，
+        # 但是即使3.5 m/s^3在阶跃响应时也会导致一些超调。
         accel = max(accel, self.accel - (3.5 * CarControllerParams.ACC_CONTROL_STEP * DT_CTRL))
 
+      # 将加速度和油门限制在最小和最大加速度之间
       accel = float(np.clip(accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
       gas = float(np.clip(gas, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
 
-      # Both gas and accel are in m/s^2, accel is used for braking only
+      # gas和accel都以m/s^2为单位，accel仅用于制动
       if not CC.longActive or gas < CarControllerParams.MIN_GAS:
         gas = CarControllerParams.INACTIVE_GAS
 
-      # PCM applies pitch compensation to gas/accel, but we need to compensate brake/pre-charge
+      # PCM对gas/accel应用俯仰补偿，但我们需要对制动/预充电位进行补偿
       accel_due_to_pitch = 0.0
       if len(CC.orientationNED) == 3:
         accel_due_to_pitch = math.sin(CC.orientationNED[1]) * ACCELERATION_DUE_TO_GRAVITY
@@ -182,67 +167,35 @@ class CarController(CarControllerBase):
         self.brake_request = True
 
       stopping = CC.actuators.longControlState == LongCtrlState.stopping
-      # TODO: investigate using actuators packet for desired speed
-      can_sends.append(fordcan.create_acc_msg(
-          self.packer,
-          self.CAN,
-          CC.longActive,
-          gas,
-          accel,
-          stopping,
-          self.brake_request,
-          v_ego_kph=V_CRUISE_MAX
-      ))
+      # TODO: look into using the actuators packet to send the desired speed
+      can_sends.append(fordcan.create_acc_msg(self.packer, self.CAN, CC.longActive, gas, accel, stopping, self.brake_request, v_ego_kph=V_CRUISE_MAX))
 
       self.accel = accel
       self.gas = gas
 
     ### ui ###
+    # 判断是否需要发送UI消息
     send_ui = (self.main_on_last != main_on) or (self.lkas_enabled_last != CC.latActive) or (self.steer_alert_last != steer_alert)
-
-    # Send LKA UI message at 1Hz or on UI state change
+    # 以1Hz的频率或UI状态改变时发送LKA UI消息
     if (self.frame % CarControllerParams.LKAS_UI_STEP) == 0 or send_ui:
-        can_sends.append(fordcan.create_lkas_ui_msg(
-            self.packer,
-            self.CAN,
-            main_on,
-            CC.latActive,
-            steer_alert,
-            hud_control,
-            CS.lkas_status_stock_values
-        ))
+      can_sends.append(fordcan.create_lkas_ui_msg(self.packer, self.CAN, main_on, CC.latActive, steer_alert, hud_control, CS.lkas_status_stock_values))
 
-    # Update UI flag when lead car distance changes
+    # 如果前车距离条数发生变化，则设置send_ui为True，并记录当前帧号
     if hud_control.leadDistanceBars != self.lead_distance_bars_last:
-        send_ui = True
-        self.distance_bar_frame = self.frame
+      send_ui = True
+      self.distance_bar_frame = self.frame
 
-    # Send ACC UI message at 5Hz or on UI state change
+    # 以5Hz的频率或UI状态
     if (self.frame % CarControllerParams.ACC_UI_STEP) == 0 or send_ui:
-        show_distance_bars = self.frame - self.distance_bar_frame < 400
-        can_sends.append(fordcan.create_acc_ui_msg(
-            self.packer,
-            self.CAN,
-            self.CP,
-            main_on,
-            CC.latActive,
-            fcw_alert,
-            CS.out.cruiseState.standstill,
-            show_distance_bars,
-            hud_control,
-            CS.acc_tja_status_stock_values
-        ))
+      show_distance_bars = self.frame - self.distance_bar_frame < 400
+      can_sends.append(fordcan.create_acc_ui_msg(self.packer, self.CAN, self.CP, main_on, CC.latActive,
+                                                 fcw_alert, CS.out.cruiseState.standstill, show_distance_bars,
+                                                 hud_control, CS.acc_tja_status_stock_values))
 
     self.main_on_last = main_on
     self.lkas_enabled_last = CC.latActive
     self.steer_alert_last = steer_alert
     self.lead_distance_bars_last = hud_control.leadDistanceBars
-    self.last_accel = accel  # Store current acceleration
-    if self.brake_request:
-      self.brake_request_count += 1
-      self.last_brake_frame = self.frame
-    elif self.frame - self.last_brake_frame > 250:  # Reset after 5 seconds without braking
-      self.brake_request_count = 0
 
     new_actuators = actuators.as_builder()
     new_actuators.curvature = self.apply_curvature_last
