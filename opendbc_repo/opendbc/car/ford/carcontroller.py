@@ -98,7 +98,7 @@ class CarController(CarControllerBase):
         # 期望的方向盘角度(来自模型计算)
         steeringAngleDeg_SP = actuators.steeringAngleDeg  # 期望的方向盘角度(来自模型计算)
         
-        if steeringPressed and abs(steeringAngleDeg_PV - steeringAngleDeg_SP) > 10:
+        if steeringPressed and abs(steeringAngleDeg_PV ) > 45:
           self.human_turn = True
           self.apply_curvature = 0
           self.apply_curvature_last = 0
