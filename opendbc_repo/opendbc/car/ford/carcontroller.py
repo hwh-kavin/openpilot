@@ -101,8 +101,8 @@ class CarController(CarControllerBase):
         if steeringPressed and abs(steeringAngleDeg_PV ) > 45:
           self.human_turn = True
           self.apply_curvature = 0
-          self.apply_curvature_last = 0
-          current_curvature = 0
+          # self.apply_curvature_last = 0
+          # current_curvature = 0
         else:
           self.human_turn = False
 
