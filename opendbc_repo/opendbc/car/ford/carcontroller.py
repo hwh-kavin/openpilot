@@ -107,7 +107,7 @@ class CarController(CarControllerBase):
           self.human_turn = False
 
           # 应用速率限制、曲率误差限制，并裁剪到信号范围
-          current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)  # 横摆率(yawRate)/ 车速(vEgoRaw)
+      current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)  # 横摆率(yawRate)/ 车速(vEgoRaw)
 
       self.apply_curvature_last = apply_ford_curvature_limits(actuators.curvature, self.apply_curvature_last, current_curvature,
                                                               CS.out.vEgoRaw, 0., CC.latActive, self.CP)
