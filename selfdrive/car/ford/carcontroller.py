@@ -75,9 +75,9 @@ class CarController(CarControllerBase):
           if steering_angle > 45:  # Driver takeover - set curvature to 0
             self.apply_curvature_last = actuators.curvature
             self.human_turn = 1
-          elif steering_angle > 10 and self.human_turn
+          elif steering_angle > 10 and self.human_turn:
             self.apply_curvature_last = actuators.curvature*0.3 + current_curvature*0.7
-          else :
+          else:
             self.human_turn = 0
         else:
           self.human_turn = 0
