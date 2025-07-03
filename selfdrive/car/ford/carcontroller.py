@@ -26,6 +26,19 @@ def apply_ford_curvature_limits(apply_curvature, apply_curvature_last, current_c
   return clip(apply_curvature, -CarControllerParams.CURVATURE_MAX, CarControllerParams.CURVATURE_MAX)
 
 
+def calculate_blend_ratio(steering_angle, steering_rate):
+    # 角度影响因子 (0-1)
+    angle_factor = min(1.0, steering_angle / 30.0)  # 30度时达到最大影响
+    
+    # 转向速度影响因子 (0-1)
+    rate_factor = min(1.0, steering_rate / 150.0)  # 150度/秒时达到最大影响
+    
+    # 动态权重计算（角度占60%，速度占40%）
+    dynamic_ratio = 0.6 * angle_factor + 0.4 * rate_factor
+    
+    # 限制在0.1-0.9范围内确保系统稳定性
+    return max(0.1, min(0.9, dynamic_ratio))
+  
 class CarController(CarControllerBase):
   def __init__(self, dbc_name, CP, FPCP, VM):
     self.CP = CP
