@@ -327,7 +327,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     if TICI:
       if not os.path.isfile("/persist/comma/living-in-the-moment"):
         if not Path("/data/media").is_mount():
-          set_offroad_alert_if_changed("Offroad_StorageMissing", True)
+          set_offroad_alert_if_changed("Offroad_StorageMissing", False)
         else:
           # check for bad NVMe
           try:
