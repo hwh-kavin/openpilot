@@ -69,20 +69,38 @@ class CarController(CarControllerBase):
         #计算当前实际曲率
         current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
         
+        if CS.out.steeringPressed:  # Driver takeover
+          steering_angle = abs(CS.out.steeringAngleDeg)   #模型角度
+          steering_rate = abs(CS.out.steeringRateDeg)     #模型曲率
+    
+          if steering_angle > 40 or steering_rate > 100:
+            self.apply_curvature_last = 0
+            self.human_turn = 2
+          elif steering_angle > 10 and (self.human_turn or steering_rate > 50):
+            blend_ratio = calculate_blend_ratio(steering_angle, steering_rate)
+            self.apply_curvature_last = actuators.curvature*(1-blend_ratio) + current_curvature*blend_ratio
+            self.human_turn = 1
+          else:
+            self.human_turn = 0
+        else:
+          self.human_turn = 0
+
+'''
         # Handle steering wheel takeover logic
-        if CS.out.steeringPressed:
+        if CS.out.steeringPressed:  # Driver takeover
           steering_angle = abs(CS.out.steeringAngleDeg)
           if steering_angle > 45:  # Driver takeover - set curvature to 0
             self.apply_curvature_last = actuators.curvature
             self.human_turn = 1
           elif steering_angle > 10 and self.human_turn:
             self.apply_curvature_last = actuators.curvature*0.3 + current_curvature*0.7
-          else:
+          else :
             self.human_turn = 0
         else:
           self.human_turn = 0
+'''
         # apply rate limits, curvature error limit, and clip to signal range
-        current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
+        # current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
         # PFEIFER - FSH {{
         # Ignore limits while overriding, this prevents pull when releasing the wheel. This will cause messages to be
         # blocked by panda safety, usually while the driver is overriding and limited to at most 1 message while the
