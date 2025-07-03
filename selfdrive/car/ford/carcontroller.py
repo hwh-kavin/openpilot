@@ -25,19 +25,18 @@ def apply_ford_curvature_limits(apply_curvature, apply_curvature_last, current_c
 
   return clip(apply_curvature, -CarControllerParams.CURVATURE_MAX, CarControllerParams.CURVATURE_MAX)
 
-
 def calculate_blend_ratio(steering_angle, steering_rate):
-    # 角度影响因子 (0-1)
-    angle_factor = min(1.0, steering_angle / 30.0)  # 30度时达到最大影响
+  # 角度影响因子 (0-1)
+  angle_factor = min(1.0, steering_angle / 30.0)  # 30度时达到最大影响
     
-    # 转向速度影响因子 (0-1)
-    rate_factor = min(1.0, steering_rate / 150.0)  # 150度/秒时达到最大影响
+  # 转向速度影响因子 (0-1)
+  rate_factor = min(1.0, steering_rate / 150.0)  # 150度/秒时达到最大影响
     
-    # 动态权重计算（角度占60%，速度占40%）
-    dynamic_ratio = 0.6 * angle_factor + 0.4 * rate_factor
+  # 动态权重计算（角度占60%，速度占40%）
+  dynamic_ratio = 0.6 * angle_factor + 0.4 * rate_factor
     
-    # 限制在0.1-0.9范围内确保系统稳定性
-    return max(0.1, min(0.9, dynamic_ratio))
+  # 限制在0.1-0.9范围内确保系统稳定性
+  return max(0.1, min(0.9, dynamic_ratio))
   
 class CarController(CarControllerBase):
   def __init__(self, dbc_name, CP, FPCP, VM):
@@ -52,6 +51,7 @@ class CarController(CarControllerBase):
     self.lkas_enabled_last = False
     self.steer_alert_last = False
     self.lead_distance_bars_last = None
+    self.human_turn = 0
 
   def update(self, CC, CS, now_nanos, frogpilot_toggles):
     can_sends = []
@@ -81,37 +81,32 @@ class CarController(CarControllerBase):
       if CC.latActive:
         #计算当前实际曲率
         current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
-        
+
+        # Handle steering wheel takeover logic
         if CS.out.steeringPressed:  # Driver takeover
-          steering_angle = abs(CS.out.steeringAngleDeg)   #模型角度
-          steering_rate = abs(CS.out.steeringRateDeg)     #模型曲率
+          steering_angle = abs(CS.out.steeringAngleDeg)   
+          steering_rate = abs(CS.out.steeringRateDeg)     
     
-          if steering_angle > 40 or steering_rate > 100:
+          if steering_angle > 40 :
             self.apply_curvature_last = 0
             self.human_turn = 2
-          elif steering_angle > 10 and (self.human_turn or steering_rate > 50):
+          elif steering_angle > 10 and self.human_turn :
             blend_ratio = calculate_blend_ratio(steering_angle, steering_rate)
             self.apply_curvature_last = actuators.curvature*(1-blend_ratio) + current_curvature*blend_ratio
             self.human_turn = 1
+
+          # steering_Rate = abs(CS.out.yawRate)
+          # if steering_Rate > 45:  # Driver takeover - set curvature to 0
+            # self.apply_curvature_last = actuators.curvature
+            # self.human_turn = 1
+          # elif steering_Rate > 10 and self.human_turn:
+            # self.apply_curvature_last = actuators.curvature*0.3 + current_curvature*0.7
+
           else:
             self.human_turn = 0
         else:
           self.human_turn = 0
 
-'''
-        # Handle steering wheel takeover logic
-        if CS.out.steeringPressed:  # Driver takeover
-          steering_angle = abs(CS.out.steeringAngleDeg)
-          if steering_angle > 45:  # Driver takeover - set curvature to 0
-            self.apply_curvature_last = actuators.curvature
-            self.human_turn = 1
-          elif steering_angle > 10 and self.human_turn:
-            self.apply_curvature_last = actuators.curvature*0.3 + current_curvature*0.7
-          else :
-            self.human_turn = 0
-        else:
-          self.human_turn = 0
-'''
         # apply rate limits, curvature error limit, and clip to signal range
         # current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
         # PFEIFER - FSH {{
