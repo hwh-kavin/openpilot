@@ -279,19 +279,19 @@ def modify_hardwared_py(filename):
             with open(filename, 'w', encoding='utf-8') as f:
                 f.writelines(new_lines)
 
-        print_status(filename, modified, "Import, tici support block, and storage alert modified.")
-        return True
+        print_status(文件名, 已修改,“导入、tici 支持块和存储警报已修改。”)
+        返回 True
 
-    except Exception as e:
-        print(f"  Error modifying {filename}: {e}", file=sys.stderr)
-        return False
+异常 作为是：
+        print(f" 错误修改{filename}: {e}", file=sys.stderr)
+        返回 False
 
 def modify_launch_script(filename):
-    print(f"Modifying {filename}...")
+    print(f"修改{filename}...")
     if not os.path.exists(filename):
-        print(f"  File not found: {filename}", file=sys.stderr)
-        return False
-    try:
+        print(f" 文件未找到：{filename}", file=sys.stderr)
+        返回 False
+    尝试:
         with open(filename, 'r', encoding='utf-8') as f:
             lines = f.readlines()
 
@@ -299,22 +299,22 @@ def modify_launch_script(filename):
             "export API_HOST=https://api.konik.ai\n",
             "export ATHENA_HOST=wss://athena.konik.ai\n",
             "#export MAPS_HOST=https://api.konik.ai/maps\n",
-            "export MAPBOX_TOKEN='YOUR_MAPBOX_TOKEN'\n"
+            "export MAPBOX_TOKEN='pk.eyJ1IjoibXJvbmVjYyIsImEiOiJjbHhqbzlkbTYxNXUwMmtzZjdoMGtrZnVvIn0.SC7GNLtMFUGDgC2bAZcKzg'\n"
         ]
 
         if all(l in lines for l in lines_to_insert):
             print_status(filename, False, "")
-            return True
+            返回 True
 
         content_without_inserts = [l for l in lines if l not in lines_to_insert]
-        idx = 1 if content_without_inserts and content_without_inserts[0].startswith("#!") else 0
+idx =1如果content_without_inserts且[0].startswith("#!")否则
         new_content = content_without_inserts[:idx] + lines_to_insert + content_without_inserts[idx:]
 
         with open(filename, 'w', encoding='utf-8') as f:
             f.writelines(new_content)
 
         print_status(filename, True, "Environment lines inserted/updated.")
-        return True
+        返回 True
     except Exception as e:
         print(f"  Error modifying {filename}: {e}", file=sys.stderr)
         return False
