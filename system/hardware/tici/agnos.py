@@ -158,7 +158,8 @@ def clear_partition_hash(target_slot_number: int, partition: dict) -> None:
     os.sync()
 
 
-def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog):
+def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog, 
+                             total_size: int = 0, bytes_written: int = 0):
   path = get_partition_path(target_slot_number, partition)
   downloader = StreamingDecompressor(partition['url'])
 
@@ -170,10 +171,16 @@ def extract_compressed_image(target_slot_number: int, partition: dict, cloudlog)
     for chunk in f(downloader):
       raw_hash.update(chunk)
       out.write(chunk)
-      p = int(out.tell() / partition['size'] * 100)
+      if total_size > 0:
+        # Global progress across all partitions
+        current_total = bytes_written + out.tell()
+        p = int(current_total / total_size * 100)
+      else:
+        # Fallback to per-partition progress
+        p = int(out.tell() / partition['size'] * 100)
       if p != last_p:
         last_p = p
-        print(f"Installing {partition['name']}: {p}", flush=True)
+        print(f"Installing: {p}", flush=True)
 
     if raw_hash.hexdigest().lower() != partition['hash_raw'].lower():
       raise Exception(f"Raw hash mismatch '{raw_hash.hexdigest().lower()}'")

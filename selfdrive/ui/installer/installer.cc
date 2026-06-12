@@ -135,7 +135,7 @@ int doInstall() {
 
 int freshClone() {
   LOGD("Doing fresh clone");
-  std::string cmd = util::string_format("git clone --progress %s -b %s --depth=1 --recurse-submodules %s 2>&1",
+  std::string cmd = util::string_format("git clone --progress %s -b %s --depth=1 %s 2>&1",
                                         GIT_URL.c_str(), migrated_branch.c_str(), TMP_INSTALL_PATH);
   return executeGitCommand(cmd);
 }
@@ -155,9 +155,12 @@ int cachedFetch(const std::string &cache) {
 int executeGitCommand(const std::string &cmd) {
   static const std::array stages = {
     // prefix, weight in percentage
-    std::pair{"Receiving objects: ", 91},
-    std::pair{"Resolving deltas: ", 2},
-    std::pair{"Updating files: ", 7},
+    // with the repo fully integrated, checkout can take a non-trivial
+    // amount of time after receiving objects and resolving deltas.
+    std::pair{"Receiving objects: ", 70},
+    std::pair{"Resolving deltas: ", 5},
+    std::pair{"Checking out files: ", 20},
+    std::pair{"Updating files: ", 5},
   };
 
   FILE *pipe = popen(cmd.c_str(), "r");
@@ -194,7 +197,6 @@ void cloneFinished(int exitCode) {
   assert(err == 0);
   run(("git checkout " + migrated_branch).c_str());
   run(("git reset --hard origin/" + migrated_branch).c_str());
-  run("git submodule update --init");
 
   // move into place
   run(("rm -f " + VALID_CACHE_PATH).c_str());
