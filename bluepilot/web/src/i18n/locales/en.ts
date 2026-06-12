@@ -143,6 +143,7 @@ export const en = {
   'logs.loading': 'Loading logs...',
   'logs.empty': 'No logs available',
   'logs.fetchError': 'Failed to fetch logs',
+  'logs.clearError': 'Failed to clear logs',
 
   'toast.rateLimitDriving': 'Rate limited while driving. Retry in {seconds}s',
   'toast.rateLimit': 'Too many requests. Retry in {seconds}s',

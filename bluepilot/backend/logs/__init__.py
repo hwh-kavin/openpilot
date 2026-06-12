@@ -11,6 +11,7 @@ from bluepilot.backend.logs.cereal import extract_cereal_messages, serialize_cer
 from bluepilot.backend.logs.manager_logs import (
     parse_manager_log_line,
     read_recent_manager_logs,
+    clear_manager_logs,
 )
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     'serialize_cereal_object',
     'parse_manager_log_line',
     'read_recent_manager_logs',
+    'clear_manager_logs',
 ]

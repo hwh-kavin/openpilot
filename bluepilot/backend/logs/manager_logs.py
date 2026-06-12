@@ -152,7 +152,7 @@ def read_recent_manager_logs(max_lines: int = 1000, max_files: int = 25) -> Tupl
     ]
 
     if not files:
-        return False, "No swaglog files found"
+        return True, ""
 
     files.sort()
     files = files[-max_files:]
@@ -175,6 +175,30 @@ def read_recent_manager_logs(max_lines: int = 1000, max_files: int = 25) -> Tupl
             logger.debug("Failed reading %s: %s", path, exc)
 
     if not lines:
-        return False, "No manager log entries found"
+        return True, ""
 
     return True, '\n'.join(lines)
+
+
+def clear_manager_logs() -> Tuple[bool, str]:
+    """
+    Delete rotating swaglog files so the logs page starts fresh.
+
+    Returns:
+        Tuple[success, message]
+    """
+    log_dir = Paths.swaglog_root()
+    if not os.path.isdir(log_dir):
+        return False, f"Log directory not found: {log_dir}"
+
+    deleted = 0
+    for entry in os.listdir(log_dir):
+        if not entry.startswith('swaglog.'):
+            continue
+        try:
+            os.remove(os.path.join(log_dir, entry))
+            deleted += 1
+        except OSError as exc:
+            logger.warning("Failed to delete swaglog file %s: %s", entry, exc)
+
+    return True, f"Deleted {deleted} swaglog file(s)"

@@ -29,15 +29,11 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller, LineSeparator
 
 from openpilot.system.ui.sunnypilot.lib.utils import NoElideButtonAction
 from openpilot.system.ui.sunnypilot.lib.styles import style
-from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, Spacer
+from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP
 from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeFolder, TreeNode, TreeOptionDialog
 from openpilot.system.ui.sunnypilot.widgets.progress_bar import progress_item
 
-from openpilot.system.ui.widgets.keyboard import Keyboard
-from openpilot.selfdrive.ui.sunnypilot.onroad.amap_tile_cache import AMAP_TILE_ROOT, dir_size_bytes
-
 MAP_PATH = Path(Paths.mapd_root()) / "offline"
-AMAP_TILE_PATH = Path(Paths.mapd_root()) / "amap_tiles"
 
 SECTION_HEADER_HEIGHT = 110
 SECTION_SUBTITLE_FONT_SIZE = 36
@@ -85,11 +81,8 @@ class OSMLayout(Widget):
     self._current_percent = 0
     self._last_map_size_update = 0
     self._mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else ui_state.params
-    self._last_amap_size_update = 0
-    self._amap_keyboard = Keyboard(min_text_size=1)
     self._initialize_items()
     self._update_map_size()
-    self._update_amap_tile_size()
     self._progress.set_visible(False)
     self._state_btn.set_visible(False)
     self._mapd_version.action_item.set_text(ui_state.params.get("MapdVersion") or "Loading...")
@@ -100,10 +93,6 @@ class OSMLayout(Widget):
       tr("OSM Offline Maps"),
       tr("Speed limits, road names, and offline navigation data"),
     )
-    self._amap_section = SectionHeader(
-      tr("Amap Driving Map"),
-      tr("Map tiles shown in the driving split-screen view"),
-    )
 
     self._mapd_version = text_item(tr("Mapd Version"), lambda: ui_state.params.get("MapdVersion") or "Loading...")
     self._delete_maps_btn = ListItemSP(tr("Downloaded Database"), action_item=NoElideButtonAction(tr("DELETE"), enabled=True), callback=self._delete_maps)
@@ -111,9 +100,6 @@ class OSMLayout(Widget):
     self._update_btn = ListItemSP(tr("Database Update"), action_item=NoElideButtonAction(tr("CHECK"), enabled=True), callback=self._update_db)
     self._country_btn = ListItemSP(tr("Country"), action_item=NoElideButtonAction(tr("SELECT"), enabled=True), callback=lambda: self._select_region("Country"))
     self._state_btn = ListItemSP(tr("State"), action_item=NoElideButtonAction(tr("SELECT"), enabled=True), callback=lambda: self._select_region("State"))
-
-    self._amap_key_btn = ListItemSP(tr("Amap API Key"), action_item=NoElideButtonAction(tr("EDIT"), enabled=True), callback=self._edit_amap_key)
-    self._delete_amap_tiles_btn = ListItemSP(tr("Downloaded Map Tiles"), action_item=NoElideButtonAction(tr("DELETE"), enabled=True), callback=self._delete_amap_tiles)
 
     self.items = [
       self._osm_section,
@@ -124,14 +110,7 @@ class OSMLayout(Widget):
       self._update_btn,
       self._country_btn,
       self._state_btn,
-      Spacer(24),
-      LineSeparator(height=10),
-      self._amap_section,
-      LineSeparator(),
-      self._amap_key_btn,
-      self._delete_amap_tiles_btn,
     ]
-    self._refresh_amap_key_label()
 
   def _show_confirm(self, msg, confirm_text, func):
     gui_app.push_widget(ConfirmDialog(msg, confirm_text, callback=lambda res: func() if res == DialogResult.CONFIRM else None))
@@ -150,58 +129,8 @@ class OSMLayout(Widget):
         pass
     self._delete_maps_btn.action_item.set_value(f"{total_size / 1024 ** 2:.2f} MB" if total_size < 1024 ** 3 else f"{total_size / 1024 ** 3:.2f} GB")
 
-  def calculate_amap_tile_size(self):
-    total_size = dir_size_bytes(AMAP_TILE_PATH)
-    self._delete_amap_tiles_btn.action_item.set_value(
-      f"{total_size / 1024 ** 2:.2f} MB" if total_size < 1024 ** 3 else f"{total_size / 1024 ** 3:.2f} GB"
-    )
-
   def _update_map_size(self):
     threading.Thread(target=self.calculate_size, daemon=True).start()
-
-  def _update_amap_tile_size(self):
-    threading.Thread(target=self.calculate_amap_tile_size, daemon=True).start()
-
-  def _refresh_amap_key_label(self):
-    key = ui_state.params.get("AmapApiKey") or ""
-    if len(key) <= 4:
-      label = key
-    else:
-      label = f"****{key[-4:]}"
-    self._amap_key_btn.action_item.set_value(label)
-
-  def _edit_amap_key(self):
-    self._amap_keyboard.reset()
-    self._amap_keyboard.set_title(tr("Amap API Key"))
-    self._amap_keyboard.set_text(ui_state.params.get("AmapApiKey") or "")
-    self._amap_keyboard.set_callback(self._on_amap_key_submit)
-    gui_app.push_widget(self._amap_keyboard)
-
-  def _on_amap_key_submit(self, result: DialogResult):
-    if result != DialogResult.CONFIRM:
-      return
-    key = self._amap_keyboard.text.strip()
-    if key:
-      ui_state.params.put("AmapApiKey", key)
-    else:
-      ui_state.params.remove("AmapApiKey")
-    self._refresh_amap_key_label()
-
-  def _do_delete_amap_tiles(self):
-    from openpilot.selfdrive.ui.sunnypilot.onroad.amap_tile_view import AmapTileView
-    AmapTileView.clear_disk_cache()
-    self._delete_amap_tiles_btn.action_item.set_enabled(True)
-    self._delete_amap_tiles_btn.action_item.set_text(tr("DELETE"))
-    self._update_amap_tile_size()
-
-  def _on_confirm_delete_amap_tiles(self):
-    self._delete_amap_tiles_btn.action_item.set_enabled(False)
-    self._delete_amap_tiles_btn.action_item.set_text("DELETING...")
-    threading.Thread(target=self._do_delete_amap_tiles, daemon=True).start()
-
-  def _delete_amap_tiles(self):
-    self._show_confirm(tr("This will delete ALL downloaded Amap map tiles.\n\nAre you sure you want to continue?"),
-                       tr("Yes, delete all tiles"), self._on_confirm_delete_amap_tiles)
 
   def _do_delete_maps(self):
     if MAP_PATH.exists():
@@ -349,17 +278,12 @@ class OSMLayout(Widget):
 
   def show_event(self):
     self._scroller.show_event()
-    self._refresh_amap_key_label()
-    self._update_amap_tile_size()
 
   def _update_state(self):
     now = monotonic()
     if now - self._last_map_size_update >= 1.0:
       self._last_map_size_update = now
       self._update_labels()
-    if now - self._last_amap_size_update >= 1.0:
-      self._last_amap_size_update = now
-      self._update_amap_tile_size()
 
   def _render(self, rect):
     self._scroller.render(rect)

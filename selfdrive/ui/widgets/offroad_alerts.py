@@ -13,6 +13,7 @@ from openpilot.system.ui.lib.wrap_text import wrap_text
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.html_render import HtmlRenderer
 from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
+from openpilot.selfdrive.ui.lib.alert_logger import ui_alert_logger
 
 
 class AlertColors:
@@ -235,6 +236,7 @@ class OffroadAlert(AbstractAlert):
 
     self.excessive_actuation_btn.set_visible(excessive_actuation)
     self.snooze_btn.set_visible(connectivity_needed and not excessive_actuation)
+    ui_alert_logger.sync_offroad(self.sorted_alerts)
     return active_count
 
   def get_content_height(self) -> float:
@@ -327,6 +329,7 @@ class UpdateAlert(AbstractAlert):
     else:
       self._html_renderer.parse_html_content(no_release_notes)
 
+    ui_alert_logger.log_update_available(update_available)
     return update_available
 
   def get_content_height(self) -> float:

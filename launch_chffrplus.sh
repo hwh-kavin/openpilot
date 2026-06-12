@@ -101,6 +101,11 @@ function launch {
   if [ ! -s "$DIR/prebuilt" ]; then
     rm -f "$DIR/prebuilt"
     ./build.py
+  elif [ "$DIR/common/params_keys.h" -nt "$DIR/common/params_pyx.so" ]; then
+    echo "params_keys.h changed, rebuilding params..."
+    cd "$DIR"
+    scons common/params_pyx.so -j4
+    cd "$DIR/system/manager"
   fi
   ./manager.py
 

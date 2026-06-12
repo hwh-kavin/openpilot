@@ -7,6 +7,7 @@ from enum import IntEnum
 from openpilot.common.params import Params
 from openpilot.common.realtime import drop_realtime
 from openpilot.selfdrive.selfdrived.alertmanager import OFFROAD_ALERTS
+from openpilot.selfdrive.ui.lib.alert_logger import ui_alert_logger
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
@@ -306,6 +307,7 @@ class MiciOffroadAlerts(Scroller):
 
     self._scroller.items.sort(key=lambda w: -w.alert_data.severity)
 
+    ui_alert_logger.sync_offroad(self.sorted_alerts)
     return active_count
 
   def _update_state(self):

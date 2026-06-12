@@ -13,20 +13,12 @@ from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
 
 if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings import SettingsLayoutSP as SettingsLayout
-  from openpilot.selfdrive.ui.sunnypilot.onroad.amap_tile_view import AmapTileView
-  from openpilot.selfdrive.ui.sunnypilot.onroad.map_split_view import MapSplitOnroadView
 
 
 class MainState(IntEnum):
   HOME = 0
   SETTINGS = 1
   ONROAD = 2
-
-
-class OnroadPanelMode(IntEnum):
-  FULL = 0
-  SIDEBAR = 1
-  MAP_SPLIT = 2
 
 
 class MainLayout(Widget):
@@ -38,19 +30,12 @@ class MainLayout(Widget):
     self._sidebar = Sidebar()
     self._current_mode = MainState.HOME
     self._prev_onroad = False
-    self._onroad_panel_mode = OnroadPanelMode.FULL
 
     # Initialize layouts
     self._home_layout = HomeLayout()
     self._home_body_layout = BodyLayout()
     self._road_view = AugmentedRoadView()
     self._layouts = {MainState.HOME: self._home_layout, MainState.SETTINGS: SettingsLayout(), MainState.ONROAD: self._road_view}
-
-    self._amap_view: AmapTileView | None = None
-    self._map_split_view: MapSplitOnroadView | None = None
-    if gui_app.sunnypilot_ui():
-      self._amap_view = AmapTileView()
-      self._map_split_view = MapSplitOnroadView(self._road_view, self._amap_view)
 
     self._sidebar_rect = rl.Rectangle(0, 0, 0, 0)
     self._content_rect = rl.Rectangle(0, 0, 0, 0)
@@ -67,12 +52,6 @@ class MainLayout(Widget):
 
   def _render(self, _):
     self._handle_onroad_transition()
-    if self._amap_view is not None and self._current_mode == MainState.ONROAD:
-      self._amap_view.tick()
-      if self._onroad_panel_mode == OnroadPanelMode.MAP_SPLIT and not self._amap_view.can_enter_map_split():
-        self._onroad_panel_mode = OnroadPanelMode.FULL
-        self._sidebar.set_visible(False)
-        self._road_view.set_draw_border(True)
     self._render_main_content()
 
   def _setup_callbacks(self):
@@ -112,12 +91,10 @@ class MainLayout(Widget):
       # Don't hide sidebar from interactive timeout
       if self._current_mode != MainState.ONROAD:
         self._sidebar.set_visible(False)
-        self._onroad_panel_mode = OnroadPanelMode.FULL
       self._set_current_layout(MainState.ONROAD)
     else:
       self._set_current_layout(MainState.HOME)
       self._sidebar.set_visible(True)
-      self._onroad_panel_mode = OnroadPanelMode.FULL
 
   def _set_current_layout(self, layout: MainState):
     if layout != self._current_mode:
@@ -141,27 +118,7 @@ class MainLayout(Widget):
     self._pm.send('bookmarkButton', user_bookmark)
 
   def _on_onroad_clicked(self):
-    if self._amap_view is None:
-      self._sidebar.set_visible(not self._sidebar.is_visible)
-      return
-
-    map_available = self._amap_view.can_enter_map_split()
-
-    if self._onroad_panel_mode == OnroadPanelMode.FULL:
-      self._onroad_panel_mode = OnroadPanelMode.SIDEBAR
-      self._sidebar.set_visible(True)
-    elif self._onroad_panel_mode == OnroadPanelMode.SIDEBAR:
-      if map_available:
-        self._onroad_panel_mode = OnroadPanelMode.MAP_SPLIT
-        self._sidebar.set_visible(False)
-        self._road_view.set_draw_border(False)
-      else:
-        self._onroad_panel_mode = OnroadPanelMode.FULL
-        self._sidebar.set_visible(False)
-    else:
-      self._onroad_panel_mode = OnroadPanelMode.FULL
-      self._sidebar.set_visible(False)
-      self._road_view.set_draw_border(True)
+    self._sidebar.set_visible(not self._sidebar.is_visible)
 
   def _on_body_changed(self):
     self._layouts[MainState.HOME] = self._home_body_layout if ui_state.is_body else self._home_layout
@@ -169,10 +126,6 @@ class MainLayout(Widget):
 
   def _render_main_content(self):
     self._update_layout_rects()
-
-    if self._onroad_panel_mode == OnroadPanelMode.MAP_SPLIT and self._map_split_view is not None:
-      self._map_split_view.render(self._rect)
-      return
 
     if self._sidebar.is_visible:
       self._sidebar.render(self._sidebar_rect)

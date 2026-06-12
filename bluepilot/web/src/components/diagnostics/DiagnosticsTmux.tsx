@@ -27,8 +27,12 @@ export function DiagnosticsTmux() {
     }
 
     const data: LogResponse = await response.json()
-    if (!data.success || !data.output) {
-      throw new Error(data.error || 'No log output')
+    if (!data.success) {
+      throw new Error(data.error || 'Failed to fetch logs')
+    }
+
+    if (!data.output) {
+      return []
     }
 
     return data.output.split('\n').filter(line => line.trim())
@@ -102,8 +106,19 @@ export function DiagnosticsTmux() {
     setIsPaused(prev => !prev)
   }
 
-  const handleClear = () => {
-    setLogLines([])
+  const handleClear = async () => {
+    try {
+      const response = await fetch('/api/manager-logs/clear', { method: 'POST' })
+      const data = await response.json()
+      if (!response.ok || !data.success) {
+        throw new Error(data.error || 'Failed to clear logs')
+      }
+      setLogLines([])
+      setError(null)
+    } catch (err) {
+      console.error('Failed to clear logs:', err)
+      setError('Failed to clear logs')
+    }
   }
 
   const handleRefresh = async () => {

@@ -9,6 +9,7 @@ from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import Label
+from openpilot.selfdrive.ui.lib.alert_logger import ui_alert_logger
 
 AlertSize = log.SelfdriveState.AlertSize
 AlertStatus = log.SelfdriveState.AlertStatus
@@ -116,6 +117,7 @@ class AlertRenderer(Widget):
 
   def _render(self, rect: rl.Rectangle):
     alert = self.get_alert(ui_state.sm)
+    ui_alert_logger.log_onroad(alert)
 
     if gui_app.sunnypilot_ui():
       ui_state.onroad_brightness_handle_alerts(ui_state, alert)

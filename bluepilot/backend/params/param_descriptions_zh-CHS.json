@@ -2,7 +2,6 @@
   "AdbEnabled": "ADB（Android 调试桥）允许通过 USB 或网络连接设备。详见 https://docs.comma.ai/how-to/connect-to-comma",
   "AlphaLongitudinalEnabled": "警告：本车型的 sunnypilot 纵向控制处于 alpha 阶段，可能会禁用自动紧急制动（AEB）。启用后，将使用 sunnypilot 纵向控制替代车辆原厂 ACC。建议同时启用实验模式。更改此设置后，若车辆已上电，sunnypilot 将重启。",
   "AlwaysOnDM": "即使在 sunnypilot 未激活时也启用驾驶员监控。",
-  "AmapApiKey": "高德地图 API 密钥，用于行驶界面分屏地图瓦片显示。",
   "AutoLaneChangeBsmDelay": "当盲区监测（BSM）检测到盲区内有车辆时，为变道启用延迟计时。",
   "AutoLaneChangeTimer": "使用转向灯时，设置自动变道延迟时间。若已设置计时，则无需轻推方向盘即可自动变道。默认为轻推（Nudge）。",
   "BlindSpot": "若车辆支持 BSM，当盲区内检测到车辆时将显示警示。",

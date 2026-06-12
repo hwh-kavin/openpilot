@@ -42,11 +42,11 @@
         return;
       }
       const data = await response.json();
-      if (!data.success || !data.output) {
+      if (!data.success) {
         return;
       }
 
-      const lines = data.output.split('\n').filter(function (line) {
+      const lines = (data.output || '').split('\n').filter(function (line) {
         return line.trim();
       });
 
@@ -85,6 +85,28 @@
         el.style.display = 'none';
       }
     });
+  }
+
+  async function clearLogs() {
+    seenLines.clear();
+    bootstrapped = false;
+
+    try {
+      const response = await fetch('/api/manager-logs/clear', { method: 'POST' });
+      if (!response.ok) {
+        console.warn('[portal-logs] clear request failed', response.status);
+      }
+    } catch (error) {
+      console.warn('[portal-logs] clear failed', error);
+    }
+
+    document.querySelectorAll('.console-output').forEach(function (el) {
+      el.textContent = '';
+    });
+  }
+
+  function isClearButton(label) {
+    return label === 'clear' || label === '清除' || label === '清空';
   }
 
   function startPolling() {
@@ -158,9 +180,10 @@
       return;
     }
     const label = (button.textContent || '').trim().toLowerCase();
-    if (label === 'clear' || label === '清除') {
-      seenLines.clear();
-      bootstrapped = false;
+    if (isClearButton(label)) {
+      event.preventDefault();
+      event.stopPropagation();
+      clearLogs();
     }
   });
 })();

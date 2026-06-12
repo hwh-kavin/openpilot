@@ -143,6 +143,7 @@ export const zhCHS: Record<TranslationKey, string> = {
   'logs.loading': '正在加载日志...',
   'logs.empty': '暂无日志',
   'logs.fetchError': '获取日志失败',
+  'logs.clearError': '清空日志失败',
 
   'toast.rateLimitDriving': '行驶中请求受限，{seconds} 秒后重试',
   'toast.rateLimit': '请求过于频繁，{seconds} 秒后重试',

@@ -1328,20 +1328,6 @@
               ]
             }
           ]
-        },
-        {
-          "id": "amap",
-          "title": "Amap Driving Map",
-          "description": "Gaode map tiles for the onroad split-map view.",
-          "items": [
-            {
-              "key": "AmapApiKey",
-              "widget": "button",
-              "title": "Amap API Key",
-              "description": "API key for Gaode/Amap map tiles. Required for the driving map overlay.",
-              "action": "set_amap_api_key"
-            }
-          ]
         }
       ]
     },

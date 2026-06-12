@@ -10,6 +10,7 @@ from cereal import log
 from openpilot.selfdrive.ui import UI_BORDER_SIZE
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui import DeveloperUiState
+from openpilot.selfdrive.ui.lib.alert_logger import ui_alert_logger
 from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 
@@ -71,6 +72,24 @@ class CircularAlertsRenderer:
       self._e2e_alert_frame = 0
       if not self._is_standstill:
         self._standstill_elapsed_time = 0.0
+
+    self._log_circular_alert()
+
+  def _log_circular_alert(self) -> None:
+    alert_id = None
+    text = ""
+    if self._allow_e2e_alerts:
+      if self._e2e_alert_display_timer > 0:
+        if self._green_light_alert:
+          alert_id = "green_light"
+        elif self._lead_depart_alert:
+          alert_id = "lead_depart"
+        text = self._alert_text
+      elif ui_state.standstill_timer and self._is_standstill:
+        alert_id = "standstill"
+        text = self._alert_text
+
+    ui_alert_logger.log_circular(alert_id, text)
 
   def render(self, rect: rl.Rectangle) -> None:
     if not self._allow_e2e_alerts or (self._e2e_alert_display_timer <= 0 and not (ui_state.standstill_timer and self._is_standstill)):

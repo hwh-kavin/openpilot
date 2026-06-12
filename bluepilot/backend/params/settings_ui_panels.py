@@ -48,9 +48,7 @@ ICON_BY_PANEL = {
   "bp_developer_panel": "code",
 }
 
-STRING_PARAM_ACTIONS = {
-  "AmapApiKey": "set_amap_api_key",
-}
+STRING_PARAM_ACTIONS: dict[str, str] = {}
 
 
 def _resolve_unit(unit: Any) -> str | None:

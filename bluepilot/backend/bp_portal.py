@@ -161,7 +161,7 @@ from bluepilot.backend.storage import (
 # Log extraction
 from bluepilot.backend.logs import (
     extract_log_messages, extract_cereal_messages,
-    read_recent_manager_logs,
+    read_recent_manager_logs, clear_manager_logs,
 )
 
 # File operations
@@ -2915,6 +2915,28 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                     }, 500)
                 return
 
+            elif path == '/api/manager-logs/clear':
+                # Delete swaglog files so the logs page can start fresh
+                try:
+                    ok, message = clear_manager_logs()
+                    if ok:
+                        self.send_json_response({
+                            'success': True,
+                            'message': message,
+                        })
+                    else:
+                        self.send_json_response({
+                            'success': False,
+                            'error': message,
+                        }, 500)
+                except Exception as e:
+                    logger.exception("Error clearing manager logs")
+                    self.send_json_response({
+                        'success': False,
+                        'error': str(e),
+                    }, 500)
+                return
+
             # Check if onroad for route-related write operations
             # Params/settings can be modified while driving, routes cannot
             if is_onroad():
@@ -2922,6 +2944,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                 allowed_onroad_post = [
                     '/api/params',
                     '/api/manager-logs/stream',
+                    '/api/manager-logs/clear',
                 ]
                 is_allowed_onroad = any(path.startswith(ep) for ep in allowed_onroad_post)
 
@@ -3448,30 +3471,6 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                             'success': True,
                             'message': 'Password saved. Reboot required to apply changes.',
                             'requires_reboot': True
-                        })
-
-                    elif action == 'set_amap_api_key':
-                        api_key = data.get('api_key', '')
-                        if api_key is None:
-                            self.send_json_response({
-                                'success': False,
-                                'error': 'Missing api_key field'
-                            }, 400)
-                            return
-
-                        if api_key == '':
-                            params.remove('AmapApiKey')
-                        else:
-                            params.put('AmapApiKey', api_key.strip())
-
-                        self.send_json_response({
-                            'success': True,
-                            'message': 'Amap API key saved.',
-                        })
-                        broadcast_websocket_event(WebSocketEvent.PARAM_UPDATED, {
-                            'key': 'AmapApiKey',
-                            'value': api_key.strip() if api_key else None,
-                            'removed': api_key == '',
                         })
 
                     elif action == 'view_error_log':
