@@ -16,6 +16,8 @@ export FPS=20
 export QCOM_PRIORITY=12
 
 # C3 (comma tici) stays on AGNOS 16; C3X branches may target newer AGNOS.
-export AGNOS_VERSION="16"
+if [ -z "$AGNOS_VERSION" ]; then
+  export AGNOS_VERSION="18.4"
+fi
 
 export STAGING_ROOT="/data/safe_staging"
