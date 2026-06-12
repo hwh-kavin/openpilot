@@ -1,0 +1,181 @@
+import pyray as rl
+from enum import IntEnum
+import cereal.messaging as messaging
+from openpilot.system.ui.lib.application import gui_app
+from openpilot.system.ui.widgets import Widget
+from openpilot.selfdrive.ui.layouts.sidebar import Sidebar, SIDEBAR_WIDTH
+from openpilot.selfdrive.ui.layouts.home import HomeLayout
+from openpilot.selfdrive.ui.layouts.settings.settings import SettingsLayout, PanelType
+from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView
+from openpilot.selfdrive.ui.ui_state import device, ui_state
+from openpilot.selfdrive.ui.layouts.onboarding import OnboardingWindow
+from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
+
+if gui_app.sunnypilot_ui():
+  from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings import SettingsLayoutSP as SettingsLayout
+  from openpilot.selfdrive.ui.sunnypilot.onroad.amap_tile_view import AmapTileView
+  from openpilot.selfdrive.ui.sunnypilot.onroad.map_split_view import MapSplitOnroadView
+
+
+class MainState(IntEnum):
+  HOME = 0
+  SETTINGS = 1
+  ONROAD = 2
+
+
+class OnroadPanelMode(IntEnum):
+  FULL = 0
+  SIDEBAR = 1
+  MAP_SPLIT = 2
+
+
+class MainLayout(Widget):
+  def __init__(self):
+    super().__init__()
+
+    self._pm = messaging.PubMaster(['bookmarkButton'])
+
+    self._sidebar = Sidebar()
+    self._current_mode = MainState.HOME
+    self._prev_onroad = False
+    self._onroad_panel_mode = OnroadPanelMode.FULL
+
+    # Initialize layouts
+    self._home_layout = HomeLayout()
+    self._home_body_layout = BodyLayout()
+    self._road_view = AugmentedRoadView()
+    self._layouts = {MainState.HOME: self._home_layout, MainState.SETTINGS: SettingsLayout(), MainState.ONROAD: self._road_view}
+
+    self._amap_view: AmapTileView | None = None
+    self._map_split_view: MapSplitOnroadView | None = None
+    if gui_app.sunnypilot_ui():
+      self._amap_view = AmapTileView()
+      self._map_split_view = MapSplitOnroadView(self._road_view, self._amap_view)
+
+    self._sidebar_rect = rl.Rectangle(0, 0, 0, 0)
+    self._content_rect = rl.Rectangle(0, 0, 0, 0)
+
+    # Set callbacks
+    self._setup_callbacks()
+
+    gui_app.push_widget(self)
+
+    # Start onboarding if terms or training not completed, make sure to push after self
+    self._onboarding_window = OnboardingWindow()
+    if not self._onboarding_window.completed:
+      gui_app.push_widget(self._onboarding_window)
+
+  def _render(self, _):
+    self._handle_onroad_transition()
+    if self._amap_view is not None and self._current_mode == MainState.ONROAD:
+      self._amap_view.tick()
+      if self._onroad_panel_mode == OnroadPanelMode.MAP_SPLIT and not self._amap_view.can_enter_map_split():
+        self._onroad_panel_mode = OnroadPanelMode.FULL
+        self._sidebar.set_visible(False)
+        self._road_view.set_draw_border(True)
+    self._render_main_content()
+
+  def _setup_callbacks(self):
+    self._sidebar.set_callbacks(on_settings=self._on_settings_clicked,
+                                on_flag=self._on_bookmark_clicked,
+                                open_settings=lambda: self.open_settings(PanelType.TOGGLES))
+    self._layouts[MainState.HOME]._setup_widget.set_open_settings_callback(lambda: self.open_settings(PanelType.FIREHOSE))
+    self._layouts[MainState.HOME].set_settings_callback(lambda: self.open_settings(PanelType.TOGGLES))
+    self._layouts[MainState.SETTINGS].set_callbacks(on_close=self._set_mode_for_state)
+
+    for layout in (self._road_view, self._home_body_layout):
+      layout.set_click_callback(self._on_onroad_clicked)
+
+    device.add_interactive_timeout_callback(self._set_mode_for_state)
+    ui_state.add_on_body_changed_callbacks(self._on_body_changed)
+
+  def _update_layout_rects(self):
+    self._sidebar_rect = rl.Rectangle(self._rect.x, self._rect.y, SIDEBAR_WIDTH, self._rect.height)
+
+    x_offset = SIDEBAR_WIDTH if self._sidebar.is_visible else 0
+    self._content_rect = rl.Rectangle(self._rect.x + x_offset, self._rect.y, self._rect.width - x_offset, self._rect.height)
+
+  def _handle_onroad_transition(self):
+    if ui_state.started != self._prev_onroad:
+      self._prev_onroad = ui_state.started
+
+      self._set_mode_for_state()
+
+  def _set_mode_for_state(self):
+    # Don't go onroad if body, home is onroad
+    if ui_state.is_body:
+      self._set_current_layout(MainState.HOME)
+      self._sidebar.set_visible(not ui_state.ignition)
+      return
+
+    if ui_state.started:
+      # Don't hide sidebar from interactive timeout
+      if self._current_mode != MainState.ONROAD:
+        self._sidebar.set_visible(False)
+        self._onroad_panel_mode = OnroadPanelMode.FULL
+      self._set_current_layout(MainState.ONROAD)
+    else:
+      self._set_current_layout(MainState.HOME)
+      self._sidebar.set_visible(True)
+      self._onroad_panel_mode = OnroadPanelMode.FULL
+
+  def _set_current_layout(self, layout: MainState):
+    if layout != self._current_mode:
+      self._layouts[self._current_mode].hide_event()
+      self._current_mode = layout
+      self._layouts[self._current_mode].show_event()
+      if self._road_view is not None:
+        self._road_view.set_draw_border(True)
+
+  def open_settings(self, panel_type: PanelType):
+    self._layouts[MainState.SETTINGS].set_current_panel(panel_type)
+    self._set_current_layout(MainState.SETTINGS)
+    self._sidebar.set_visible(False)
+
+  def _on_settings_clicked(self):
+    self.open_settings(PanelType.DEVICE)
+
+  def _on_bookmark_clicked(self):
+    user_bookmark = messaging.new_message('bookmarkButton')
+    user_bookmark.valid = True
+    self._pm.send('bookmarkButton', user_bookmark)
+
+  def _on_onroad_clicked(self):
+    if self._amap_view is None:
+      self._sidebar.set_visible(not self._sidebar.is_visible)
+      return
+
+    map_available = self._amap_view.can_enter_map_split()
+
+    if self._onroad_panel_mode == OnroadPanelMode.FULL:
+      self._onroad_panel_mode = OnroadPanelMode.SIDEBAR
+      self._sidebar.set_visible(True)
+    elif self._onroad_panel_mode == OnroadPanelMode.SIDEBAR:
+      if map_available:
+        self._onroad_panel_mode = OnroadPanelMode.MAP_SPLIT
+        self._sidebar.set_visible(False)
+        self._road_view.set_draw_border(False)
+      else:
+        self._onroad_panel_mode = OnroadPanelMode.FULL
+        self._sidebar.set_visible(False)
+    else:
+      self._onroad_panel_mode = OnroadPanelMode.FULL
+      self._sidebar.set_visible(False)
+      self._road_view.set_draw_border(True)
+
+  def _on_body_changed(self):
+    self._layouts[MainState.HOME] = self._home_body_layout if ui_state.is_body else self._home_layout
+    self._set_mode_for_state()
+
+  def _render_main_content(self):
+    self._update_layout_rects()
+
+    if self._onroad_panel_mode == OnroadPanelMode.MAP_SPLIT and self._map_split_view is not None:
+      self._map_split_view.render(self._rect)
+      return
+
+    if self._sidebar.is_visible:
+      self._sidebar.render(self._sidebar_rect)
+
+    content_rect = self._content_rect if self._sidebar.is_visible else self._rect
+    self._layouts[self._current_mode].render(content_rect)
