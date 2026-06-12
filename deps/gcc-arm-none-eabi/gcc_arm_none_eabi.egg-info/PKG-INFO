@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: gcc-arm-none-eabi
+Version: 13.2.1
+Summary: ARM GCC toolchain for bare-metal targets (pre-built)
+Requires-Python: >=3.8

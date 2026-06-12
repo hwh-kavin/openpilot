@@ -1,0 +1,10 @@
+pyproject.toml
+setup.py
+zeromq/__init__.py
+zeromq.egg-info/PKG-INFO
+zeromq.egg-info/SOURCES.txt
+zeromq.egg-info/dependency_links.txt
+zeromq.egg-info/top_level.txt
+zeromq/install/include/zmq.h
+zeromq/install/include/zmq_utils.h
+zeromq/install/lib/libzmq.a

@@ -1,5 +1,10 @@
+#ifdef STM32H7
 #include "board/drivers/drivers.h"
+#else
+#include "board/drivers/usb_declarations.h"
+#endif
 
+#ifdef STM32H7
 // IRQs: OTG_FS
 
 typedef union {
@@ -82,6 +87,7 @@ typedef union _USB_Setup {
 
 #define ENDPOINT_RCV 0x80
 #define ENDPOINT_SND 0x00
+#endif // STM32H7
 
 static uint8_t response[USBPACKET_MAX_SIZE];
 

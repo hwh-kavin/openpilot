@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: bootstrap-icons
+Version: 1.10.5.0
+Summary: Bootstrap Icons SVG sprite and TTF font (pre-built)
+Requires-Python: >=3.8

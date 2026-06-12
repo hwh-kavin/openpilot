@@ -1,3 +1,4 @@
+#ifdef STM32H7
 #include "board/drivers/drivers.h"
 
 typedef struct reg {
@@ -10,6 +11,11 @@ typedef struct reg {
 #define CHECK_COLLISION(hash, addr) (((uint32_t) register_map[hash].address != 0U) && (register_map[hash].address != (addr)))
 
 static reg register_map[REGISTER_MAP_SIZE];
+#else
+#include "board/drivers/registers_declarations.h"
+
+static reg register_map[REGISTER_MAP_SIZE];
+#endif
 
 // Hash spread in first and second iterations seems to be reasonable.
 // See: tests/development/register_hashmap_spread.py

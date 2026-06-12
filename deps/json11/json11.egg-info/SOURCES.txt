@@ -1,0 +1,9 @@
+pyproject.toml
+setup.py
+json11/__init__.py
+json11.egg-info/PKG-INFO
+json11.egg-info/SOURCES.txt
+json11.egg-info/dependency_links.txt
+json11.egg-info/top_level.txt
+json11/install/include/json11/json11.hpp
+json11/install/lib/libjson11.a

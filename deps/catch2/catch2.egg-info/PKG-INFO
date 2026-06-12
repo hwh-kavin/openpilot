@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: catch2
+Version: 2.13.10
+Summary: Catch2 C++ test framework headers (pre-built)
+Requires-Python: >=3.8

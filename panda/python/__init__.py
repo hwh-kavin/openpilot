@@ -348,9 +348,19 @@ class Panda:
       return [serial, ]
     return []
 
+  def _mcu_type(self) -> McuType:
+    hw_type = self.get_type()
+    if hw_type == self.HW_TYPE_DOS:
+      return McuType.F4
+    if hw_type in self.SUPPORTED_DEVICES:
+      return McuType.H7
+    raise AssertionError(f"Unknown HW: {hw_type}")
+
   def reset(self, enter_bootstub=False, enter_bootloader=False, reconnect=True):
     if enter_bootstub or enter_bootloader:
-      assert (hw_type := self.get_type()) in self.SUPPORTED_DEVICES, f"Unknown HW: {hw_type}"
+      hw_type = self.get_type()
+      if hw_type not in self.SUPPORTED_DEVICES and hw_type != self.HW_TYPE_DOS:
+        raise AssertionError(f"Unknown HW: {hw_type}")
 
     # no response is expected since it resets right away
     timeout = 5000 if isinstance(self._handle, PandaSpiHandle) else 15000
@@ -406,7 +416,8 @@ class Panda:
     apps_sectors_cumsum = accumulate(mcu_type.config.sector_sizes[1:])
     last_sector = next((i + 1 for i, v in enumerate(apps_sectors_cumsum) if v > len(code)), -1)
     assert last_sector >= 1, "Binary too small? No sector to erase."
-    assert last_sector < 7, "Binary too large! Risk of overwriting provisioning chunk."
+    max_sector = 6 if mcu_type == McuType.H7 else mcu_type.config.sector_count - 2
+    assert last_sector <= max_sector, "Binary too large! Risk of overwriting provisioning chunk."
 
     # unlock flash
     logger.info("flash: unlocking")
@@ -431,14 +442,14 @@ class Panda:
       pass
 
   def flash(self, fn=None, code=None, reconnect=True):
-    assert (hw_type := self.get_type()) in self.SUPPORTED_DEVICES, f"Unknown HW: {hw_type}"
+    mcu_type = self._mcu_type()
 
+    if not fn:
+      fn = os.path.join(FW_PATH, mcu_type.config.app_fn)
     if self.up_to_date(fn=fn):
       logger.info("flash: already up to date")
       return
 
-    if not fn:
-      fn = os.path.join(FW_PATH, McuType.H7.config.app_fn)
     assert os.path.isfile(fn)
     logger.debug("flash: main version is %s", self.get_version())
     if not self.bootstub:
@@ -453,7 +464,7 @@ class Panda:
     logger.debug("flash: bootstub version is %s", self.get_version())
 
     # do flash
-    Panda.flash_static(self._handle, code, mcu_type=McuType.H7)
+    Panda.flash_static(self._handle, code, mcu_type=mcu_type)
 
     # reconnect
     if reconnect:

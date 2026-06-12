@@ -1,0 +1,9 @@
+pyproject.toml
+setup.py
+git_lfs/__init__.py
+git_lfs.egg-info/PKG-INFO
+git_lfs.egg-info/SOURCES.txt
+git_lfs.egg-info/dependency_links.txt
+git_lfs.egg-info/entry_points.txt
+git_lfs.egg-info/top_level.txt
+git_lfs/bin/git-lfs

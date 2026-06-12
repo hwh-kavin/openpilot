@@ -1,0 +1,4 @@
+[console_scripts]
+arm-none-eabi-gcc = gcc_arm_none_eabi:_run_gcc
+arm-none-eabi-objcopy = gcc_arm_none_eabi:_run_objcopy
+arm-none-eabi-size = gcc_arm_none_eabi:_run_size

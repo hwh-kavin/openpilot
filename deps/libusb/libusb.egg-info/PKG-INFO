@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: libusb
+Version: 1.0.29
+Summary: libusb USB device access library (static build) (pre-built)
+Requires-Python: >=3.8

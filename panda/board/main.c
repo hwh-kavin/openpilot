@@ -16,9 +16,13 @@
 
 #include "board/drivers/can_common.h"
 
-#include "board/drivers/fdcan.h"
-
-#include "board/sys/power_saving.h"
+#ifdef STM32H7
+  #include "board/drivers/fdcan.h"
+  #include "board/sys/power_saving.h"
+#else
+  #include "board/drivers/bxcan.h"
+  #include "board/power_saving.h"
+#endif
 
 #include "board/obj/gitversion.h"
 
@@ -148,7 +152,11 @@ static void tick_handler(void) {
       // re-init everything that uses harness status
       can_init_all();
       set_safety_mode(current_safety_mode, current_safety_param);
+#ifdef STM32H7
       set_power_save_state(power_save_enabled);
+#else
+      set_power_save_state(power_save_status);
+#endif
     }
 
     // decimated to 1Hz
@@ -167,7 +175,11 @@ static void tick_handler(void) {
 
       // turn off the blue LED, turned on by CAN
       // unless we are in power saving mode
+#ifdef STM32H7
       led_set(LED_BLUE, (uptime_cnt & 1U) && power_save_enabled);
+#else
+      led_set(LED_BLUE, (uptime_cnt & 1U) && (power_save_status == POWER_SAVE_STATUS_ENABLED));
+#endif
 
       const bool recent_heartbeat = heartbeat_counter == 0U;
 
@@ -233,9 +245,15 @@ static void tick_handler(void) {
             set_safety_mode(SAFETY_SILENT, 0U);
           }
 
+#ifdef STM32H7
           if (!power_save_enabled) {
             set_power_save_state(true);
           }
+#else
+          if (power_save_status != POWER_SAVE_STATUS_ENABLED) {
+            set_power_save_state(POWER_SAVE_STATUS_ENABLED);
+          }
+#endif
 
           // Also disable IR when the heartbeat goes missing
           current_board->set_ir_power(0U);
@@ -343,12 +361,16 @@ int main(void) {
 
   // LED should keep on blinking all the time
   while (true) {
-    #ifdef ALLOW_DEBUG
+    #if defined(STM32H7) && defined(ALLOW_DEBUG)
     if (stop_mode_requested) {
       enter_stop_mode();
     }
     #endif
+#ifdef STM32H7
     if (!power_save_enabled) {
+#else
+    if (power_save_status == POWER_SAVE_STATUS_DISABLED) {
+#endif
       #ifdef DEBUG_FAULTS
       if (fault_status == FAULT_STATUS_NONE) {
       #endif
@@ -376,11 +398,13 @@ int main(void) {
         }
       #endif
     } else {
+#ifdef STM32H7
       if ((hw_type == HW_TYPE_CUATRO) && !current_board->read_som_gpio()) {
         assert_fatal(current_safety_mode == SAFETY_SILENT, "Error: Entering low power mode while not in SAFETY_SILENT. Hanging\n");
         enter_stop_mode(); // deep sleep, wakes on CAN or SBU activity
         assert_fatal(false, "Error: enter_stop_mode returned after system reset. Hanging\n");
       }
+#endif
       __WFI();
       SCB->SCR &= ~SCB_SCR_SLEEPDEEP_Msk;
     }

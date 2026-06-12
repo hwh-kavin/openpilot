@@ -1,0 +1,10 @@
+pyproject.toml
+setup.py
+libusb/__init__.py
+libusb.egg-info/PKG-INFO
+libusb.egg-info/SOURCES.txt
+libusb.egg-info/dependency_links.txt
+libusb.egg-info/top_level.txt
+libusb/install/include/libusb-1.0/libusb.h
+libusb/install/lib/libusb-1.0.a
+libusb/install/lib/pkgconfig/libusb-1.0.pc

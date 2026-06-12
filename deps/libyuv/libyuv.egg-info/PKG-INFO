@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: libyuv
+Version: 1922.0
+Summary: libyuv image processing library (static build) (pre-built)
+Requires-Python: >=3.8

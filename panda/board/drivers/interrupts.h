@@ -1,4 +1,6 @@
-#include "board/drivers/drivers.h"
+#ifndef STM32H7
+#include "board/drivers/interrupts_declarations.h"
+#endif
 
 void unused_interrupt_handler(void) {
   // Something is wrong if this handler is called!

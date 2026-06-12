@@ -1,0 +1,6 @@
+Metadata-Version: 2.4
+Name: acados
+Version: 0.2.2
+Summary: acados solvers + Python interface, with a slimmed casadi vendored alongside (pre-built)
+Requires-Python: >=3.8
+Requires-Dist: numpy

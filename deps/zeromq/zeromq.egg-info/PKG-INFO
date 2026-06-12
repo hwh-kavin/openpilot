@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: zeromq
+Version: 4.3.5
+Summary: ZeroMQ messaging library (static build) (pre-built)
+Requires-Python: >=3.8

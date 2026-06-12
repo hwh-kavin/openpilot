@@ -1,0 +1,9 @@
+pyproject.toml
+setup.py
+bzip2/__init__.py
+bzip2.egg-info/PKG-INFO
+bzip2.egg-info/SOURCES.txt
+bzip2.egg-info/dependency_links.txt
+bzip2.egg-info/top_level.txt
+bzip2/install/include/bzlib.h
+bzip2/install/lib/libbz2.a

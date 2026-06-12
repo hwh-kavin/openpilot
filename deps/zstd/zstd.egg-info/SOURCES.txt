@@ -1,0 +1,11 @@
+pyproject.toml
+setup.py
+zstd/__init__.py
+zstd.egg-info/PKG-INFO
+zstd.egg-info/SOURCES.txt
+zstd.egg-info/dependency_links.txt
+zstd.egg-info/top_level.txt
+zstd/install/include/zdict.h
+zstd/install/include/zstd.h
+zstd/install/include/zstd_errors.h
+zstd/install/lib/libzstd.a

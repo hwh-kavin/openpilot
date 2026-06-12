@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: json11
+Version: 20170411.0
+Summary: json11 JSON parser library (static build) (pre-built)
+Requires-Python: >=3.8

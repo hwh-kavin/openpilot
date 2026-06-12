@@ -94,31 +94,14 @@ function launch {
   # write tmux scrollback to a file
   tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
-  # start manager
-  cd "$DIR"
-  if [ -f "$DIR/.venv/bin/activate" ]; then
-    source "$DIR/.venv/bin/activate"
-  fi
-
-  if [ ! -d "$DIR/.venv" ] || ! "$DIR/.venv/bin/python3" -c 'import acados' >/dev/null 2>&1; then
-    echo "Installing Python dependencies for C3..."
-    cd "$DIR"
-    ./tools/setup_dependencies.sh
-    if [ -f "$DIR/.venv/bin/activate" ]; then
-      source "$DIR/.venv/bin/activate"
-    fi
-  fi
-
-  cd system/manager
-  if [ ! -s "$DIR/prebuilt" ]; then
-    rm -f "$DIR/prebuilt"
-    ./build.py
-  elif [ "$DIR/common/params_keys.h" -nt "$DIR/common/params_pyx.so" ]; then
-    echo "params_keys.h changed, rebuilding params..."
-    cd "$DIR"
-    scons common/params_pyx.so -j4
-    cd "$DIR/system/manager"
-  fi
+  # bootstrap: firmware, venv, build
+  # shellcheck disable=SC1091
+  source "$DIR/tools/c3_bootstrap.sh"
+  c3_stage_firmware "$DIR"
+  c3_ensure_venv "$DIR"
+  c3_activate_venv "$DIR"
+  c3_sync_branch_params "$DIR"
+  c3_ensure_build "$DIR"
   ./manager.py
 
   # if broken, keep on screen error

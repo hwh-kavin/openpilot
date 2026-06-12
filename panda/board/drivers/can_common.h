@@ -1,5 +1,10 @@
+#ifdef STM32H7
 #include "board/drivers/drivers.h"
 #include "opendbc/safety/ignition.h"
+#else
+#include "board/drivers/can_common_declarations.h"
+#include "opendbc/safety/ignition.h"
+#endif
 
 uint32_t safety_tx_blocked = 0;
 uint32_t safety_rx_invalid = 0;
@@ -17,8 +22,14 @@ bool can_loopback = false;
   extern can_ring can_##x; \
   can_ring can_##x = { .w_ptr = 0, .r_ptr = 0, .fifo_size = (size), .elems = (CANPacket_t *)&(elems_##x) };
 
+#ifdef STM32F4
+// C3/DOS panda has 128KB RAM; CAN-FD packets are much larger than classic CAN
+#define CAN_RX_BUFFER_SIZE 512U
+#define CAN_TX_BUFFER_SIZE 128U
+#else
 #define CAN_RX_BUFFER_SIZE 4096U
 #define CAN_TX_BUFFER_SIZE 416U
+#endif
 
 #ifdef STM32H7
 // ITCM RAM and DTCM RAM are the fastest for Cortex-M7 core access

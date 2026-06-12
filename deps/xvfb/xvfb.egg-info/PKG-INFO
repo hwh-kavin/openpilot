@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: xvfb
+Version: 1.20.11.post1
+Summary: Xvfb (X virtual framebuffer) headless X server (pre-built)
+Requires-Python: >=3.8

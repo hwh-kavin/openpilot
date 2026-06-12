@@ -1,0 +1,3 @@
+[console_scripts]
+ffmpeg = ffmpeg:_run_ffmpeg
+ffprobe = ffmpeg:_run_ffprobe

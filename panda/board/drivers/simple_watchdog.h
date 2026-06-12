@@ -1,4 +1,8 @@
+#ifdef STM32H7
 #include "board/drivers/drivers.h"
+#else
+#include "board/drivers/simple_watchdog_declarations.h"
+#endif
 
 static simple_watchdog_state_t wd_state;
 

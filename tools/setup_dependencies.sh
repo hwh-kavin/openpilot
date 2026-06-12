@@ -9,7 +9,13 @@ mkdir -p "$ROOT/.venv"
 mkdir -p "/data/scons_cache" || true
 mkdir -p "/data/tmp" || true
 OP_DEPS_CACHE="$ROOT/.deps_cache"
+DEPS_DIR="$ROOT/deps"
 DEPS_REPO="https://github.com/commaai/dependencies.git"
+if [[ -f "/AGNOS" ]]; then
+  ALLOW_NETWORK_FETCH="${ALLOW_NETWORK_FETCH:-0}"
+else
+  ALLOW_NETWORK_FETCH="${ALLOW_NETWORK_FETCH:-1}"
+fi
 
 # Check write permissions for important directories and abort with clear message
 function check_writable_or_die() {
@@ -102,26 +108,41 @@ EOF
   fi
 }
 
+function local_package_path() {
+  local name="$1"
+  if [[ -d "$DEPS_DIR/$name" ]]; then
+    echo "$DEPS_DIR/$name"
+    return 0
+  fi
+  if [[ -d "$OP_DEPS_CACHE/$name/$name" ]]; then
+    echo "$OP_DEPS_CACHE/$name/$name"
+    return 0
+  fi
+  return 1
+}
+
 function fetch_vendored_package() {
   local name="$1"
   local branch="$2"
-  local dest="$OP_DEPS_CACHE/$name"
+  local local_path
 
-  # Prefer local vendored copy under $ROOT/deps/<name> if present (allows checking-in acados)
-  if [[ -d "$ROOT/deps/$name" ]]; then
-    echo "  using local vendored package at $ROOT/deps/$name"
+  if local_path="$(local_package_path "$name")"; then
+    echo "  using local package at $local_path"
     mkdir -p "$OP_DEPS_CACHE/$name"
     rm -rf "$OP_DEPS_CACHE/$name/$name"
-    cp -a "$ROOT/deps/$name" "$OP_DEPS_CACHE/$name/$name"
+    cp -a "$local_path" "$OP_DEPS_CACHE/$name/$name"
     return 0
   fi
 
-  if [[ -d "$dest/$name" ]]; then
-    return 0
+  if [[ "$ALLOW_NETWORK_FETCH" != "1" ]]; then
+    echo "  ERROR: missing local package deps/$name" >&2
+    echo "  Run ./tools/vendor_deps.sh on a dev machine and commit deps/." >&2
+    return 1
   fi
 
+  local dest="$OP_DEPS_CACHE/$name"
   mkdir -p "$OP_DEPS_CACHE"
-  echo "  fetching $name ($branch)..."
+  echo "  fetching $name ($branch) from $DEPS_REPO..."
   rm -rf "$dest"
   if ! retry 5 git clone --depth 1 --branch "$branch" "$DEPS_REPO" "$dest"; then
     echo "  failed to fetch $name from $DEPS_REPO"
@@ -238,13 +259,23 @@ function install_python_deps() {
   cd "$ROOT"
 
   if ! command -v "uv" > /dev/null 2>&1; then
+    if is_agnos_device; then
+      echo "ERROR: uv not found on AGNOS (expected /usr/comma/shims/uv)" >&2
+      return 1
+    fi
+    if [[ "$ALLOW_NETWORK_FETCH" != "1" ]]; then
+      echo "ERROR: uv not found and ALLOW_NETWORK_FETCH=0" >&2
+      return 1
+    fi
     echo "installing uv..."
     retry 3 sh -c 'curl --retry 5 --retry-delay 5 --retry-all-errors -LsSf https://astral.sh/uv/install.sh | UV_GITHUB_TOKEN="${GITHUB_TOKEN:-}" sh'
     PATH="$HOME/.local/bin:$PATH"
   fi
 
-  echo "updating uv..."
-  uv self update || true
+  if [[ "$ALLOW_NETWORK_FETCH" == "1" ]]; then
+    echo "updating uv..."
+    uv self update || true
+  fi
 
   local py_bin
   py_bin="$(system_python)"
@@ -283,10 +314,27 @@ function install_python_deps() {
     if ! retry 5 uv pip install -e "$ROOT" --no-build-isolation --no-deps; then
       return 1
     fi
-    echo "installing remaining PyPI packages from lockfile..."
-    uv export --frozen --no-hashes --no-emit-package openpilot --format requirements.txt 2>/dev/null \
-      | grep -E '^[a-zA-Z0-9]' | grep -v '@ git+' > "$ROOT/.deps_cache/pypi-reqs.txt"
-    if ! retry 5 uv pip install -r "$ROOT/.deps_cache/pypi-reqs.txt" --no-build-isolation; then
+    echo "installing remaining PyPI packages..."
+    local pypi_reqs="$DEPS_DIR/pypi-reqs.txt"
+    if [[ ! -f "$pypi_reqs" && -f "$OP_DEPS_CACHE/pypi-reqs.txt" ]]; then
+      pypi_reqs="$OP_DEPS_CACHE/pypi-reqs.txt"
+    fi
+    if [[ ! -f "$pypi_reqs" ]]; then
+      uv export --frozen --no-hashes --no-emit-package openpilot --format requirements.txt 2>/dev/null \
+        | grep -E '^[a-zA-Z0-9]' | grep -v '@ git+' > "$OP_DEPS_CACHE/pypi-reqs.txt"
+      pypi_reqs="$OP_DEPS_CACHE/pypi-reqs.txt"
+    fi
+    if [[ -d "$DEPS_DIR/wheels" ]] && ls "$DEPS_DIR/wheels"/*.whl >/dev/null 2>&1; then
+      if ! retry 5 uv pip install --no-index --find-links "$DEPS_DIR/wheels" -r "$pypi_reqs" --no-build-isolation; then
+        return 1
+      fi
+    elif [[ "$ALLOW_NETWORK_FETCH" == "1" ]]; then
+      if ! retry 5 uv pip install -r "$pypi_reqs" --no-build-isolation; then
+        return 1
+      fi
+    else
+      echo "ERROR: missing deps/wheels for offline PyPI install" >&2
+      echo "Run ./tools/vendor_deps.sh and commit deps/wheels/." >&2
       return 1
     fi
   else

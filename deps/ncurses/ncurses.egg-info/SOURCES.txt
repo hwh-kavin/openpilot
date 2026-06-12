@@ -1,0 +1,14 @@
+pyproject.toml
+setup.py
+ncurses/__init__.py
+ncurses.egg-info/PKG-INFO
+ncurses.egg-info/SOURCES.txt
+ncurses.egg-info/dependency_links.txt
+ncurses.egg-info/top_level.txt
+ncurses/install/include/curses.h
+ncurses/install/include/ncurses.h
+ncurses/install/include/ncurses_dll.h
+ncurses/install/include/term.h
+ncurses/install/include/termcap.h
+ncurses/install/include/unctrl.h
+ncurses/install/lib/libncurses.a

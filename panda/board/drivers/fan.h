@@ -1,4 +1,8 @@
+#ifdef STM32H7
 #include "board/drivers/drivers.h"
+#else
+#include "board/drivers/fan_declarations.h"
+#endif
 
 struct fan_state_t fan_state;
 

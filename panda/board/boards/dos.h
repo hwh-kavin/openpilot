@@ -126,7 +126,6 @@ board board_dos = {
   .has_spi = false,
   .has_fan = true,
   .avdd_mV = 3300U,
-  .fan_stall_recovery = true,
   .fan_enable_cooldown_time = 3U,
   .init = dos_init,
   .init_bootloader = unused_init_bootloader,

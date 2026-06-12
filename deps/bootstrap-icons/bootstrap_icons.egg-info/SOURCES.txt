@@ -1,0 +1,9 @@
+pyproject.toml
+setup.py
+bootstrap_icons/__init__.py
+bootstrap_icons.egg-info/PKG-INFO
+bootstrap_icons.egg-info/SOURCES.txt
+bootstrap_icons.egg-info/dependency_links.txt
+bootstrap_icons.egg-info/top_level.txt
+bootstrap_icons/install/bootstrap-icons.svg
+bootstrap_icons/install/bootstrap-icons.ttf

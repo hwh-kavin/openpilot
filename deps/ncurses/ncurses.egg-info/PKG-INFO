@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: ncurses
+Version: 6.5
+Summary: ncurses terminal library (static build) (pre-built)
+Requires-Python: >=3.8

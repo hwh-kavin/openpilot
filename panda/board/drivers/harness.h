@@ -1,4 +1,8 @@
+#ifdef STM32H7
 #include "board/drivers/drivers.h"
+#else
+#include "board/drivers/harness_declarations.h"
+#endif
 
 struct harness_t harness;
 

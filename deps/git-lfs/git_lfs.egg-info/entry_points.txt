@@ -1,0 +1,2 @@
+[console_scripts]
+git-lfs = git_lfs:_run

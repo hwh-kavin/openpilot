@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: ffmpeg
+Version: 7.1.0
+Summary: FFmpeg media tools and libraries (minimal build for openpilot) (pre-built)
+Requires-Python: >=3.8

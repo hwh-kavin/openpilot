@@ -1,0 +1,12 @@
+pyproject.toml
+setup.py
+catch2/__init__.py
+catch2.egg-info/PKG-INFO
+catch2.egg-info/SOURCES.txt
+catch2.egg-info/dependency_links.txt
+catch2.egg-info/top_level.txt
+catch2/install/include/catch2/catch.hpp
+catch2/install/include/catch2/catch_reporter_automake.hpp
+catch2/install/include/catch2/catch_reporter_sonarqube.hpp
+catch2/install/include/catch2/catch_reporter_tap.hpp
+catch2/install/include/catch2/catch_reporter_teamcity.hpp

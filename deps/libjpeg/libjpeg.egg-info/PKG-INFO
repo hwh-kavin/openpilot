@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: libjpeg
+Version: 3.1.0
+Summary: libjpeg-turbo JPEG library (static build) (pre-built)
+Requires-Python: >=3.8

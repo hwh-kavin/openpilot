@@ -1,0 +1,12 @@
+pyproject.toml
+setup.py
+libjpeg/__init__.py
+libjpeg.egg-info/PKG-INFO
+libjpeg.egg-info/SOURCES.txt
+libjpeg.egg-info/dependency_links.txt
+libjpeg.egg-info/top_level.txt
+libjpeg/install/include/jconfig.h
+libjpeg/install/include/jerror.h
+libjpeg/install/include/jmorecfg.h
+libjpeg/install/include/jpeglib.h
+libjpeg/install/lib/libjpeg.a

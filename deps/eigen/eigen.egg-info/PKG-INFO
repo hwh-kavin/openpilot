@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: eigen
+Version: 3.4.0
+Summary: Eigen C++ linear algebra headers (pre-built)
+Requires-Python: >=3.8

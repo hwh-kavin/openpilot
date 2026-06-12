@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: capnproto
+Version: 1.0.1
+Summary: Cap'n Proto serialization library and compiler (pre-built)
+Requires-Python: >=3.8

@@ -1,4 +1,8 @@
+#ifdef STM32H7
 #include "board/drivers/drivers.h"
+#else
+#include "board/drivers/bootkick_declarations.h"
+#endif
 
 bool bootkick_reset_triggered = false;
 

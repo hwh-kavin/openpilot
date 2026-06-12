@@ -1,0 +1,4 @@
+[console_scripts]
+capnp = capnproto:_run_capnp
+capnpc = capnproto:_run_capnpc
+capnpc-c++ = capnproto:_run_capnpc_cpp

@@ -1,4 +1,8 @@
+#ifdef STM32H7
 #include "board/drivers/drivers.h"
+#else
+#include "board/drivers/clock_source_declarations.h"
+#endif
 
 #define CLOCK_SOURCE_PERIOD_MS           50U
 #define CLOCK_SOURCE_PULSE_LEN_MS        2U
