@@ -1,27 +1,29 @@
 #!/usr/bin/env python3
 import datetime
-import subprocess
 import time
 from typing import NoReturn
 
 import cereal.messaging as messaging
-from openpilot.common.time_helpers import min_date, MAX_DATE, system_time_valid
+from cereal import log
+from openpilot.common.time_helpers import min_date, MAX_DATE, system_time_valid, set_system_time, sync_time_from_network
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.common.gps import get_gps_location_service
+from openpilot.system.hardware import HARDWARE
+
+NetworkType = log.DeviceState.NetworkType
+_network_synced = False
 
 
-def set_time(new_time):
-  diff = datetime.datetime.now() - new_time
-  if abs(diff) < datetime.timedelta(seconds=10):
-    cloudlog.debug(f"Time diff too small: {diff}")
+def maybe_network_time_sync() -> None:
+  global _network_synced
+  if _network_synced:
     return
-
-  cloudlog.debug(f"Setting time to {new_time}")
-  try:
-    subprocess.run(f"TZ=UTC date -s '{new_time}'", shell=True, check=True)
-  except subprocess.CalledProcessError:
-    cloudlog.exception("timed.failed_setting_time")
+  if HARDWARE.get_network_type() == NetworkType.none:
+    return
+  if sync_time_from_network():
+    _network_synced = True
+    cloudlog.info("Network time sync completed")
 
 
 def main() -> NoReturn:
@@ -40,6 +42,7 @@ def main() -> NoReturn:
   sm = messaging.SubMaster([gps_location_service])
   while True:
     sm.update(1000)
+    maybe_network_time_sync()
 
     msg = messaging.new_message('clocks')
     msg.valid = system_time_valid()
@@ -55,7 +58,7 @@ def main() -> NoReturn:
     if gps_time < min_date() or gps_time > MAX_DATE:
       continue
 
-    set_time(gps_time)
+    set_system_time(gps_time)
     time.sleep(10)
 
 if __name__ == "__main__":
