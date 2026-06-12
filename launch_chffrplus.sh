@@ -24,7 +24,19 @@ function agnos_init {
     if $AGNOS_PY --verify $MANIFEST; then
       sudo reboot
     fi
-    $AGNOS_PY --swap $MANIFEST
+
+    # Launch updater UI to display progress during download/flash.
+    if [ -f "$DIR/system/ui/updater.py" ]; then
+      cd "$DIR"
+      export PYTHONPATH="$DIR:$PYTHONPATH"
+      if ! python3 "$DIR/system/ui/updater.py" "$AGNOS_PY" "$MANIFEST"; then
+        echo "Updater UI failed, falling back to headless swap"
+        $AGNOS_PY --swap $MANIFEST
+      fi
+    else
+      $AGNOS_PY --swap $MANIFEST
+    fi
+
     sudo reboot
   fi
 }
