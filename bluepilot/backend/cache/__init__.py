@@ -27,6 +27,15 @@ from .cleanup import (
     CACHE_EXPIRATION_HOURS,
 )
 
+from .drive_stats_store import (
+    load_drive_stats,
+    save_drive_stats,
+    build_drive_stats_payload,
+    has_drive_stats_data,
+    is_drive_stats_cache_fresh,
+)
+from .rotating_json_cache import RotatingJsonCache
+
 __all__ = [
     # Metrics functions
     'get_directory_size',
@@ -48,4 +57,11 @@ __all__ = [
     'MAX_CACHE_SIZE_GB',
     'CACHE_CLEANUP_THRESHOLD',
     'CACHE_EXPIRATION_HOURS',
+    # Drive stats store
+    'load_drive_stats',
+    'save_drive_stats',
+    'build_drive_stats_payload',
+    'has_drive_stats_data',
+    'is_drive_stats_cache_fresh',
+    'RotatingJsonCache',
 ]

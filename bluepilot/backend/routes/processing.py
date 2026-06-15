@@ -1079,6 +1079,48 @@ def get_route_drive_stats_cached_only(route_base):
     return None
 
 
+def get_route_gps_metrics_cached_only(route_base):
+    """Get GPS metrics from cache only (no extraction)."""
+    cache_file = os.path.join(METRICS_CACHE, f"{route_base}.json")
+    if not os.path.exists(cache_file):
+        return None
+
+    try:
+        with open(cache_file) as f:
+            return json.load(f)
+    except Exception as e:
+        logger.debug(f"Error reading GPS cache for {route_base}: {e}")
+        return None
+
+
+def get_route_aggregate_stats(route_base, segments_count=0):
+    """Return (distance_miles, duration_seconds) for aggregate drive stats.
+
+    Prefers cached drive stats, then GPS cache, then segment-based duration.
+    """
+    stats = get_route_drive_stats_cached_only(route_base)
+    if stats:
+        distance = float(stats.get('distance') or 0)
+        duration = float(stats.get('duration') or 0)
+        if distance > 0 or duration > 0:
+            return distance, duration
+
+    duration = max(0, int(segments_count or 0)) * 60
+    distance = 0.0
+
+    gps = get_route_gps_metrics_cached_only(route_base)
+    if gps and gps.get('has_gps_data'):
+        distance = float(gps.get('total_distance_meters') or 0) / 1609.34
+
+    return distance, duration
+
+
+def cache_local_drive_stats(all_stats, week_stats):
+    """Persist locally calculated stats in ApiCache_DriveStats format."""
+    from bluepilot.backend.cache.drive_stats_store import build_drive_stats_payload
+    return build_drive_stats_payload(all_stats, week_stats)
+
+
 def check_processing_status(route_base):
     """Check what has already been processed for this route
 

@@ -94,14 +94,19 @@ def _stringify_message(message, preserve_ansi: bool = True) -> str:
     return cleaned
 
 
-def parse_manager_log_line(record: str, colorize: bool = True) -> Optional[str]:
+def parse_swaglog_line(
+    record: str,
+    colorize: bool = True,
+    daemon_filter: Optional[str] = None,
+) -> Optional[str]:
     """
     Parse a single swaglog JSON entry (from messaging or file) and return
-    a formatted string if it belongs to the manager daemon.
+    a formatted string.
 
     Args:
         record: JSON log record string
         colorize: If True, add ANSI color codes based on log level
+        daemon_filter: When set, only include entries from this daemon
     """
     try:
         data = json.loads(record)
@@ -110,29 +115,33 @@ def parse_manager_log_line(record: str, colorize: bool = True) -> Optional[str]:
         return None
 
     ctx = _get_field(data, 'ctx') or {}
-    daemon = _get_field(ctx, 'daemon') or _get_field(ctx, 'daemon_name')
-    if daemon != 'manager':
+    daemon = _get_field(ctx, 'daemon') or _get_field(ctx, 'daemon_name') or 'system'
+    if daemon_filter is not None and daemon != daemon_filter:
         return None
 
     created = _get_field(data, 'created')
     level = (_get_field(data, 'level') or 'INFO').upper()
-    module = _get_field(data, 'module') or _get_field(data, 'name') or 'manager'
+    module = _get_field(data, 'module') or _get_field(data, 'name') or daemon
     msg = _stringify_message(_get_field(data, 'msg'))
 
     timestamp = _format_timestamp(created)
+    label = module if module == daemon else f"{daemon}/{module}"
 
     if colorize:
-        # Add ANSI colors based on log level
         level_color = ANSI_COLORS.get(level, '')
-        # Format: dim timestamp, colored [LEVEL], normal module: message
-        return f"{ANSI_DIM}{timestamp}{ANSI_RESET} {level_color}[{level}]{ANSI_RESET} {module}: {msg}".strip()
+        return f"{ANSI_DIM}{timestamp}{ANSI_RESET} {level_color}[{level}]{ANSI_RESET} {label}: {msg}".strip()
 
-    return f"{timestamp} [{level}] {module}: {msg}".strip()
+    return f"{timestamp} [{level}] {label}: {msg}".strip()
+
+
+def parse_manager_log_line(record: str, colorize: bool = True) -> Optional[str]:
+    """Parse a swaglog entry when it belongs to the manager daemon."""
+    return parse_swaglog_line(record, colorize=colorize, daemon_filter='manager')
 
 
 def read_recent_manager_logs(max_lines: int = 1000, max_files: int = 25) -> Tuple[bool, str]:
     """
-    Read recent manager log lines from rotating swaglog files.
+    Read recent system log lines from rotating swaglog files.
 
     Args:
         max_lines: limit number of lines returned
@@ -166,7 +175,7 @@ def read_recent_manager_logs(max_lines: int = 1000, max_files: int = 25) -> Tupl
                     raw_line = raw_line.strip()
                     if not raw_line:
                         continue
-                    formatted = parse_manager_log_line(raw_line)
+                    formatted = parse_swaglog_line(raw_line)
                     if formatted:
                         lines.append(formatted)
         except FileNotFoundError:

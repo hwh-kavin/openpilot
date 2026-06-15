@@ -57,6 +57,14 @@ export const Home = ({ deviceStatus = 'checking' }: HomeProps) => {
   const [driveStats, setDriveStats] = useState<DriveStatsResponse | null>(null)
   const [driveStatsLoading, setDriveStatsLoading] = useState(true)
   const [lastError, setLastError] = useState<LastErrorEntry | null>(null)
+  const isMetric = status?.isMetric ?? false
+
+  const formatDistance = (stats: DriveStats): string => {
+    if (isMetric) {
+      return Math.round(stats.distance / 1000).toLocaleString()
+    }
+    return Math.round(stats.distanceMiles).toLocaleString()
+  }
 
   const fetchDriveStats = useCallback(async () => {
     setDriveStatsLoading(true)
@@ -264,8 +272,8 @@ export const Home = ({ deviceStatus = 'checking' }: HomeProps) => {
                       <div className="stat-label">{t('home.totalDrives')}</div>
                     </div>
                     <div className="stat-card all-time">
-                      <div className="stat-value">{Math.round(driveStats.all.distanceMiles).toLocaleString()}</div>
-                      <div className="stat-label">{t('home.milesDriven')}</div>
+                      <div className="stat-value">{formatDistance(driveStats.all)}</div>
+                      <div className="stat-label">{isMetric ? t('home.kmDriven') : t('home.milesDriven')}</div>
                     </div>
                     <div className="stat-card all-time">
                       <div className="stat-value">{Math.round(driveStats.all.duration / 3600).toLocaleString()}</div>
@@ -281,8 +289,8 @@ export const Home = ({ deviceStatus = 'checking' }: HomeProps) => {
                       <div className="stat-label">{t('home.drives')}</div>
                     </div>
                     <div className="stat-card">
-                      <div className="stat-value">{Math.round(driveStats.week.distanceMiles)}</div>
-                      <div className="stat-label">{t('home.miles')}</div>
+                      <div className="stat-value">{formatDistance(driveStats.week)}</div>
+                      <div className="stat-label">{isMetric ? t('home.km') : t('home.miles')}</div>
                     </div>
                     <div className="stat-card">
                       <div className="stat-value">{Math.round(driveStats.week.duration / 3600)}</div>

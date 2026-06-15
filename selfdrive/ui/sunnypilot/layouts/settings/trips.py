@@ -20,6 +20,7 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
+from bluepilot.backend.cache.drive_stats_store import load_drive_stats, save_drive_stats
 
 
 class TripsLayout(Widget):
@@ -49,14 +50,8 @@ class TripsLayout(Widget):
       pass
 
   def _get_stats(self):
-    stats = self._params.get(self.PARAM_KEY)
-    if not stats:
-      return {}
-    try:
-      return stats
-    except Exception:
-      cloudlog.exception(f"Failed to decode drive stats: {stats}")
-      return {}
+    stats, _source = load_drive_stats(self._params)
+    return stats or {}
 
   def _fetch_drive_stats(self):
     try:
@@ -68,7 +63,7 @@ class TripsLayout(Widget):
       if response.status_code == 200:
         data = response.json()
         self._stats = data
-        self._params.put(self.PARAM_KEY, data)
+        save_drive_stats(data)
     except Exception as e:
       cloudlog.error(f"Failed to fetch drive stats: {e}")
 

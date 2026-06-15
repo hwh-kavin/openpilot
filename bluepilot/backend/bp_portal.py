@@ -123,6 +123,14 @@ from bluepilot.backend.routes import (
     build_route_metadata,
     # Drive stats
     get_route_drive_stats_cached_only,
+    get_route_aggregate_stats,
+    cache_local_drive_stats,
+)
+from bluepilot.backend.cache.drive_stats_store import (
+    load_drive_stats,
+    save_drive_stats,
+    has_drive_stats_data,
+    is_drive_stats_cache_fresh,
 )
 
 # Video processing
@@ -2309,81 +2317,44 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                 # Get aggregate drive statistics from ApiCache_DriveStats param
                 # This matches the Qt widget behavior which caches API responses in params
                 try:
-                    # Try to get cached stats from ApiCache_DriveStats param
-                    cached_stats = None
-                    try:
-                        cached_stats_data = params.get("ApiCache_DriveStats")
-                        logger.info(f"ApiCache_DriveStats: type={type(cached_stats_data)}, exists={cached_stats_data is not None}, len={len(cached_stats_data) if cached_stats_data else 0}")
+                    def convert_stats(stats_data):
+                        """Convert API stats to frontend format"""
+                        distance_miles = stats_data.get('distance', 0)
+                        distance_meters = distance_miles * 1609.34
+                        duration_minutes = stats_data.get('minutes', 0)
+                        duration_seconds = duration_minutes * 60
+                        routes = stats_data.get('routes', 0)
+                        avg_speed_ms = distance_meters / duration_seconds if duration_seconds > 0 else 0
+                        return {
+                            'routes': routes,
+                            'distance': distance_meters,
+                            'distanceMiles': distance_miles,
+                            'duration': duration_seconds,
+                            'durationMinutes': duration_minutes,
+                            'averageSpeed': avg_speed_ms,
+                        }
 
-                        # Handle both cases: bytes (fallback Params) and dict (openpilot Params with auto-deserialization)
-                        if isinstance(cached_stats_data, dict):
-                            # Already deserialized by openpilot Params
-                            cached_stats = cached_stats_data
-                            logger.info(f"Got pre-deserialized stats: all={cached_stats.get('all', {}).get('routes', 0)} routes")
-                        elif cached_stats_data and isinstance(cached_stats_data, bytes):
-                            # Raw bytes from fallback Params - need to decode and parse
-                            cached_stats_str = cached_stats_data.decode('utf-8').strip()
-                            logger.info(f"Decoded stats string: {cached_stats_str[:100]}")
-                            if cached_stats_str:
-                                cached_stats = json.loads(cached_stats_str)
-                                logger.info(f"Successfully parsed cached stats: all={cached_stats.get('all', {}).get('routes', 0)} routes")
-                    except Exception as e:
-                        logger.error(f"Error reading ApiCache_DriveStats param: {e}", exc_info=True)
-                        cached_stats = None
-
-                    # Only use cached stats if they contain actual data (not zeros)
-                    if cached_stats:
-                        all_routes = cached_stats.get('all', {}).get('routes', 0)
-                        all_distance = cached_stats.get('all', {}).get('distance', 0)
-                        all_minutes = cached_stats.get('all', {}).get('minutes', 0)
-                        
-                        # Check if cached stats have actual data (not all zeros)
-                        has_data = (all_routes > 0) or (all_distance > 0) or (all_minutes > 0)
-                        
-                        if has_data:
-                            logger.info(f"Using cached drive stats: {all_routes} routes, {all_distance} miles, {all_minutes} minutes")
-                            # Parse response (format: {all: {routes, distance, minutes}, week: {...}})
-                            # Convert both "all" and "week" stats to frontend format
-                            def convert_stats(stats_data):
-                                """Convert API stats to frontend format"""
-                                distance_miles = stats_data.get('distance', 0)
-                                distance_meters = distance_miles * 1609.34
-                                duration_minutes = stats_data.get('minutes', 0)
-                                duration_seconds = duration_minutes * 60
-                                routes = stats_data.get('routes', 0)
-
-                                # Calculate average speed if we have both distance and duration
-                                avg_speed_ms = distance_meters / duration_seconds if duration_seconds > 0 else 0
-
-                                return {
-                                    'routes': routes,
-                                    'distance': distance_meters,
-                                    'distanceMiles': distance_miles,  # Keep original for reference
-                                    'duration': duration_seconds,
-                                    'durationMinutes': duration_minutes,  # Keep original for reference
-                                    'averageSpeed': avg_speed_ms,  # m/s
-                                }
-
+                    cached_stats, cache_source = load_drive_stats(params)
+                    if cached_stats is not None:
+                        has_data = has_drive_stats_data(cached_stats)
+                        if has_data or cache_source == 'file_cache':
+                            logger.info(
+                                "Using cached drive stats from %s: %s routes",
+                                cache_source,
+                                cached_stats.get('all', {}).get('routes', 0),
+                            )
                             all_stats = convert_stats(cached_stats.get('all', {}))
                             week_stats = convert_stats(cached_stats.get('week', {}))
-
-                            result = {
+                            self.send_json_response({
                                 'success': True,
                                 'all': all_stats,
                                 'week': week_stats,
-                                'source': 'param_cache',
-                                'timestamp': datetime.now().isoformat()
-                            }
-
-                            self.send_json_response(result)
+                                'source': cache_source,
+                                'timestamp': datetime.now().isoformat(),
+                            })
                             return
-                        else:
-                            logger.info(f"Cached stats exist but are empty (all zeros), will fetch from API")
-                    else:
-                        logger.info("No cached stats found, will fetch from API")
 
-                    # No cached data available - try fetching from Comma API first, then calculate from routes as fallback
-                    logger.info("No cached drive stats in ApiCache_DriveStats param, attempting to fetch from Comma API...")
+                    logger.info("No cached drive stats found, attempting to fetch from Comma API...")
                     
                     # Try fetching from Comma API (same as Qt widget does)
                     try:
@@ -2409,19 +2380,11 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                                 
                                 if response.status_code == 200:
                                     api_data = response.json()
-                                    # Cache the response in ApiCache_DriveStats param (same format as Qt widget expects)
-                                    # ApiCache_DriveStats is a JSON type param, so pass the dict directly, not a string
-                                    try:
-                                        params.put("ApiCache_DriveStats", api_data)
-                                        logger.info(f"Successfully cached drive stats from Comma API: {api_data.get('all', {}).get('routes', 0)} routes")
-                                    except Exception as cache_error:
-                                        # If direct dict doesn't work, try JSON string (for older Params implementations)
-                                        logger.warning(f"Direct dict cache failed, trying JSON string: {cache_error}")
-                                        try:
-                                            params.put("ApiCache_DriveStats", json.dumps(api_data))
-                                            logger.info(f"Successfully cached drive stats (as JSON string): {api_data.get('all', {}).get('routes', 0)} routes")
-                                        except Exception as cache_error2:
-                                            logger.error(f"Failed to cache drive stats: {cache_error2}")
+                                    if save_drive_stats(api_data):
+                                        logger.info(
+                                            "Cached drive stats from Comma API (rotating files): %s routes",
+                                            api_data.get('all', {}).get('routes', 0),
+                                        )
                                     logger.info(f"Successfully fetched drive stats from Comma API: {api_data.get('all', {}).get('routes', 0)} routes")
                                     
                                     # Parse and return the data
@@ -2470,7 +2433,21 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                     except Exception as api_error:
                         logger.error(f"Error fetching drive stats from Comma API: {api_error}", exc_info=True)
                     
-                    # Fallback: calculate from routes
+                    # Fallback: calculate from routes (throttled to reduce flash writes)
+                    if is_drive_stats_cache_fresh():
+                        cached_stats, cache_source = load_drive_stats(params)
+                        if cached_stats is not None:
+                            all_stats = convert_stats(cached_stats.get('all', {}))
+                            week_stats = convert_stats(cached_stats.get('week', {}))
+                            self.send_json_response({
+                                'success': True,
+                                'all': all_stats,
+                                'week': week_stats,
+                                'source': cache_source,
+                                'timestamp': datetime.now().isoformat(),
+                            })
+                            return
+
                     logger.info("Comma API fetch failed or unavailable, calculating from routes...")
                     
                     try:
@@ -2497,29 +2474,28 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                             route_base = route.get('baseName')
                             if not route_base:
                                 continue
-                            
-                            # Get cached drive stats for this route
-                            route_stats = get_route_drive_stats_cached_only(route_base)
-                            if not route_stats:
-                                # Skip routes without cached stats
+
+                            segments_count = route.get('segments', 0)
+                            if segments_count <= 0:
                                 continue
-                            
-                            # Extract distance and duration from route stats
-                            # route_stats format: {distance: miles, duration: seconds, ...}
-                            route_distance = route_stats.get('distance', 0)  # miles
-                            route_duration = route_stats.get('duration', 0)  # seconds
-                            
+
+                            route_distance, route_duration = get_route_aggregate_stats(
+                                route_base, segments_count
+                            )
+
                             # Add to all-time stats
                             all_time_stats['routes'] += 1
                             all_time_stats['distance'] += route_distance
                             all_time_stats['duration'] += route_duration
-                            
+
                             # Check if route is within last week
                             route_timestamp = route.get('timestamp')
                             if route_timestamp:
                                 try:
                                     # Parse timestamp (ISO format)
                                     route_dt = datetime.fromisoformat(route_timestamp.replace('Z', '+00:00'))
+                                    if route_dt.tzinfo is None:
+                                        route_dt = route_dt.replace(tzinfo=timezone.utc)
                                     if route_dt >= week_cutoff:
                                         week_stats['routes'] += 1
                                         week_stats['distance'] += route_distance
@@ -2550,6 +2526,8 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                         
                         all_stats = convert_calculated_stats(all_time_stats)
                         week_stats_formatted = convert_calculated_stats(week_stats)
+
+                        save_drive_stats(cache_local_drive_stats(all_time_stats, week_stats))
                         
                         logger.info(f"Calculated aggregate stats: {all_time_stats['routes']} routes, "
                                   f"{round(all_time_stats['distance'], 1)} miles, "

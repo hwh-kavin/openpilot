@@ -9,7 +9,7 @@ import logging
 import threading
 from typing import Optional
 
-from bluepilot.backend.logs import parse_manager_log_line
+from bluepilot.backend.logs import parse_swaglog_line
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +110,7 @@ class LogStreamer:
                 if msg.which() != 'logMessage':
                     continue
 
-                formatted = parse_manager_log_line(msg.logMessage)
+                formatted = parse_swaglog_line(msg.logMessage)
                 if formatted:
                     from bluepilot.backend.realtime.websocket import WebSocketEvent
                     self.broadcaster.broadcast(WebSocketEvent.LOG_LINE, {
