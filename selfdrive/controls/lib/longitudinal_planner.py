@@ -11,14 +11,14 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import RoadPitchFilter, get_T_FOLLOW, get_coast_accel
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 
-from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP, AcmComfortState
 from openpilot.sunnypilot.selfdrive.controls.lib.acm import ACM
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
@@ -32,9 +32,6 @@ _A_TOTAL_MAX_BP = [20., 40.]
 
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
-
-def get_coast_accel(pitch):
-  return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   """
@@ -57,6 +54,8 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.mpc = LongitudinalMpc(dt=dt)
     LongitudinalPlannerSP.__init__(self, self.CP, CP_SP, self.mpc)
     self.acm = ACM()
+    self.acm_comfort_state = AcmComfortState.off
+    self._road_pitch_filter = RoadPitchFilter()
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
@@ -123,6 +122,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.v_desired_filter.x = v_ego
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
+      self._road_pitch_filter.reset()
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -143,7 +143,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
-    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality)
+    acm_enabled = self.params.get_bool("dp_acm_enabled")
+    road_pitch = self._road_pitch_filter.update(sm['carControl'].orientationNED)
+    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
+                    pitch=road_pitch)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -152,13 +155,16 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     personality = sm['selfdriveState'].personality
     mode = 'e2e' if self.is_e2e(sm) else 'acc'
     user_ctrl_lon = sm['carState'].gasPressed
-    self.acm.enabled = self.params.get_bool("dp_acm_enabled")
+    self.acm.enabled = acm_enabled
     self.acm.update_states(
       sm['carControl'], sm['radarState'], user_ctrl_lon, v_ego, v_cruise,
-      mode=mode, personality=personality, dtsc_is_active=self.dec.active())
+      mode=mode, personality=personality, dtsc_is_active=self.dec.active(),
+      road_pitch=road_pitch)
     lead = sm['radarState'].leadOne if sm['radarState'].leadOne.status else None
     self.a_desired_trajectory = self.acm.update_a_desired_trajectory(
-      self.a_desired_trajectory, v_ego, lead, get_T_FOLLOW(personality))
+      self.a_desired_trajectory, v_ego, lead, get_T_FOLLOW(personality),
+      road_pitch=road_pitch)
+    self.acm_comfort_state = self.acm.comfort_state_capnp
 
     # TODO counter is only needed because radar is glitchy, remove once radar is gone
     self.fcw = self.mpc.crash_cnt > 2 and not sm['carState'].standstill

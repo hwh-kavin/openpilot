@@ -1,6 +1,6 @@
 import pyray as rl
 from collections.abc import Callable
-from openpilot.common.params import Params
+from openpilot.common.params import Params, ParamKeyType
 from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.sunnypilot.lib.styles import style
@@ -27,6 +27,7 @@ class OptionControlSP(ItemAction):
     super().__init__(enabled=enabled)
     self.params = Params()
     self.param_key = param
+    self._param_type = self.params.get_type(param)
     self.min_value = min_value
     self.max_value = max_value
     self.value_change_step = value_change_step
@@ -45,7 +46,7 @@ class OptionControlSP(ItemAction):
           break
     else:
       value = self.params.get(self.param_key, return_default=True)
-      self.current_value = int(float(value) * 100.0) if self.use_float_scaling else int(value)
+      self.current_value = int(float(value) * 100.0) if self.use_float_scaling else int(float(value))
 
     # Initialize font and button styles
     self._font = gui_app.font(FontWeight.MEDIUM)
@@ -66,9 +67,14 @@ class OptionControlSP(ItemAction):
       return
     self.current_value = value
     if self.value_map:
-      self.params.put(self.param_key, self.value_map[value])
+      mapped = self.value_map[value]
+      if self._param_type == ParamKeyType.FLOAT and not isinstance(mapped, float):
+        mapped = float(mapped)
+      self.params.put(self.param_key, mapped)
     elif self.use_float_scaling:
       self.params.put(self.param_key, value / 100.0)
+    elif self._param_type == ParamKeyType.FLOAT:
+      self.params.put(self.param_key, float(value))
     else:
       self.params.put(self.param_key, value)
     if self.on_value_changed:

@@ -55,6 +55,11 @@ FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
+STOP_DISTANCE_FLAT = 3.0
+STOP_DISTANCE_SLOPE_MAX = 5.0
+PITCH_STOP_DISTANCE_MAX = 0.080  # |pitch| (rad) at which stop distance reaches STOP_DISTANCE_SLOPE_MAX
+PITCH_SMOOTH_ALPHA_UP = 0.30
+PITCH_SMOOTH_ALPHA_DOWN = 0.05
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
@@ -83,8 +88,45 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
-def get_safe_obstacle_distance(v_ego, t_follow):
-  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
+
+def get_stop_distance_for_pitch(pitch: float) -> float:
+  """Map road pitch to stop distance: 3 m on flat, up to 5 m on steep up/downhill."""
+  slope_factor = float(np.clip(abs(pitch) / PITCH_STOP_DISTANCE_MAX, 0.0, 1.0))
+  return STOP_DISTANCE_FLAT + slope_factor * (STOP_DISTANCE_SLOPE_MAX - STOP_DISTANCE_FLAT)
+
+
+class RoadPitchFilter:
+  def __init__(self):
+    self.pitch = 0.0
+    self.initialized = False
+
+  def reset(self):
+    self.pitch = 0.0
+    self.initialized = False
+
+  def update(self, orientation_ned) -> float | None:
+    if orientation_ned is None or len(orientation_ned) != 3:
+      return None
+    new_pitch = orientation_ned[1]
+    if not self.initialized:
+      self.pitch = new_pitch
+      self.initialized = True
+    else:
+      alpha = PITCH_SMOOTH_ALPHA_UP if new_pitch > self.pitch else PITCH_SMOOTH_ALPHA_DOWN
+      self.pitch = alpha * new_pitch + (1.0 - alpha) * self.pitch
+    return self.pitch
+
+
+def get_coast_accel(pitch):
+  return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
+
+
+def get_safe_obstacle_distance(v_ego, t_follow, pitch: float | None = None):
+  if pitch is not None:
+    stop_dist = get_stop_distance_for_pitch(pitch)
+  else:
+    stop_dist = STOP_DISTANCE
+  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + stop_dist
 
 def gen_long_model():
   model = AcadosModel()
@@ -313,7 +355,8 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
+             pitch: float | None = None):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
@@ -333,7 +376,8 @@ class LongitudinalMpc:
     # TODO does this make sense when max_a is negative?
     v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
-    cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
+    cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(
+      v_cruise_clipped, t_follow, pitch)
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]

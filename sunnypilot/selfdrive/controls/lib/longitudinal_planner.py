@@ -19,6 +19,7 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+AcmComfortState = custom.LongitudinalPlanSP.AcmComfortState
 
 
 class LongitudinalPlannerSP:
@@ -137,5 +138,8 @@ class LongitudinalPlannerSP:
     e2eAlerts = longitudinalPlanSP.e2eAlerts
     e2eAlerts.greenLightAlert = self.e2e_alerts_helper.green_light_alert
     e2eAlerts.leadDepartAlert = self.e2e_alerts_helper.lead_depart_alert
+
+    acm_comfort_state = getattr(self, 'acm_comfort_state', AcmComfortState.off)
+    longitudinalPlanSP.acmComfortState = acm_comfort_state
 
     pm.send('longitudinalPlanSP', plan_sp_send)

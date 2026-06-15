@@ -194,6 +194,14 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  acmComfortState @8 :AcmComfortState;
+
+  enum AcmComfortState {
+    off @0;
+    cruiseCoast @1;
+    followCoast @2;
+    mpcFollow @3;
+  }
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
