@@ -132,6 +132,16 @@ class SidebarBP(Widget):
     self._metrics_counter = 0
     self._params_counter = 0
     self._last_update = 0
+    self._install_status = None
+    try:
+      from bluepilot.ui.widgets.install_status import InstallStatusTracker, draw_install_banner, banner_height
+      self._install_status = InstallStatusTracker()
+      self._draw_install_banner = draw_install_banner
+      self._banner_height_fn = banner_height
+    except ImportError:
+      self._draw_install_banner = None
+      self._banner_height_fn = None
+    self._banner_height = 0.0
 
     # Layout rects (calculated in _update_layout_rects)
     self._network_rect = rl.Rectangle(0, 0, 0, 0)
@@ -432,19 +442,25 @@ class SidebarBP(Widget):
   def _update_layout_rects(self):
     """Calculate all layout rectangles"""
     rect = self._rect
+    banner_h = 0.0
+    if self._install_status and self._banner_height_fn:
+      self._install_status.update()
+      banner_h = self._banner_height_fn(self._install_status)
+    self._banner_height = banner_h
+
     card_x = BPConstants.CARD_MARGIN
     card_width = BPConstants.CARD_WIDTH
 
     # Network card
     self._network_rect = rl.Rectangle(
       rect.x + card_x,
-      rect.y + BPConstants.NETWORK_CARD_Y,
+      rect.y + BPConstants.NETWORK_CARD_Y + banner_h,
       card_width,
       BPConstants.NETWORK_CARD_HEIGHT
     )
 
     # Metric cards - calculate Y positions
-    start_y = rect.y + BPConstants.NETWORK_CARD_Y + BPConstants.NETWORK_CARD_HEIGHT + BPConstants.CARD_SPACING
+    start_y = rect.y + BPConstants.NETWORK_CARD_Y + BPConstants.NETWORK_CARD_HEIGHT + BPConstants.CARD_SPACING + banner_h
 
     self._card_rects = []
     y = start_y
@@ -482,6 +498,12 @@ class SidebarBP(Widget):
 
     # Draw background with gradient
     self._draw_background(rect)
+
+    if self._install_status and self._draw_install_banner and self._banner_height > 0:
+      self._draw_install_banner(
+        rl.Rectangle(rect.x, rect.y, rect.width, self._banner_height),
+        self._install_status,
+      )
 
     # Draw network card
     self._network_card.render(self._network_rect)

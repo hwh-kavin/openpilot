@@ -55,6 +55,10 @@ VENDORED_PACKAGES=(
   "raylib:release-raylib"
 )
 
+function bootstrap_msg() {
+  echo "[bootstrap] $*"
+}
+
 function retry() {
   local attempts=$1
   shift
@@ -142,6 +146,7 @@ function fetch_vendored_package() {
 
   local dest="$OP_DEPS_CACHE/$name"
   mkdir -p "$OP_DEPS_CACHE"
+  bootstrap_msg "Downloading ${name}..."
   echo "  fetching $name ($branch) from $DEPS_REPO..."
   rm -rf "$dest"
   if ! retry 5 git clone --depth 1 --branch "$branch" "$DEPS_REPO" "$dest"; then
@@ -168,11 +173,17 @@ function install_vendored_python_packages() {
   packages=("${filtered[@]}")
   fi
 
+  local total=${#packages[@]}
+  local idx=0
+  bootstrap_msg "20% Installing native packages (0/${total})..."
   echo "installing vendored python packages from local cache..."
-  local entry name branch
+  local entry name branch pct
   for entry in "${packages[@]}"; do
     name="${entry%%:*}"
     branch="${entry#*:}"
+    idx=$((idx + 1))
+    pct=$((20 + (idx * 60 / total)))
+    bootstrap_msg "${pct}% Installing ${name} (${idx}/${total})..."
   if ! fetch_vendored_package "$name" "$branch"; then
       return 1
     fi
@@ -185,6 +196,7 @@ function install_vendored_python_packages() {
 }
 
 function install_linux_deps() {
+  bootstrap_msg "5% Checking system packages..."
   SUDO=""
 
   if [[ ! $(id -u) -eq 0 ]]; then
@@ -255,6 +267,7 @@ function install_linux_deps() {
 }
 
 function install_python_deps() {
+  bootstrap_msg "15% Setting up Python environment..."
   export PIP_DEFAULT_TIMEOUT=200
   cd "$ROOT"
 
@@ -310,10 +323,12 @@ function install_python_deps() {
     if ! install_vendored_python_packages; then
       return 1
     fi
+    bootstrap_msg "85% Installing openpilot..."
     echo "installing openpilot (editable, skip git-native rebuilds)..."
     if ! retry 5 uv pip install -e "$ROOT" --no-build-isolation --no-deps; then
       return 1
     fi
+    bootstrap_msg "90% Installing Python packages..."
     echo "installing remaining PyPI packages..."
     local pypi_reqs="$DEPS_DIR/pypi-reqs.txt"
     if [[ ! -f "$pypi_reqs" && -f "$OP_DEPS_CACHE/pypi-reqs.txt" ]]; then
@@ -338,6 +353,7 @@ function install_python_deps() {
       return 1
     fi
   else
+    bootstrap_msg "20% Installing Python packages..."
     echo "installing python packages..."
     if ! retry 5 uv "${uv_args[@]}"; then
       return 1
@@ -348,8 +364,11 @@ function install_python_deps() {
 
 # --- Main ---
 
+bootstrap_msg "0% Starting dependency setup..."
+
 if [[ "$OSTYPE" == "linux-gnu"* ]]; then
   install_linux_deps
+  bootstrap_msg "10% System packages ready"
   echo "[ ] installed system dependencies t=$SECONDS"
 elif [[ "$OSTYPE" == "darwin"* ]]; then
   if [[ $SHELL == "/bin/zsh" ]]; then
@@ -361,6 +380,7 @@ fi
 
 if [ -f "$ROOT/pyproject.toml" ]; then
   install_python_deps
+  bootstrap_msg "100% Dependencies installed"
   echo "[ ] installed python dependencies t=$SECONDS"
 fi
 

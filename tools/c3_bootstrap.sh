@@ -46,7 +46,11 @@ c3_ensure_venv() {
     return 0
   fi
   echo "Installing Python dependencies (local deps only)..."
-  "$root/tools/setup_dependencies.sh"
+  if [[ -f /AGNOS ]]; then
+    PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" python3 "$root/tools/bootstrap_venv.py"
+  else
+    "$root/tools/setup_dependencies.sh"
+  fi
 }
 
 c3_activate_venv() {
@@ -62,6 +66,15 @@ c3_ensure_build() {
   cd "$root/system/manager"
   if [[ ! -s "$root/prebuilt" ]]; then
     rm -f "$root/prebuilt"
+    if [[ -f /AGNOS ]] && [[ -x "$root/.venv/bin/python3" ]]; then
+      PYTHONPATH="$root${PYTHONPATH:+:$PYTHONPATH}" "$root/.venv/bin/python3" - <<'PY' 2>/dev/null || true
+try:
+    from bluepilot.backend.core import install_status
+    install_status.write_status("bootstrap", "installing", "Compiling openpilot...", progress=90)
+except ImportError:
+    pass
+PY
+    fi
     ./build.py
   elif [[ "$root/common/params_keys.h" -nt "$root/common/params_pyx.so" ]]; then
     echo "params_keys.h changed, rebuilding params..."

@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useWebSocketStore } from '@/stores/useWebSocketStore'
 import { useSystemStore } from '@/stores/useSystemStore'
 import { useToastStore } from '@/stores/useToastStore'
-import { WarningBanners, StatusOverlay } from '@/components/common'
+import { WarningBanners, StatusOverlay, InstallStatusBanner } from '@/components/common'
 import { ToastContainer } from '@/components/common/Toast'
 import { systemAPI } from '@/services/api'
 import type { DeviceStatus } from '@/types'
@@ -89,6 +89,7 @@ function App() {
   return (
     <BrowserRouter>
       <WarningBanners />
+      <InstallStatusBanner />
       {(deviceStatus === 'offline' || deviceStatus === 'no-network') && (
         <StatusOverlay type={deviceStatus} onRetry={handleRetryConnection} />
       )}

@@ -21,6 +21,11 @@ try:
 except ImportError:
   DEFAULT_PORTAL_PORT = 80
 
+try:
+  from bluepilot.ui.widgets.install_status import InstallStatusTracker
+except ImportError:
+  InstallStatusTracker = None
+
 
 class PortalQrMixin:
   QR_REFRESH_INTERVAL = 5  # seconds
@@ -158,6 +163,7 @@ class PortalQrPanel(PortalQrMixin, Widget):
   def __init__(self):
     super().__init__()
     self._init_portal_qr_state()
+    self._install_status = InstallStatusTracker() if InstallStatusTracker else None
     self._padding = 20
     self._was_visible = False
 
@@ -175,10 +181,25 @@ class PortalQrPanel(PortalQrMixin, Widget):
       self.regenerate_qr_code()
     self._was_visible = True
     self._check_qr_refresh()
+    if self._install_status:
+      self._install_status.update()
 
     content_x = rect.x + self._padding
     content_width = rect.width - self._padding * 2
     y = rect.y + self._padding
+
+    if self._install_status and self._install_status.active:
+      notice_font = gui_app.font(FontWeight.BOLD)
+      notice = self._install_status.message or tr("Installing portal components. Please wait...")
+      notice_wrapped = wrap_text(notice_font, notice, 34, int(content_width))
+      rl.draw_text_ex(notice_font, "\n".join(notice_wrapped[:2]), rl.Vector2(content_x, y), 34, 0.0, rl.Color(255, 195, 0, 255))
+      y += len(notice_wrapped[:2]) * 34 + 16
+      if self._install_status.progress is not None:
+        bar = rl.Rectangle(content_x, y, content_width, 8)
+        rl.draw_rectangle_rounded(bar, 1, 8, rl.Color(40, 40, 40, 255))
+        fill = rl.Rectangle(bar.x, bar.y, bar.width * self._install_status.progress / 100.0, bar.height)
+        rl.draw_rectangle_rounded(fill, 1, 8, rl.Color(70, 91, 234, 255))
+        y += 24
 
     title_font = gui_app.font(FontWeight.NORMAL)
     title = tr("Scan to open BluePilot Portal")

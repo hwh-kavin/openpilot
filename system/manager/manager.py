@@ -28,6 +28,14 @@ from openpilot.sunnypilot.system.params_migration import run_migration
 def manager_init() -> None:
   save_bootlog()
 
+  try:
+    from bluepilot.backend.core import install_status
+    data = install_status.read_status()
+    if data and data.get("phase") == "bootstrap":
+      install_status.clear_status()
+  except ImportError:
+    pass
+
   build_metadata = get_build_metadata()
 
   params = Params()

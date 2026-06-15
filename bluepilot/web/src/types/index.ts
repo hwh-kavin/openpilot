@@ -138,6 +138,15 @@ export interface WebSocketMessage {
   data?: unknown
 }
 
+export interface InstallState {
+  active: boolean
+  phase?: string
+  status?: string
+  message?: string
+  progress?: number | null
+  updated?: number
+}
+
 export interface ServerStatus {
   status: 'running' | 'idle' | 'error' | 'online' | 'onroad'
   routes_count: number
@@ -148,6 +157,7 @@ export interface ServerStatus {
   online?: boolean
   language?: string
   isMetric?: boolean
+  install?: InstallState
 }
 
 export interface VideoCamera {

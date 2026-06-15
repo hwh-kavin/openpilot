@@ -56,6 +56,12 @@ export const en = {
   'warning.firefox.message':
     'HEVC video playback is not supported. Only the LQ (H.264) camera will be available for route viewing. For full functionality, please use Safari, Chrome, or Edge.',
 
+  'install.bootstrap.title': 'Setting Up Device',
+  'install.portal.title': 'Updating Portal',
+  'install.failed.title': 'Setup Issue',
+  'install.defaultMessage': 'Installing components, please wait...',
+  'install.keepPoweredOn': 'Do not power off the device during setup.',
+
   'home.subtitle': 'Settings, routes, and diagnostics',
   'home.systemStatus': 'System Status',
   'home.uptime': 'Uptime',

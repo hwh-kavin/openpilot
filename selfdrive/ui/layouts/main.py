@@ -10,6 +10,7 @@ from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.layouts.onboarding import OnboardingWindow
 from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
+from bluepilot.ui.widgets.install_status import InstallStatusTracker, draw_install_banner, banner_height
 
 if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings import SettingsLayoutSP as SettingsLayout
@@ -28,6 +29,7 @@ class MainLayout(Widget):
     self._pm = messaging.PubMaster(['bookmarkButton'])
 
     self._sidebar = Sidebar()
+    self._install_status = InstallStatusTracker()
     self._current_mode = MainState.HOME
     self._prev_onroad = False
 
@@ -39,6 +41,7 @@ class MainLayout(Widget):
 
     self._sidebar_rect = rl.Rectangle(0, 0, 0, 0)
     self._content_rect = rl.Rectangle(0, 0, 0, 0)
+    self._banner_height = 0.0
 
     # Set callbacks
     self._setup_callbacks()
@@ -69,10 +72,13 @@ class MainLayout(Widget):
     ui_state.add_on_body_changed_callbacks(self._on_body_changed)
 
   def _update_layout_rects(self):
-    self._sidebar_rect = rl.Rectangle(self._rect.x, self._rect.y, SIDEBAR_WIDTH, self._rect.height)
+    base_y = self._rect.y + self._banner_height
+    base_h = max(0.0, self._rect.height - self._banner_height)
+
+    self._sidebar_rect = rl.Rectangle(self._rect.x, base_y, SIDEBAR_WIDTH, base_h)
 
     x_offset = SIDEBAR_WIDTH if self._sidebar.is_visible else 0
-    self._content_rect = rl.Rectangle(self._rect.x + x_offset, self._rect.y, self._rect.width - x_offset, self._rect.height)
+    self._content_rect = rl.Rectangle(self._rect.x + x_offset, base_y, self._rect.width - x_offset, base_h)
 
   def _handle_onroad_transition(self):
     if ui_state.started != self._prev_onroad:
@@ -125,10 +131,26 @@ class MainLayout(Widget):
     self._set_mode_for_state()
 
   def _render_main_content(self):
+    self._install_status.update()
+    self._banner_height = banner_height(self._install_status)
     self._update_layout_rects()
+
+    if self._banner_height > 0:
+      draw_install_banner(
+        rl.Rectangle(self._rect.x, self._rect.y, self._rect.width, self._banner_height),
+        self._install_status,
+      )
 
     if self._sidebar.is_visible:
       self._sidebar.render(self._sidebar_rect)
 
-    content_rect = self._content_rect if self._sidebar.is_visible else self._rect
+    if self._sidebar.is_visible:
+      content_rect = self._content_rect
+    else:
+      content_rect = rl.Rectangle(
+        self._rect.x,
+        self._rect.y + self._banner_height,
+        self._rect.width,
+        max(0.0, self._rect.height - self._banner_height),
+      )
     self._layouts[self._current_mode].render(content_rect)

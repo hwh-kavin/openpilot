@@ -58,6 +58,12 @@ export const zhCHS: Record<TranslationKey, string> = {
   'warning.firefox.message':
     '不支持 HEVC 视频播放，路线回放仅可使用 LQ（H.264）摄像头。如需完整功能，请使用 Safari、Chrome 或 Edge。',
 
+  'install.bootstrap.title': '正在配置设备',
+  'install.portal.title': '正在更新 Portal',
+  'install.failed.title': '安装出现问题',
+  'install.defaultMessage': '正在安装组件，请稍候...',
+  'install.keepPoweredOn': '安装过程中请勿断电或重启设备。',
+
   'home.subtitle': '设置、路线与诊断',
   'home.systemStatus': '系统状态',
   'home.uptime': '运行时间',

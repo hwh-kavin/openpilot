@@ -1029,6 +1029,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                     'routes_dir_exists': os.path.exists(ROUTES_DIR),
                     'isMetric': params.get_bool("IsMetric"),
                     'language': get_portal_language(params),
+                    'install': lifecycle.get_install_state(),
                     'timestamp': datetime.now().isoformat()
                 })
 

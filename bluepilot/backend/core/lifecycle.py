@@ -13,9 +13,16 @@ import shutil
 import threading
 from pathlib import Path
 
+from bluepilot.backend.core import install_status
+
 logger = logging.getLogger(__name__)
 
 _VENDOR_DIR = Path(__file__).resolve().parents[2] / "vendor"
+
+# Global flags to track restart state
+_restart_pending = False      # True when dependencies installed and restart needed
+_restart_triggered = False    # True when restart has been initiated (prevents double-trigger)
+_restart_lock = threading.Lock()
 
 
 def _ensure_vendor_on_path() -> None:
@@ -24,14 +31,50 @@ def _ensure_vendor_on_path() -> None:
         sys.path.insert(0, vendor)
 
 
-def _vendor_has_websockets() -> bool:
+def _remove_vendor_from_path() -> None:
+    vendor = str(_VENDOR_DIR)
+    while vendor in sys.path:
+        sys.path.remove(vendor)
+
+
+def _try_import_websockets() -> bool:
+    """Try importing websockets from vendor, then from the default environment."""
     _ensure_vendor_on_path()
+    try:
+        if "websockets" in sys.modules:
+            del sys.modules["websockets"]
+        import websockets  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    except Exception as e:
+        logger.warning("websockets import failed from vendor: %s", e)
+
+    _remove_vendor_from_path()
+    try:
+        if "websockets" in sys.modules:
+            del sys.modules["websockets"]
+        import websockets  # noqa: F401
+        return True
+    except ImportError:
+        return False
+    except Exception as e:
+        logger.warning("websockets import failed from environment: %s", e)
+        return False
+
+
+def _vendor_has_websockets() -> bool:
     return (_VENDOR_DIR / "websockets").is_dir()
+
+
+def _set_deps_status(status: str, message: str, *, progress: int | None = None) -> None:
+    install_status.write_status("portal", status, message, progress=progress)
 
 
 def _install_websockets_to_vendor() -> bool:
     """Install websockets into bluepilot/vendor (writable on device)."""
     _VENDOR_DIR.mkdir(parents=True, exist_ok=True)
+    _set_deps_status("installing", "Downloading WebSocket libraries...")
     cmd = [
         sys.executable,
         "-m",
@@ -53,11 +96,6 @@ def _install_websockets_to_vendor() -> bool:
         return False
     _ensure_vendor_on_path()
     return True
-
-# Global flags to track restart state
-_restart_pending = False      # True when dependencies installed and restart needed
-_restart_triggered = False    # True when restart has been initiated (prevents double-trigger)
-_restart_lock = threading.Lock()
 
 
 def record_crash(params):
@@ -162,16 +200,26 @@ def check_dependencies():
     Returns:
         bool: True if all dependencies are available, False if some are missing
     """
-    try:
-        _ensure_vendor_on_path()
-        import websockets  # noqa: F401
-        return True
-    except ImportError:
-        return False
-    except Exception as e:
-        # Handle any other import errors (corrupted package, etc.)
-        logger.warning(f"Unexpected error checking websockets dependency: {e}")
-        return False
+    ok = _try_import_websockets()
+    if ok:
+        install_status.reset_restart_count()
+        install_status.clear_status()
+    return ok
+
+
+def get_install_state() -> dict:
+    """Return current install/deploy status for API consumers."""
+    data = install_status.read_status()
+    if data is None:
+        return {"active": False}
+    return {
+        "active": data.get("status") in ("installing", "restarting"),
+        "phase": data.get("phase", ""),
+        "status": data.get("status", ""),
+        "message": data.get("message", ""),
+        "progress": data.get("progress"),
+        "updated": data.get("updated"),
+    }
 
 
 def is_restart_pending():
@@ -201,9 +249,20 @@ def trigger_restart():
             logger.warning("trigger_restart called but no restart is pending")
             return
 
+        if not install_status.should_allow_deps_restart():
+            logger.error("Dependency restart limit reached - skipping restart to avoid loop")
+            _restart_pending = False
+            _set_deps_status(
+                "failed",
+                "WebSocket setup failed after multiple restarts. HTTP mode remains available.",
+            )
+            return
+
         # Mark restart as triggered to prevent concurrent calls
         _restart_triggered = True
 
+    count = install_status.increment_restart_count()
+    _set_deps_status("restarting", f"Restarting portal to enable WebSocket ({count}/{install_status.MAX_DEPS_RESTARTS})...")
     logger.info("Triggering server restart to load newly installed packages...")
     logger.info("Waiting 2 seconds before restart...")
     time.sleep(2)
@@ -234,32 +293,29 @@ def install_dependencies_background(on_complete_callback=None):
     def _install_thread():
         global _restart_pending
         try:
-            # Check if websockets is available
-            try:
-                import websockets
+            if _try_import_websockets():
                 logger.info("websockets library is already available")
+                install_status.clear_status()
                 if on_complete_callback:
                     on_complete_callback(False)
                 return
-            except ImportError:
-                pass
 
             logger.info("=" * 60)
             logger.info("BACKGROUND DEPENDENCY INSTALLATION")
             logger.info("websockets library not available - installing in background")
             logger.info("HTTP API will continue working during installation")
             logger.info("=" * 60)
+            _set_deps_status("installing", "Installing WebSocket libraries...", progress=10)
 
-            if _vendor_has_websockets() and check_dependencies():
-                logger.info("websockets already available in vendor directory")
-                if on_complete_callback:
-                    on_complete_callback(False)
-                return
+            if _vendor_has_websockets() and not _try_import_websockets():
+                logger.warning("vendor/websockets exists but import failed - reinstalling")
 
+            result = None
             if _install_websockets_to_vendor():
                 result = subprocess.CompletedProcess(args=[], returncode=0)
             elif shutil.which("uv"):
                 logger.info("Installing websockets using uv pip...")
+                _set_deps_status("installing", "Installing WebSocket libraries (uv)...", progress=50)
                 result = subprocess.run(
                     ["uv", "pip", "install", "websockets", "websocket-client"],
                     capture_output=True,
@@ -268,6 +324,10 @@ def install_dependencies_background(on_complete_callback=None):
                 )
             else:
                 logger.warning("pip/uv not available - cannot install websockets automatically")
+                _set_deps_status(
+                    "failed",
+                    "Cannot install WebSocket libraries automatically. HTTP polling remains available.",
+                )
                 logger.info(
                     "To enable WebSocket support, run: python3 -m pip install "
                     "--target bluepilot/vendor websockets"
@@ -276,12 +336,13 @@ def install_dependencies_background(on_complete_callback=None):
                     on_complete_callback(False)
                 return
 
-            if result.returncode == 0:
+            if result.returncode == 0 and _try_import_websockets():
                 logger.info("=" * 60)
                 logger.info("DEPENDENCY INSTALLATION COMPLETE")
                 logger.info("websockets installed successfully")
                 logger.info("Server will restart to enable WebSocket features")
                 logger.info("=" * 60)
+                _set_deps_status("installing", "WebSocket libraries installed. Restarting soon...", progress=95)
 
                 with _restart_lock:
                     _restart_pending = True
@@ -289,18 +350,28 @@ def install_dependencies_background(on_complete_callback=None):
                 if on_complete_callback:
                     on_complete_callback(True)
             else:
-                logger.error(f"Failed to install websockets: {result.stderr}")
+                err = getattr(result, "stderr", "") or "import verification failed"
+                logger.error(f"Failed to install websockets: {err}")
+                _set_deps_status(
+                    "failed",
+                    "WebSocket install failed. HTTP polling remains available.",
+                )
                 logger.info("WebSocket features will remain disabled (HTTP polling available)")
                 if on_complete_callback:
                     on_complete_callback(False)
 
         except subprocess.TimeoutExpired:
             logger.error("Package installation timed out (120s)")
+            _set_deps_status(
+                "failed",
+                "WebSocket install timed out. Check network connection.",
+            )
             logger.info("Network may not be available. WebSocket features will remain disabled")
             if on_complete_callback:
                 on_complete_callback(False)
         except Exception as e:
             logger.error(f"Error during background package installation: {e}")
+            _set_deps_status("failed", f"WebSocket install error: {e}")
             if on_complete_callback:
                 on_complete_callback(False)
 
@@ -324,20 +395,15 @@ def ensure_dependencies():
         bool: True if restart is needed (dependencies were installed), False otherwise
     """
     try:
-        # Check if websockets is available (direct import)
-        try:
-            import websockets
+        if _try_import_websockets():
             logger.info("websockets library is available")
-            return False  # No restart needed
-        except ImportError:
-            pass
+            return False
 
         logger.warning("websockets library not available - attempting installation")
         logger.info("HTTP API will still work during installation")
+        _set_deps_status("installing", "Installing WebSocket libraries...", progress=10)
 
-        # Try to install websockets package
         try:
-            # Use uv pip install to avoid modifying pyproject.toml
             if shutil.which("uv"):
                 logger.info("Installing websockets using uv pip (user site-packages)...")
                 result = subprocess.run(
@@ -347,25 +413,30 @@ def ensure_dependencies():
                     timeout=60
                 )
 
-                if result.returncode == 0:
+                if result.returncode == 0 and _try_import_websockets():
                     logger.info("websockets installed successfully")
+                    _set_deps_status("installing", "WebSocket libraries installed. Restarting soon...", progress=95)
                     logger.info("Server will restart in 3 seconds to enable WebSocket features")
-                    return True  # Restart needed
+                    return True
                 else:
                     logger.error(f"Failed to install websockets: {result.stderr}")
+                    _set_deps_status("failed", "WebSocket install failed.")
                     logger.info("WebSocket features will remain disabled")
                     return False
             else:
                 logger.warning("uv not available - cannot install websockets automatically")
+                _set_deps_status("failed", "uv not available for WebSocket install.")
                 logger.info("To enable WebSocket support, run: uv pip install websockets websocket-client")
                 return False
 
         except subprocess.TimeoutExpired:
             logger.error("Package installation timed out (60s)")
+            _set_deps_status("failed", "WebSocket install timed out.")
             logger.info("Network may not be available yet. WebSocket features will remain disabled")
             return False
         except Exception as e:
             logger.error(f"Error during package installation: {e}")
+            _set_deps_status("failed", f"WebSocket install error: {e}")
             return False
 
     except Exception as e:
