@@ -34,6 +34,8 @@ bin/
 *.os-*
 *.so
 *.a
+!prebuilt_artifacts/**/*.so
+!deps/native_wheels/**/*.whl
 *.clb
 *.class
 *.pyxbldc

@@ -23,3 +23,25 @@ Then commit `deps/` to the repository.
 
 Launch scripts call `tools/setup_dependencies.sh`, which installs exclusively
 from this directory on AGNOS devices.
+
+## Zero-compile deploy (prebuilt)
+
+For users who deploy without compiling on the device:
+
+1. On a machine with a successful build, run:
+
+```bash
+./tools/package_prebuilt.sh
+```
+
+2. Commit and push the generated artifacts:
+
+```bash
+git add -f prebuilt prebuilt_artifacts firmware_out deps/native_wheels
+git commit -m "Update prebuilt deploy artifacts"
+git push
+```
+
+3. Fresh clones restore `prebuilt_artifacts/` on boot and skip `scons`.
+
+Required tracked paths are listed in `tools/prebuilt_paths.txt`.

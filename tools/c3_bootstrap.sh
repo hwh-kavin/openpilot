@@ -53,6 +53,22 @@ c3_ensure_venv() {
   fi
 }
 
+c3_restore_prebuilt() {
+  local root="$1"
+  # shellcheck disable=SC1091
+  source "$root/tools/restore_prebuilt.sh"
+  if [[ -f "$root/prebuilt" ]] && [[ -s "$root/prebuilt" ]]; then
+    restore_prebuilt_artifacts "$root" || true
+  fi
+}
+
+c3_prebuilt_ready() {
+  local root="$1"
+  # shellcheck disable=SC1091
+  source "$root/tools/restore_prebuilt.sh"
+  prebuilt_artifacts_valid "$root"
+}
+
 c3_activate_venv() {
   local root="$1"
   if [[ -f "$root/.venv/bin/activate" ]]; then
@@ -64,6 +80,11 @@ c3_activate_venv() {
 c3_ensure_build() {
   local root="$1"
   cd "$root/system/manager"
+  c3_restore_prebuilt "$root"
+  if c3_prebuilt_ready "$root"; then
+    echo "Prebuilt artifacts present - skipping scons build"
+    return 0
+  fi
   if [[ ! -s "$root/prebuilt" ]]; then
     rm -f "$root/prebuilt"
     if [[ -f /AGNOS ]] && [[ -x "$root/.venv/bin/python3" ]]; then
@@ -76,7 +97,7 @@ except ImportError:
 PY
     fi
     ./build.py
-  elif [[ "$root/common/params_keys.h" -nt "$root/common/params_pyx.so" ]]; then
+  elif [[ "$root/common/params_keys.h" -nt "$root/common/params_pyx.so" ]] && ! c3_prebuilt_ready "$root"; then
     echo "params_keys.h changed, rebuilding params..."
     cd "$root"
     scons common/params_pyx.so -j4

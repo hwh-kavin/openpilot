@@ -48,7 +48,8 @@ class InstallPrebuilt(build_py):
     module_dir = os.path.join(_HERE, MODULE)
     data_dir = os.path.join(module_dir, DATADIR)
 
-    if not os.path.exists(os.path.join(data_dir, "bin")):
+    has_local_data = os.path.isdir(data_dir) and bool(os.listdir(data_dir))
+    if not has_local_data and not os.path.exists(os.path.join(data_dir, "bin")):
       key = (platform.system(), platform.machine())
       plat = PLATFORM_MAP.get(key)
       if plat is None:

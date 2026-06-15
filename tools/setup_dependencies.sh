@@ -173,6 +173,15 @@ function install_vendored_python_packages() {
   packages=("${filtered[@]}")
   fi
 
+  if [[ -d "$DEPS_DIR/native_wheels" ]] && compgen -G "$DEPS_DIR/native_wheels/*.whl" > /dev/null; then
+    bootstrap_msg "20% Installing native packages from prebuilt wheels..."
+    echo "installing vendored native packages from deps/native_wheels/..."
+    if retry 3 uv pip install --no-index --find-links "$DEPS_DIR/native_wheels" "$DEPS_DIR/native_wheels"/*.whl --no-build-isolation; then
+      return 0
+    fi
+    echo "  prebuilt native wheels install failed, falling back to source build" >&2
+  fi
+
   local total=${#packages[@]}
   local idx=0
   bootstrap_msg "20% Installing native packages (0/${total})..."
