@@ -109,12 +109,15 @@ class ModularAssistiveDrivingSystem:
     # When the safety and selfdrived do not agree on controls_allowed_lateral
     # we want to disengage sunnypilot. However the status from the panda goes through
     # another socket other than the CAN messages and one can arrive earlier than the other.
-    # Therefore we allow a mismatch for two samples, then we trigger the disengagement.
+    # Allow brief transient mismatches between panda health and MADS state.
+    # Count consecutive mismatches only; spbig260427-2 did not have this check at all.
     if not self.active or self.selfdrive.enabled:
       self.lateral_mismatch_counter = 0
     elif any(not ps.controlsAllowedLateral for ps in self.selfdrive.sm['pandaStates']
              if ps.safetyModel not in IGNORED_SAFETY_MODES):
       self.lateral_mismatch_counter += 1
+    else:
+      self.lateral_mismatch_counter = 0
 
   def update_events(self, CS: structs.CarState):
     if not self.selfdrive.enabled and self.enabled:

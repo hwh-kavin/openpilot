@@ -32,7 +32,9 @@ static int get_health_pkt(void *dat) {
   health->heartbeat_lost_pkt = heartbeat_lost;
   health->safety_rx_checks_invalid_pkt = safety_rx_checks_invalid;
 
-#ifndef STM32F4
+#ifdef STM32F4
+  health->spi_error_count_pkt = 0;
+#else
   health->spi_error_count_pkt = spi_error_count;
 #endif
 
@@ -50,10 +52,13 @@ static int get_health_pkt(void *dat) {
 
 #ifdef STM32H7
   health->sound_output_level_pkt = sound_output_level;
+#else
+  health->sound_output_level_pkt = 0;
+#endif
 
+  // MADS fields must be populated on all platforms; Python/pandad always parse them.
   health->controls_allowed_lateral_pkt = controls_allowed || controls_allowed_lateral;
   health->controls_allowed_longitudinal_pkt = controls_allowed;
-#endif
 
   return sizeof(*health);
 }

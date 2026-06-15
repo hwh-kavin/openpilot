@@ -21,6 +21,7 @@
 #define MAX_IR_PANDA_VAL 50
 #define CUTOFF_IL 400
 #define SATURATE_IL 1000
+#define ALT_EXP_MADS_DISENGAGE_LATERAL_ON_BRAKE 2048
 
 ExitHandler do_exit;
 
@@ -41,8 +42,13 @@ bool check_connected(Panda *panda) {
 }
 
 bool process_mads_heartbeat(SubMaster *sm) {
+  const int &alt_exp = (*sm)["carParams"].getCarParams().getAlternativeExperience();
+  const bool disengage_lateral_on_brake = (alt_exp & ALT_EXP_MADS_DISENGAGE_LATERAL_ON_BRAKE) != 0;
+
   const auto &mads = (*sm)["selfdriveStateSP"].getSelfdriveStateSP().getMads();
-  return sm->allAliveAndValid({"selfdriveStateSP"}) && mads.getEnabled();
+  const bool heartbeat_type = disengage_lateral_on_brake ? mads.getActive() : mads.getEnabled();
+
+  return sm->allAliveAndValid({"selfdriveStateSP"}) && heartbeat_type;
 }
 
 Panda *connect(std::string serial) {
@@ -418,7 +424,7 @@ void pandad_run(Panda *panda) {
   std::thread hardware_thread(hwmon_thread);
 
   RateKeeper rk("pandad", 100);
-  SubMaster sm({"selfdriveState", "deviceState", "selfdriveStateSP"});
+  SubMaster sm({"selfdriveState", "deviceState", "selfdriveStateSP", "carParams"});
   PubMaster pm({"can", "pandaStates", "peripheralState"});
   PandaSafety panda_safety(panda);
   bool engaged = false;
