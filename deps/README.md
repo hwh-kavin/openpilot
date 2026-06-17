@@ -1,6 +1,6 @@
 # Offline build dependencies
 
-This directory contains vendored packages for C3/AGNOS installation without
+This directory contains vendored packages for local development setup without
 fetching from external networks at install time.
 
 ## Layout
@@ -19,29 +19,13 @@ On a dev machine with network access:
 
 Then commit `deps/` to the repository.
 
-## Install on device
+## Install (development machines only)
 
-Launch scripts call `tools/setup_dependencies.sh`, which installs exclusively
-from this directory on AGNOS devices.
-
-## Zero-compile deploy (prebuilt)
-
-For users who deploy without compiling on the device:
-
-1. On a machine with a successful build, run:
+Run manually when setting up a PC dev environment:
 
 ```bash
-./tools/package_prebuilt.sh
+./tools/op.sh setup
 ```
 
-2. Commit and push the generated artifacts:
-
-```bash
-git add -f prebuilt prebuilt_artifacts firmware_out deps/native_wheels
-git commit -m "Update prebuilt deploy artifacts"
-git push
-```
-
-3. Fresh clones restore `prebuilt_artifacts/` on boot and skip `scons`.
-
-Required tracked paths are listed in `tools/prebuilt_paths.txt`.
+AGNOS devices use the system Python environment; launch scripts do not run
+dependency installation on boot.

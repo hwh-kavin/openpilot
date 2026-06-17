@@ -8,7 +8,6 @@ source "$SP_C3_DIR/launch_env.sh"
 function agnos_init {
   # TODO: move this to agnos
   sudo rm -f /data/etc/NetworkManager/system-connections/*.nmmeta
-  rm -f /data/scons_cache/config.lock
 
   # set success flag for current boot slot
   sudo abctl --set_success
@@ -18,30 +17,19 @@ function agnos_init {
   sudo chgrp gpu /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0
   sudo chmod 660 /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0
 
-
-  if [ $(< /VERSION) != "$AGNOS_VERSION" ]; then
+  if [ "$(cat /VERSION 2>/dev/null)" != "$AGNOS_VERSION" ]; then
     AGNOS_PY="$DIR/system/hardware/tici/agnos.py"
-    MANIFEST="$SP_C3_DIR/agnos.json"
-    if $AGNOS_PY --verify $MANIFEST; then
+    MANIFEST="$DIR/system/hardware/tici/agnos.json"
+    if $AGNOS_PY --verify "$MANIFEST"; then
       sudo reboot
     fi
-    $AGNOS_PY --swap $MANIFEST
-    sudo reboot
+    "$DIR/system/hardware/tici/updater" "$AGNOS_PY" "$MANIFEST"
   fi
 }
 
 function launch {
   # Remove orphaned git lock if it exists on boot
   [ -f "$DIR/.git/index.lock" ] && rm -f $DIR/.git/index.lock
-
-  # Check to see if there's a valid overlay-based update available. Conditions
-  # are as follows:
-  #
-  # 1. The DIR init file has to exist, with a newer modtime than anything in
-  #    the DIR Git repo. This checks for local development work or the user
-  #    switching branches/forks, which should not be overwritten.
-  # 2. The FINALIZED consistent file has to exist, indicating there's an update
-  #    that completed successfully and synced to disk.
 
   if [ -f "${DIR}/.overlay_init" ]; then
     find ${DIR}/.git -newer ${DIR}/.overlay_init | grep -q '.' 2> /dev/null
@@ -62,38 +50,26 @@ function launch {
           exec "${LAUNCHER_LOCATION}"
         else
           echo "openpilot backup found, not updating"
-          # TODO: restore backup? This means the updater didn't start after swapping
         fi
       fi
     fi
   fi
 
-  # handle pythonpath
   ln -sfn $(pwd) /data/pythonpath
   export PYTHONPATH="$PWD"
-  if [ -f /AGNOS ] && [ "$(cat /VERSION 2>/dev/null)" = "16" ]; then
-    export PYTHONPATH="/usr/local/venv/lib/python3.12/site-packages:$PYTHONPATH"
-  fi
 
-  # hardware specific init
   if [ -f /AGNOS ]; then
     agnos_init
   fi
 
-  # write tmux scrollback to a file
   tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
-  # bootstrap: firmware, venv, build
-  # shellcheck disable=SC1091
-  source "$DIR/tools/c3_bootstrap.sh"
-  c3_stage_firmware "$DIR"
-  c3_ensure_venv "$DIR"
-  c3_activate_venv "$DIR"
-  c3_sync_branch_params "$DIR"
-  c3_ensure_build "$DIR"
+  cd "$DIR/system/manager"
+  if [ ! -f "$DIR/prebuilt" ]; then
+    ./build.py
+  fi
   ./manager.py
 
-  # if broken, keep on screen error
   while true; do sleep 1; done
 }
 

@@ -18,26 +18,13 @@ function agnos_init {
   sudo chmod 660 /dev/adsprpc-smd /dev/ion /dev/kgsl-3d0
 
   # Check if AGNOS update is required
-  if [ $(< /VERSION) != "$AGNOS_VERSION" ]; then
+  if [ "$(cat /VERSION 2>/dev/null)" != "$AGNOS_VERSION" ]; then
     AGNOS_PY="$DIR/system/hardware/tici/agnos.py"
     MANIFEST="$DIR/system/hardware/tici/agnos.json"
-    if $AGNOS_PY --verify $MANIFEST; then
+    if $AGNOS_PY --verify "$MANIFEST"; then
       sudo reboot
     fi
-
-    # Launch updater UI to display progress during download/flash.
-    if [ -f "$DIR/system/ui/updater.py" ]; then
-      cd "$DIR"
-      export PYTHONPATH="$DIR:$PYTHONPATH"
-      if ! python3 "$DIR/system/ui/updater.py" "$AGNOS_PY" "$MANIFEST"; then
-        echo "Updater UI failed, falling back to headless swap"
-        $AGNOS_PY --swap $MANIFEST
-      fi
-    else
-      $AGNOS_PY --swap $MANIFEST
-    fi
-
-    sudo reboot
+    "$DIR/system/hardware/tici/updater" "$AGNOS_PY" "$MANIFEST"
   fi
 }
 
@@ -82,9 +69,6 @@ function launch {
   # handle pythonpath
   ln -sfn $(pwd) /data/pythonpath
   export PYTHONPATH="$PWD"
-  if [ -f /AGNOS ] && [ "$(cat /VERSION 2>/dev/null)" = "16" ]; then
-    export PYTHONPATH="/usr/local/venv/lib/python3.12/site-packages:$PYTHONPATH"
-  fi
 
   # hardware specific init
   if [ -f /AGNOS ]; then
@@ -94,14 +78,11 @@ function launch {
   # write tmux scrollback to a file
   tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
-  # bootstrap: firmware, venv, build
-  # shellcheck disable=SC1091
-  source "$DIR/tools/c3_bootstrap.sh"
-  c3_stage_firmware "$DIR"
-  c3_ensure_venv "$DIR"
-  c3_activate_venv "$DIR"
-  c3_sync_branch_params "$DIR"
-  c3_ensure_build "$DIR"
+  # start manager
+  cd "$DIR/system/manager"
+  if [ ! -f "$DIR/prebuilt" ]; then
+    ./build.py
+  fi
   ./manager.py
 
   # if broken, keep on screen error

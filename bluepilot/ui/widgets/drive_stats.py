@@ -20,7 +20,12 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
 from bluepilot.ui.lib.colors import BPColors
-from bluepilot.backend.cache.drive_stats_store import load_drive_stats, save_drive_stats
+from bluepilot.backend.cache.drive_stats_store import (
+    load_drive_stats,
+    save_drive_stats,
+    reload_drive_stats,
+    get_drive_stats_cache_mtime,
+)
 
 
 # Card styling colors (matching Qt gradient: #2c2c2c -> #1a1a1a)
@@ -41,6 +46,7 @@ class DriveStatsWidget(Widget):
     self._params = Params()
     self._session = requests.Session()
     self._stats = self._get_stats()
+    self._cache_mtime = get_drive_stats_cache_mtime()
 
     self._running = True
     self._update_thread = threading.Thread(target=self._update_loop, daemon=True)
@@ -58,6 +64,17 @@ class DriveStatsWidget(Widget):
     stats, _source = load_drive_stats(self._params)
     return stats or {}
 
+  def _reload_stats_if_cache_changed(self):
+    cache_mtime = get_drive_stats_cache_mtime()
+    if cache_mtime != self._cache_mtime:
+      self._cache_mtime = cache_mtime
+      self._stats = self._get_stats()
+
+  def show_event(self):
+    super().show_event()
+    self._stats = reload_drive_stats(self._params, recalculate_if_stale=True)
+    self._cache_mtime = get_drive_stats_cache_mtime()
+
   def _fetch_drive_stats(self):
     try:
       dongle_id = self._params.get("DongleId")
@@ -68,17 +85,22 @@ class DriveStatsWidget(Widget):
       if response.status_code == 200:
         data = response.json()
         self._stats = data
-        save_drive_stats(data)
+        if save_drive_stats(data):
+          self._cache_mtime = get_drive_stats_cache_mtime()
     except Exception as e:
       cloudlog.error(f"Failed to fetch drive stats: {e}")
 
   def _update_loop(self):
     while self._running:
       if not ui_state.started and device._awake:
+        self._stats = reload_drive_stats(self._params, recalculate_if_stale=True)
+        self._cache_mtime = get_drive_stats_cache_mtime()
         self._fetch_drive_stats()
       time.sleep(self.UPDATE_INTERVAL)
 
   def _render(self, rect: rl.Rectangle):
+    self._reload_stats_if_cache_changed()
+
     is_metric = self._params.get_bool("IsMetric")
 
     all_time = self._stats.get("all", {})

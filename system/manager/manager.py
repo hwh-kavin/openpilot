@@ -24,17 +24,22 @@ from openpilot.system.hardware import PC
 
 from openpilot.sunnypilot.system.params_migration import run_migration
 
+from openpilot.common.panda_loader import load_panda_module
+
+_panda_mod = load_panda_module()
+sys.modules["panda"] = _panda_mod
+
 
 def manager_init() -> None:
-  save_bootlog()
-
+  import fcntl
+  _manager_lock = open("/var/tmp/openpilot_manager.lock", "w")
   try:
-    from bluepilot.backend.core import install_status
-    data = install_status.read_status()
-    if data and data.get("phase") == "bootstrap":
-      install_status.clear_status()
-  except ImportError:
-    pass
+    fcntl.flock(_manager_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+  except BlockingIOError:
+    print("ERROR: openpilot manager is already running", file=sys.stderr)
+    sys.exit(1)
+
+  save_bootlog()
 
   build_metadata = get_build_metadata()
 

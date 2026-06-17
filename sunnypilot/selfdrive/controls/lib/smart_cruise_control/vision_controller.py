@@ -8,11 +8,13 @@ import numpy as np
 
 import cereal.messaging as messaging
 from cereal import custom
+from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_scc_accel_scale
 
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
 
@@ -33,8 +35,11 @@ _NO_OVERSHOOT_TIME_HORIZON = 4.  # s. Time to use for velocity desired based on 
 
 # Lookup table for the minimum smooth deceleration during the ENTERING state
 # depending on the actual maximum absolute lateral acceleration predicted on the turn ahead.
-_ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]  # min decel value allowed on ENTERING state
+_ENTERING_SMOOTH_DECEL_V = [-0.05, -0.6]  # min decel value allowed on ENTERING state
 _ENTERING_SMOOTH_DECEL_BP = [1.3, 3.]  # absolute value of lat acc ahead
+
+_A_TARGET_FILTER_RC = 0.45  # s, smooth accel target across turn state transitions
+_V_TARGET_FILTER_RC = 0.65  # s, smooth curve speed target fed to MPC
 
 # Lookup table for the acceleration for the TURNING state
 # depending on the current lateral acceleration of the vehicle.
@@ -65,13 +70,16 @@ class SmartCruiseControlVision:
     self.state = VisionState.disabled
     self.current_lat_acc = 0.
     self.max_pred_lat_acc = 0.
+    self._a_target_filter = FirstOrderFilter(0.0, _A_TARGET_FILTER_RC, DT_MDL, initialized=False)
+    self._v_target_filter = FirstOrderFilter(0.0, _V_TARGET_FILTER_RC, DT_MDL, initialized=False)
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
-      return max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
+      v_turn = max(self.v_target, MIN_V)
+      return v_turn + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
 
     return V_CRUISE_UNSET
 
@@ -160,7 +168,7 @@ class SmartCruiseControlVision:
 
     return enabled, active
 
-  def _update_solution(self) -> float:
+  def _update_solution(self, personality) -> float:
     # DISABLED, ENABLED, OVERRIDING
     if self.state not in ACTIVE_STATES:
       # when not overshooting, calculate v_turn as the speed at the prediction horizon when following
@@ -181,7 +189,7 @@ class SmartCruiseControlVision:
     else:
       raise NotImplementedError(f"SCC-V state not supported: {self.state}")
 
-    return a_target
+    return float(a_target * get_scc_accel_scale(personality))
 
   def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float,
              v_cruise_setpoint: float) -> None:
@@ -195,7 +203,16 @@ class SmartCruiseControlVision:
     self._update_calculations(sm)
 
     self.is_enabled, self.is_active = self._update_state_machine()
-    self.a_target = self._update_solution()
+    personality = sm['selfdriveState'].personality
+    raw_a_target = self._update_solution(personality)
+    self.a_target = self._a_target_filter.update(raw_a_target)
+
+    if self.is_active:
+      v_turn = max(self.v_target, MIN_V)
+      self._v_target_filter.update(v_turn)
+      self.v_target = self._v_target_filter.x
+    elif not self._v_target_filter.initialized:
+      self._v_target_filter.update(max(self.v_ego, MIN_V))
 
     self.output_v_target = self.get_v_target_from_control()
     self.output_a_target = self.get_a_target_from_control()

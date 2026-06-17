@@ -54,22 +54,25 @@ T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
-STOP_DISTANCE = 6.0
+STOP_DISTANCE = 6.0  # legacy default; flat stop gap uses STOP_DISTANCE_FLAT
 STOP_DISTANCE_FLAT = 3.0
 STOP_DISTANCE_SLOPE_MAX = 5.0
 PITCH_STOP_DISTANCE_MAX = 0.080  # |pitch| (rad) at which stop distance reaches STOP_DISTANCE_SLOPE_MAX
+PITCH_STOP_DISTANCE_DEADZONE = 0.025  # ~1.4 deg; ignore mounting bias on flat roads
+STANDSTILL_HEADWAY_SPEED = 0.3  # below this, use stop buffer only (no time-headway inflation)
 PITCH_SMOOTH_ALPHA_UP = 0.30
 PITCH_SMOOTH_ALPHA_DOWN = 0.05
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
+A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 MIN_X_LEAD_FACTOR = 0.5
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
-  if personality==log.LongitudinalPersonality.relaxed:
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 1.5
+  elif personality == log.LongitudinalPersonality.standard:
     return 1.0
-  elif personality==log.LongitudinalPersonality.standard:
-    return 1.0
-  elif personality==log.LongitudinalPersonality.aggressive:
+  elif personality == log.LongitudinalPersonality.aggressive:
     return 0.5
   else:
     raise NotImplementedError("Longitudinal personality not supported")
@@ -85,13 +88,73 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
+
+def _personality_max_accel_vals(personality=log.LongitudinalPersonality.standard):
+  if personality == log.LongitudinalPersonality.relaxed:
+    return [1.0, 0.85, 0.65, 0.50]
+  if personality == log.LongitudinalPersonality.aggressive:
+    return [1.9, 1.45, 1.05, 0.75]
+  return [1.6, 1.2, 0.8, 0.6]
+
+
+def get_max_accel(v_ego, personality=log.LongitudinalPersonality.standard):
+  return float(np.interp(v_ego, A_CRUISE_MAX_BP, _personality_max_accel_vals(personality)))
+
+
+def get_cruise_max_accel(personality=log.LongitudinalPersonality.standard):
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 1.0
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 1.9
+  return CRUISE_MAX_ACCEL
+
+
+def get_cruise_min_accel(personality=log.LongitudinalPersonality.standard):
+  if personality == log.LongitudinalPersonality.relaxed:
+    return -1.0
+  if personality == log.LongitudinalPersonality.aggressive:
+    return -1.4
+  return CRUISE_MIN_ACCEL
+
+
+def get_accel_slew_rate(personality=log.LongitudinalPersonality.standard):
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 0.03
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 0.08
+  return 0.05
+
+
+def get_start_accel(personality, base_start_accel: float) -> float:
+  if personality == log.LongitudinalPersonality.relaxed:
+    factor = 0.55
+  elif personality == log.LongitudinalPersonality.aggressive:
+    factor = 1.25
+  else:
+    factor = 1.0
+  return float(base_start_accel * factor)
+
+
+def get_scc_accel_scale(personality=log.LongitudinalPersonality.standard):
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 0.75
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 1.15
+  return 1.0
+
+
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
 
 def get_stop_distance_for_pitch(pitch: float) -> float:
   """Map road pitch to stop distance: 3 m on flat, up to 5 m on steep up/downhill."""
-  slope_factor = float(np.clip(abs(pitch) / PITCH_STOP_DISTANCE_MAX, 0.0, 1.0))
+  pitch_abs = abs(pitch)
+  if pitch_abs <= PITCH_STOP_DISTANCE_DEADZONE:
+    return STOP_DISTANCE_FLAT
+  effective_pitch = pitch_abs - PITCH_STOP_DISTANCE_DEADZONE
+  effective_max = PITCH_STOP_DISTANCE_MAX - PITCH_STOP_DISTANCE_DEADZONE
+  slope_factor = float(np.clip(effective_pitch / max(effective_max, 1e-6), 0.0, 1.0))
   return STOP_DISTANCE_FLAT + slope_factor * (STOP_DISTANCE_SLOPE_MAX - STOP_DISTANCE_FLAT)
 
 
@@ -122,11 +185,18 @@ def get_coast_accel(pitch):
 
 
 def get_safe_obstacle_distance(v_ego, t_follow, pitch: float | None = None):
-  if pitch is not None:
-    stop_dist = get_stop_distance_for_pitch(pitch)
-  else:
-    stop_dist = STOP_DISTANCE
-  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + stop_dist
+  stop_dist = get_stop_distance_for_pitch(0.0 if pitch is None else pitch)
+  kinetic = (v_ego**2) / (2 * COMFORT_BRAKE)
+  headway = t_follow * v_ego
+  moving_dist = kinetic + headway + stop_dist
+  try:
+    from casadi import MX, SX, if_else
+    if isinstance(v_ego, (SX, MX)):
+      return if_else(v_ego >= STANDSTILL_HEADWAY_SPEED, moving_dist, stop_dist)
+  except ImportError:
+    pass
+  v_arr = np.asarray(v_ego, dtype=float)
+  return np.where(v_arr >= STANDSTILL_HEADWAY_SPEED, moving_dist, stop_dist)
 
 def gen_long_model():
   model = AcadosModel()
@@ -372,9 +442,10 @@ class LongitudinalMpc:
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.
-    v_lower = v_ego + (T_IDXS * CRUISE_MIN_ACCEL * 1.05)
-    # TODO does this make sense when max_a is negative?
-    v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
+    cruise_min = get_cruise_min_accel(personality)
+    cruise_max = get_cruise_max_accel(personality)
+    v_lower = v_ego + (T_IDXS * cruise_min * 1.05)
+    v_upper = v_ego + (T_IDXS * cruise_max * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(
       v_cruise_clipped, t_follow, pitch)

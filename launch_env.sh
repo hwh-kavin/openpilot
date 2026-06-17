@@ -15,9 +15,9 @@ export FPS=20
 # ui runs at 20fps (50ms frame budget), with enough headroom to preempt model workloads.
 export QCOM_PRIORITY=12
 
-# C3 (comma tici) stays on AGNOS 16; C3X branches may target newer AGNOS.
+# Comma 3 (tici) and this fork target AGNOS 16.
 if [ -z "$AGNOS_VERSION" ]; then
-  export AGNOS_VERSION="18.4"
+  export AGNOS_VERSION="16"
 fi
 
 export STAGING_ROOT="/data/safe_staging"

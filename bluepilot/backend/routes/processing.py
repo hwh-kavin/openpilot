@@ -1121,6 +1121,66 @@ def cache_local_drive_stats(all_stats, week_stats):
     return build_drive_stats_payload(all_stats, week_stats)
 
 
+def recalculate_aggregate_drive_stats():
+    """Recalculate aggregate drive stats from local routes and persist to cache."""
+    from datetime import datetime, timezone, timedelta
+
+    from bluepilot.backend.cache.drive_stats_store import save_drive_stats
+    from bluepilot.backend.routes.scanner import scan_routes
+
+    all_routes = scan_routes()
+    week_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+
+    all_time_stats = {
+        'routes': 0,
+        'distance': 0.0,
+        'duration': 0.0,
+    }
+    week_stats = {
+        'routes': 0,
+        'distance': 0.0,
+        'duration': 0.0,
+    }
+
+    for route in all_routes:
+        route_base = route.get('baseName')
+        if not route_base:
+            continue
+
+        segments_count = route.get('segments', 0)
+        if segments_count <= 0:
+            continue
+
+        route_distance, route_duration = get_route_aggregate_stats(route_base, segments_count)
+
+        all_time_stats['routes'] += 1
+        all_time_stats['distance'] += route_distance
+        all_time_stats['duration'] += route_duration
+
+        route_timestamp = route.get('timestamp')
+        if route_timestamp:
+            try:
+                route_dt = datetime.fromisoformat(route_timestamp.replace('Z', '+00:00'))
+                if route_dt.tzinfo is None:
+                    route_dt = route_dt.replace(tzinfo=timezone.utc)
+                if route_dt >= week_cutoff:
+                    week_stats['routes'] += 1
+                    week_stats['distance'] += route_distance
+                    week_stats['duration'] += route_duration
+            except (ValueError, AttributeError) as exc:
+                logger.debug("Could not parse route timestamp %s: %s", route_timestamp, exc)
+
+    payload = cache_local_drive_stats(all_time_stats, week_stats)
+    save_drive_stats(payload)
+    logger.info(
+        "Recalculated aggregate drive stats: %s routes, %.1f miles, %.1f hours",
+        all_time_stats['routes'],
+        all_time_stats['distance'],
+        all_time_stats['duration'] / 3600,
+    )
+    return payload
+
+
 def check_processing_status(route_base):
     """Check what has already been processed for this route
 

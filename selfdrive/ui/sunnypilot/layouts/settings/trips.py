@@ -20,7 +20,12 @@ from openpilot.system.ui.lib.application import gui_app, FontWeight, FONT_SCALE
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.lib.text_measure import measure_text_cached
 from openpilot.system.ui.widgets import Widget
-from bluepilot.backend.cache.drive_stats_store import load_drive_stats, save_drive_stats
+from bluepilot.backend.cache.drive_stats_store import (
+    load_drive_stats,
+    save_drive_stats,
+    reload_drive_stats,
+    get_drive_stats_cache_mtime,
+)
 
 
 class TripsLayout(Widget):
@@ -32,6 +37,7 @@ class TripsLayout(Widget):
     self._params = Params()
     self._session = requests.Session()
     self._stats = self._get_stats()
+    self._cache_mtime = get_drive_stats_cache_mtime()
 
     self._icon_distance = gui_app.texture("icons/road.png", 100, 100, keep_aspect_ratio=True)
     self._icon_drives = gui_app.texture("icons_mici/wheel.png", 80, 80, keep_aspect_ratio=True)
@@ -53,6 +59,17 @@ class TripsLayout(Widget):
     stats, _source = load_drive_stats(self._params)
     return stats or {}
 
+  def _reload_stats_if_cache_changed(self):
+    cache_mtime = get_drive_stats_cache_mtime()
+    if cache_mtime != self._cache_mtime:
+      self._cache_mtime = cache_mtime
+      self._stats = self._get_stats()
+
+  def show_event(self):
+    super().show_event()
+    self._stats = reload_drive_stats(self._params, recalculate_if_stale=True)
+    self._cache_mtime = get_drive_stats_cache_mtime()
+
   def _fetch_drive_stats(self):
     try:
       dongle_id = self._params.get("DongleId")
@@ -63,13 +80,16 @@ class TripsLayout(Widget):
       if response.status_code == 200:
         data = response.json()
         self._stats = data
-        save_drive_stats(data)
+        if save_drive_stats(data):
+          self._cache_mtime = get_drive_stats_cache_mtime()
     except Exception as e:
       cloudlog.error(f"Failed to fetch drive stats: {e}")
 
   def _update_loop(self):
     while self._running:
       if not ui_state.started and device._awake:
+        self._stats = reload_drive_stats(self._params, recalculate_if_stale=True)
+        self._cache_mtime = get_drive_stats_cache_mtime()
         self._fetch_drive_stats()
       time.sleep(self.UPDATE_INTERVAL)
 
@@ -126,6 +146,8 @@ class TripsLayout(Widget):
     return y + height
 
   def _render(self, rect: rl.Rectangle):
+    self._reload_stats_if_cache_changed()
+
     x = rect.x
     y = rect.y
     w = rect.width

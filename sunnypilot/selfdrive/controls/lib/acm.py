@@ -452,6 +452,7 @@ class ACM:
     self.comfort_state = ComfortState.OFF
     self.personality = log.LongitudinalPersonality.standard
     self._dtsc_is_active = False
+    self._scc_is_active = False
     self._is_normal_mode = True
 
     self.coasting = CoastingLogic()
@@ -467,12 +468,13 @@ class ACM:
     return COMFORT_STATE_TO_CAPNP.get(self.comfort_state, AcmComfortState.off)
 
   def update_states(self, cc, rs, user_ctrl_lon, v_ego, v_cruise, mode='acc', personality=log.LongitudinalPersonality.standard,
-                    dtsc_is_active=False, road_pitch: float | None = None):
+                    dtsc_is_active=False, scc_active=False, road_pitch: float | None = None):
     self.personality = personality
     self._dtsc_is_active = dtsc_is_active
+    self._scc_is_active = scc_active
     self._is_normal_mode = (mode == 'acc')
 
-    if not self.enabled or road_pitch is None:
+    if not self.enabled or road_pitch is None or scc_active:
       self.comfort_state = ComfortState.OFF
       self.coasting.active = False
       self.coasting.coast_strength = 0.0
@@ -512,7 +514,7 @@ class ACM:
 
   def update_a_desired_trajectory(self, a_desired_trajectory, v_ego=0.0, lead=None, t_follow=None,
                                     road_pitch: float | None = None):
-    if self._dtsc_is_active or not self._is_normal_mode or not self.enabled:
+    if self._dtsc_is_active or self._scc_is_active or not self._is_normal_mode or not self.enabled:
       return a_desired_trajectory
 
     if t_follow is None:

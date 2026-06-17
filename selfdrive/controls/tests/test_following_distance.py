@@ -11,7 +11,7 @@ from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 def desired_follow_distance(v_ego, v_lead, t_follow=None):
   if t_follow is None:
     t_follow = get_T_FOLLOW()
-  return get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+  return get_safe_obstacle_distance(v_ego, t_follow, pitch=0.0) - get_stopped_equivalence_factor(v_lead)
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
   man = Maneuver(

@@ -120,9 +120,27 @@ def save_drive_stats(payload: Dict[str, Any]) -> bool:
     return _rotating_cache.write_if_changed(payload)
 
 
+def get_drive_stats_cache_mtime() -> Optional[float]:
+    """Return mtime of the newest drive stats cache slot, if any."""
+    return _rotating_cache.latest_mtime()
+
+
 def is_drive_stats_cache_fresh(max_age_seconds: int = DEFAULT_FRESH_SECONDS) -> bool:
     """Return True if rotating cache was updated recently."""
-    latest_mtime = _rotating_cache.latest_mtime()
+    latest_mtime = get_drive_stats_cache_mtime()
     if latest_mtime is None:
         return False
     return (time.time() - latest_mtime) <= max_age_seconds
+
+
+def reload_drive_stats(params=None, recalculate_if_stale: bool = False) -> Dict[str, Any]:
+    """Load drive stats, optionally recalculating from local routes when cache is stale."""
+    if recalculate_if_stale and not is_drive_stats_cache_fresh():
+        try:
+            from bluepilot.backend.routes.processing import recalculate_aggregate_drive_stats
+            recalculate_aggregate_drive_stats()
+        except Exception as exc:
+            logger.warning("Failed to recalculate aggregate drive stats: %s", exc)
+
+    stats, _source = load_drive_stats(params)
+    return stats or {}
