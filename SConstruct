@@ -41,13 +41,38 @@ assert arch in [
 ]
 
 pkg_names = ['acados', 'bzip2', 'capnproto', 'catch2', 'eigen', 'ffmpeg', 'json11', 'libjpeg', 'libyuv', 'ncurses', 'zeromq', 'zstd']
-pkgs = [importlib.import_module(name) for name in pkg_names]
-acados = pkgs[pkg_names.index('acados')]
+
+class _VendoredAcados:
+  """Acados vendored in third_party/ for TICI (no pip install required)."""
+  DIR = Dir("#third_party/acados").abspath
+  INCLUDE_DIR = Dir("#third_party/acados/include").abspath
+  LIB_DIR = Dir(f"#third_party/acados/{arch}/lib").abspath
+  TEMPLATE_DIR = Dir("#third_party/acados/acados_template").abspath
+  TERA_PATH = File(f"#third_party/acados/{arch}/t_renderer").abspath
+
+if arch == "larch64":
+  acados = _VendoredAcados()
+  pkgs = []
+else:
+  pkgs = [importlib.import_module(name) for name in pkg_names]
+  acados = pkgs[pkg_names.index('acados')]
+
 acados_include_dirs = [
   acados.INCLUDE_DIR,
   os.path.join(acados.INCLUDE_DIR, "blasfeo", "include"),
   os.path.join(acados.INCLUDE_DIR, "hpipm", "include"),
 ]
+
+larch64_cpppath = [
+  "#third_party",
+  "#third_party/json11",
+  "#third_party/linux/include",
+  "#third_party/catch2/include",
+] if arch == "larch64" else []
+
+larch64_libpath = [
+  "#third_party",
+] if arch == "larch64" else []
 
 
 # ***** enforce a whitelist of system libraries *****
@@ -91,7 +116,7 @@ def _libflags(target, source, env, for_signature):
 env = Environment(
   ENV={
     "PATH": os.environ['PATH'],
-    "PYTHONPATH": Dir("#").abspath,
+    "PYTHONPATH": Dir("#").abspath + (':' + Dir("#third_party/acados").abspath if arch == "larch64" else ''),
     "ACADOS_SOURCE_DIR": acados.DIR,
     "ACADOS_PYTHON_INTERFACE_PATH": acados.TEMPLATE_DIR,
     "TERA_PATH": acados.TERA_PATH
@@ -114,6 +139,7 @@ env = Environment(
   CPPPATH=[
     "#",
     "#msgq",
+    larch64_cpppath,
     acados_include_dirs,
     [x.INCLUDE_DIR for x in pkgs],
   ],
@@ -122,6 +148,8 @@ env = Environment(
     "#msgq_repo",
     "#selfdrive/pandad",
     "#rednose/helpers",
+    larch64_libpath,
+    acados.LIB_DIR,
     [x.LIB_DIR for x in pkgs],
   ],
   RPATH=[],
@@ -139,6 +167,8 @@ if arch == "larch64":
   env["CC"] = "clang"
   env["CXX"] = "clang++"
   env.Append(LIBPATH=[
+    "/usr/local/lib",
+    "/system/vendor/lib64",
     "/usr/lib/aarch64-linux-gnu",
   ])
   env.Append(CPPPATH=["#third_party/linux/include"])
@@ -210,6 +240,9 @@ def prune_cache_dir(target=None, source=None, env=None):
     os.unlink(f)
 
 # ********** start building stuff **********
+
+if arch == "larch64":
+  SConscript(['third_party/SConscript'])
 
 # Build common module
 SConscript(['common/SConscript'])

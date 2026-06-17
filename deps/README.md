@@ -27,5 +27,7 @@ Run manually when setting up a PC dev environment:
 ./tools/op.sh setup
 ```
 
-AGNOS devices use the system Python environment; launch scripts do not run
-dependency installation on boot.
+AGNOS devices use the system Python environment. Acados is vendored in
+`third_party/acados/` (no pip install on device). On boot,
+`tools/stage_acados.sh` copies ARM binaries from `deps/acados/acados/install/`
+when git-lfs pointer files are detected.

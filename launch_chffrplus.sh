@@ -73,6 +73,7 @@ function launch {
   # hardware specific init
   if [ -f /AGNOS ]; then
     agnos_init
+    "$DIR/tools/stage_acados.sh"
   fi
 
   # write tmux scrollback to a file

@@ -60,6 +60,7 @@ function launch {
 
   if [ -f /AGNOS ]; then
     agnos_init
+    "$DIR/tools/stage_acados.sh"
   fi
 
   tmux capture-pane -pq -S-1000 > /tmp/launch_log
