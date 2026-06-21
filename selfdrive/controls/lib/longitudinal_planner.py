@@ -162,6 +162,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_desired_trajectory = self.acm.update_a_desired_trajectory(
       self.a_desired_trajectory, v_ego, lead, get_T_FOLLOW(personality),
       road_pitch=road_pitch)
+    self.v_desired_trajectory = self.acm.update_v_desired_trajectory(self.v_desired_trajectory, v_ego)
     self.acm_comfort_state = self.acm.comfort_state_capnp
 
     # TODO counter is only needed because radar is glitchy, remove once radar is gone

@@ -419,6 +419,9 @@ class LongitudinalMpc:
     # MPC will not converge if immediate crash is expected
     # Clip lead distance to what is still possible to brake for
     min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead) * (v_ego - v_lead) / (-ACCEL_MIN * 2)
+    # 只有前车已停止时才强制最小3米停车距离
+    if v_lead < 0.5:  # 前车速度<0.5m/s(约2km/h)视为停止
+      min_x_lead = max(min_x_lead, 3.0)
     x_lead = np.clip(x_lead, min_x_lead, 1e8)
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10., 5.)

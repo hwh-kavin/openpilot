@@ -38,6 +38,7 @@ EMERGENCY_RELATIVE_SPEED = 10.0
 EMERGENCY_DECEL_THRESHOLD = -1.5
 
 LEAD_COOLDOWN_TIME = 0.5
+CRUISE_SPEED_ENTRY_TOLERANCE = 3.0  # m/s below v_cruise still allows cruise coast entry (~10km/h)
 FOLLOW_COAST_COOLDOWN_TIME = 0.5
 FOLLOW_COAST_SPEED_MAX = 5.5
 FOLLOW_COAST_MARGIN_BASE = 0.8
@@ -134,6 +135,8 @@ class CoastingLogic:
     self.active = False
     self.coast_strength = 1.0
     self.current_max_offset = 0.0
+    self.coast_v_cruise = 0.0
+    self.coast_v_upper = 0.0
     self._last_lead_time = 0.0
 
   def check_emergency(self, lead, v_ego, current_time):
@@ -169,8 +172,10 @@ class CoastingLogic:
     else:
       self.current_max_offset = SPEED_OFFSET_MAX_FLAT_KPH
 
-    upper_bound = v_cruise + (self.current_max_offset / 3.6)
-    is_in_coast_window = (v_ego >= v_cruise and v_ego < upper_bound)
+    self.coast_v_cruise = v_cruise
+    self.coast_v_upper = v_cruise + (self.current_max_offset / 3.6)
+    lower_bound = v_cruise - CRUISE_SPEED_ENTRY_TOLERANCE
+    is_in_coast_window = (v_ego >= lower_bound and v_ego < self.coast_v_upper)
     in_cooldown = (current_time - self._last_lead_time) < LEAD_COOLDOWN_TIME
 
     self.active = (not has_lead and
@@ -181,19 +186,24 @@ class CoastingLogic:
                    is_in_coast_window and
                    self.coast_strength > 0.0)
 
-  def process_trajectory(self, a_desired_trajectory):
+  def process_trajectory(self, a_desired_trajectory, pitch):
+    if not self.active or pitch is None:
+      return a_desired_trajectory
+
     traj = np.copy(a_desired_trajectory)
-    strength = self.coast_strength
-    if self.active and strength > 0.0:
-      min_accel = np.min(traj)
-      if min_accel < EMERGENCY_DECEL_THRESHOLD:
-        self.active = False
-      else:
-        mask = (traj > -0.15) & (traj < 0.0)
-        if np.any(mask):
-          scale = 1.0 - strength * (1.0 - np.abs(traj[mask]) / 0.15)
-          traj[mask] = traj[mask] * scale
-    return traj
+    if np.min(traj) < EMERGENCY_DECEL_THRESHOLD:
+      self.active = False
+      return a_desired_trajectory
+
+    a_floor = get_coast_accel(pitch)
+    return np.maximum(traj, a_floor)
+
+  def process_v_trajectory(self, v_desired_trajectory, v_ego):
+    if not self.active:
+      return v_desired_trajectory
+
+    v_min_target = max(self.coast_v_cruise, v_ego)
+    return np.clip(np.maximum(v_desired_trajectory, v_min_target), self.coast_v_cruise, self.coast_v_upper)
 
 
 # =========================================================
@@ -523,9 +533,18 @@ class ACM:
     pitch = road_pitch if road_pitch is not None else self.current_pitch
 
     if self.comfort_state == ComfortState.CRUISE_COAST:
-      return self.coasting.process_trajectory(a_desired_trajectory)
+      return self.coasting.process_trajectory(a_desired_trajectory, pitch)
 
     if self.comfort_state == ComfortState.FOLLOW_COAST:
       return self.follow_coast.process_trajectory(a_desired_trajectory, pitch)
 
     return self.soft_hold.process_trajectory(a_desired_trajectory, v_ego, lead, pitch, t_follow)
+
+  def update_v_desired_trajectory(self, v_desired_trajectory, v_ego=0.0):
+    if self._dtsc_is_active or self._scc_is_active or not self._is_normal_mode or not self.enabled:
+      return v_desired_trajectory
+
+    if self.comfort_state == ComfortState.CRUISE_COAST:
+      return self.coasting.process_v_trajectory(v_desired_trajectory, v_ego)
+
+    return v_desired_trajectory
