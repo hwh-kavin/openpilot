@@ -1096,23 +1096,49 @@ def get_route_gps_metrics_cached_only(route_base):
 def get_route_aggregate_stats(route_base, segments_count=0):
     """Return (distance_miles, duration_seconds) for aggregate drive stats.
 
-    Prefers cached drive stats, then GPS cache, then segment-based duration.
+    Uses per-route drive stats (cache or log extraction), then GPS metrics,
+    then segment-count duration as a last resort.
     """
+    from bluepilot.backend.routes.segments import get_route_segments
+
+    segments = get_route_segments(route_base)
+    segment_count = len(segments) if segments else max(0, int(segments_count or 0))
+    fallback_duration = float(segment_count * 60)
+
+    if segments:
+        stats = get_route_drive_stats(route_base, segments)
+        if stats:
+            distance = float(stats.get('distance') or 0)
+            duration = float(stats.get('duration') or 0)
+            if distance > 0:
+                return distance, duration if duration > 0 else fallback_duration
+            if duration > 0:
+                gps = get_route_gps_metrics(route_base, segments)
+                if gps and gps.get('has_gps_data'):
+                    distance = float(gps.get('total_distance_meters') or 0) / 1609.34
+                    if distance > 0:
+                        return distance, duration
+
+        gps = get_route_gps_metrics(route_base, segments)
+        if gps and gps.get('has_gps_data'):
+            distance = float(gps.get('total_distance_meters') or 0) / 1609.34
+            if distance > 0:
+                return distance, fallback_duration
+
     stats = get_route_drive_stats_cached_only(route_base)
     if stats:
         distance = float(stats.get('distance') or 0)
         duration = float(stats.get('duration') or 0)
-        if distance > 0 or duration > 0:
-            return distance, duration
-
-    duration = max(0, int(segments_count or 0)) * 60
-    distance = 0.0
+        if distance > 0:
+            return distance, duration if duration > 0 else fallback_duration
 
     gps = get_route_gps_metrics_cached_only(route_base)
     if gps and gps.get('has_gps_data'):
         distance = float(gps.get('total_distance_meters') or 0) / 1609.34
+        if distance > 0:
+            return distance, fallback_duration
 
-    return distance, duration
+    return 0.0, fallback_duration
 
 
 def cache_local_drive_stats(all_stats, week_stats):

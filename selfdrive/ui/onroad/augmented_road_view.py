@@ -12,6 +12,7 @@ from openpilot.selfdrive.ui.onroad.cameraview import CameraView
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
 from openpilot.common.transformations.orientation import rot_from_euler
+from bluepilot.ui.onroad.blindspot_renderer import BlindspotRendererMixin
 
 if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.onroad.alert_renderer import AlertRendererSP as AlertRenderer
@@ -38,10 +39,13 @@ ROAD_CAM_MIN_SPEED = 15.0  # m/s (34 mph)
 INF_POINT = np.array([1000.0, 0.0, 0.0])
 
 
-class AugmentedRoadView(CameraView, AugmentedRoadViewSP):
+class AugmentedRoadView(CameraView, AugmentedRoadViewSP, BlindspotRendererMixin):
+  BLIND_SPOT_WIDTH = 250
+
   def __init__(self, stream_type: VisionStreamType = VisionStreamType.VISION_STREAM_ROAD):
     CameraView.__init__(self, "camerad", stream_type)
     AugmentedRoadViewSP.__init__(self)
+    self._init_blindspot()
     self._set_placeholder_color(BORDER_COLORS[UIStatus.DISENGAGED])
 
     self.device_camera: DeviceCameraConfig | None = None
@@ -106,6 +110,8 @@ class AugmentedRoadView(CameraView, AugmentedRoadViewSP):
 
     # End clipping region
     rl.end_scissor_mode()
+
+    self._draw_blindspot_screen_edges(self._content_rect, self.BLIND_SPOT_WIDTH)
 
     # Draw colored border based on driving state
     if self._draw_border_enabled:

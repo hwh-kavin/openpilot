@@ -371,6 +371,24 @@ function install_python_deps() {
 
 }
 
+function build_native_openpilot() {
+  bootstrap_msg "95% Building native binaries (scons)..."
+  cd "$ROOT"
+  if [[ -f "$ROOT/.venv/bin/activate" ]]; then
+    # shellcheck disable=SC1091
+    source "$ROOT/.venv/bin/activate"
+  fi
+  local jobs
+  jobs="$(nproc 2>/dev/null || echo 2)"
+  echo "running scons -j${jobs} ..."
+  if ! scons -j"$jobs"; then
+    echo "ERROR: scons build failed" >&2
+    exit 1
+  fi
+  date -u +"%Y-%m-%dT%H:%M:%SZ" > "$ROOT/prebuilt"
+  echo "[ ] scons build finished t=$SECONDS"
+}
+
 # --- Main ---
 
 bootstrap_msg "0% Starting dependency setup..."
@@ -389,6 +407,7 @@ fi
 
 if [ -f "$ROOT/pyproject.toml" ]; then
   install_python_deps
+  build_native_openpilot
   bootstrap_msg "100% Dependencies installed"
   echo "[ ] installed python dependencies t=$SECONDS"
 fi

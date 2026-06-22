@@ -79,9 +79,14 @@ class TripsLayout(Widget):
       response = api_get(f"v1.1/devices/{dongle_id}/stats", access_token=identity_token, session=self._session)
       if response.status_code == 200:
         data = response.json()
-        self._stats = data
-        if save_drive_stats(data):
-          self._cache_mtime = get_drive_stats_cache_mtime()
+        api_all = data.get('all', {})
+        local_all = self._stats.get('all', {})
+        api_distance = float(api_all.get('distance', 0) or 0)
+        local_distance = float(local_all.get('distance', 0) or 0)
+        if api_distance > 0 or local_distance <= 0:
+          self._stats = data
+          if save_drive_stats(data):
+            self._cache_mtime = get_drive_stats_cache_mtime()
     except Exception as e:
       cloudlog.error(f"Failed to fetch drive stats: {e}")
 

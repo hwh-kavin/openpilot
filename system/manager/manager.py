@@ -55,11 +55,15 @@ def manager_init() -> None:
   if params.get("DeviceBootMode") == 1:  # start in Always Offroad mode
     params.put_bool("OffroadMode", True, block=True)
 
-  # quick boot
+  # quick boot: only mark prebuilt after native binaries exist
   if params.get_bool("QuickBootToggle") and not PC:
     prebuilt_path = "/data/openpilot/prebuilt"
-    if not os.path.exists(prebuilt_path):
-      open(prebuilt_path, 'x').close()
+    pandad_path = "/data/openpilot/selfdrive/pandad/pandad"
+    if os.path.isfile(pandad_path):
+      if not os.path.isfile(prebuilt_path) or os.path.getsize(prebuilt_path) == 0:
+        atomic_write(prebuilt_path, datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+    elif os.path.isfile(prebuilt_path) and os.path.getsize(prebuilt_path) == 0:
+      os.remove(prebuilt_path)
 
   if params.get_bool("RecordFrontLock"):
     params.put_bool("RecordFront", True, block=True)

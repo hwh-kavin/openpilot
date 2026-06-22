@@ -81,7 +81,8 @@ function launch {
 
   # start manager
   cd "$DIR/system/manager"
-  if [ ! -f "$DIR/prebuilt" ]; then
+  if [[ ! -s "$DIR/prebuilt" ]] || [[ ! -x "$DIR/selfdrive/pandad/pandad" ]]; then
+    rm -f "$DIR/prebuilt"
     ./build.py
   fi
   ./manager.py

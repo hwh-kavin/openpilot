@@ -86,6 +86,10 @@ def build(spinner: Spinner, dirty: bool = False, minimal: bool = False) -> None:
     cache_size -= f.stat().st_size
     f.unlink()
 
+  from datetime import datetime, timezone
+  with open(os.path.join(BASEDIR, 'prebuilt'), 'w', encoding='utf-8') as f:
+    f.write(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"))
+
 
 if __name__ == "__main__":
   spinner = Spinner()

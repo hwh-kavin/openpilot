@@ -15,6 +15,7 @@ from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets import Widget
 from openpilot.common.filter_simple import BounceFilter
 from openpilot.common.transformations.camera import DEVICE_CAMERAS, DeviceCameraConfig, view_frame_from_device_frame
+from bluepilot.ui.onroad.blindspot_renderer import BlindspotRendererMixin
 from openpilot.common.transformations.orientation import rot_from_euler
 from enum import IntEnum
 
@@ -132,9 +133,12 @@ class BookmarkIcon(Widget):
       rl.draw_texture_ex(self._icon, rl.Vector2(icon_x, icon_y), 0.0, 1.0, rl.WHITE)
 
 
-class AugmentedRoadView(CameraView):
+class AugmentedRoadView(CameraView, BlindspotRendererMixin):
+  BLIND_SPOT_WIDTH = 125
+
   def __init__(self, bookmark_callback=None, stream_type: VisionStreamType = VisionStreamType.VISION_STREAM_ROAD):
     super().__init__("camerad", stream_type)
+    self._init_blindspot()
     self._bookmark_callback = bookmark_callback
     self._set_placeholder_color(rl.BLACK)
 
@@ -240,6 +244,8 @@ class AugmentedRoadView(CameraView):
 
     # End clipping region
     rl.end_scissor_mode()
+
+    self._draw_blindspot_screen_edges(self.rect, self.BLIND_SPOT_WIDTH)
 
     # Custom UI extension point - add custom overlays here
     # Use self._content_rect for positioning within camera bounds

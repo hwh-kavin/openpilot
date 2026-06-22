@@ -50,9 +50,17 @@ def get_release_notes(path: str = BASEDIR) -> str:
     return f.read().split('\n\n', 1)[0]
 
 
-@cache
 def is_prebuilt(path: str = BASEDIR) -> bool:
-  return os.path.exists(os.path.join(path, 'prebuilt'))
+  prebuilt = os.path.join(path, 'prebuilt')
+  return os.path.isfile(prebuilt) and os.path.getsize(prebuilt) > 0
+
+
+def prebuilt_binaries_ready(path: str = BASEDIR) -> bool:
+  return os.path.isfile(os.path.join(path, 'selfdrive/pandad/pandad'))
+
+
+def should_skip_scons_build(path: str = BASEDIR) -> bool:
+  return is_prebuilt(path) and prebuilt_binaries_ready(path)
 
 
 @cache

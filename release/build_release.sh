@@ -85,7 +85,7 @@ find third_party/ -name '*Darwin*' -exec rm -r {} +
 git checkout third_party/
 
 # Mark as prebuilt release
-touch prebuilt
+date -u +"%Y-%m-%dT%H:%M:%SZ" > prebuilt
 
 # Add built files to git
 git add -f .

@@ -133,9 +133,24 @@ def is_drive_stats_cache_fresh(max_age_seconds: int = DEFAULT_FRESH_SECONDS) -> 
     return (time.time() - latest_mtime) <= max_age_seconds
 
 
+def _aggregate_cache_missing_distance(payload: Optional[Dict[str, Any]]) -> bool:
+    """True when cached totals have drives but no distance."""
+    if not payload:
+        return True
+    for period in ('all', 'week'):
+        block = payload.get(period, {})
+        if int(block.get('routes', 0)) > 0 and float(block.get('distance', 0)) <= 0:
+            return True
+    return False
+
+
 def reload_drive_stats(params=None, recalculate_if_stale: bool = False) -> Dict[str, Any]:
     """Load drive stats, optionally recalculating from local routes when cache is stale."""
-    if recalculate_if_stale and not is_drive_stats_cache_fresh():
+    stats, _source = load_drive_stats(params)
+    should_recalculate = recalculate_if_stale and (
+        not is_drive_stats_cache_fresh() or _aggregate_cache_missing_distance(stats)
+    )
+    if should_recalculate:
         try:
             from bluepilot.backend.routes.processing import recalculate_aggregate_drive_stats
             recalculate_aggregate_drive_stats()
