@@ -20,6 +20,13 @@ DELPHI_MRR_RADAR_RANGE_COVERAGE = {0: 42, 1: 164, 2: 45, 3: 175}  # scan index t
 DELPHI_MRR_MIN_LONG_RANGE_DIST = 30  # meters
 DELPHI_MRR_CLUSTER_THRESHOLD = 5  # meters, lateral distance and relative velocity are weighted
 
+MRR_FAULT_SIGNALS = (
+  'CAN_RADAR_NOT_OP',
+  'CAN_RADAR_OVERHEAT_ERROR',
+  'CAN_RADAR_EXT_COND_NOK',
+  'CAN_RADAR_ALIGN_OUT_RANGE',
+)
+
 
 @dataclass
 class Cluster:
@@ -78,6 +85,7 @@ def _create_delphi_esr_radar_can_parser(CP) -> CANParser:
 
 def _create_delphi_mrr_radar_can_parser(CP) -> CANParser:
   messages = [
+    ("MRR_Status_Radar", 30),
     ("MRR_Header_InformationDetections", 33),
     ("MRR_Header_SensorCoverage", 33),
   ]
@@ -114,6 +122,22 @@ class RadarInterface(RadarInterfaceBase):
     else:
       raise ValueError(f"Unsupported radar: {self.radar}")
 
+  def _build_ret(self) -> structs.RadarData:
+    ret = structs.RadarData()
+    if not self.rcp.can_valid:
+      ret.errors.canError = True
+    if self.radar == RADAR.DELPHI_MRR:
+      self._check_mrr_faults(ret)
+    ret.points = list(self.pts.values())
+    return ret
+
+  def _check_mrr_faults(self, ret: structs.RadarData) -> None:
+    status = self.rcp.vl.get("MRR_Status_Radar")
+    if status is None:
+      return
+    if any(status[sig] for sig in MRR_FAULT_SIGNALS):
+      ret.errors.radarFault = True
+
   def update(self, can_strings):
     if self.rcp is None:
       return super().update(None)
@@ -122,7 +146,12 @@ class RadarInterface(RadarInterfaceBase):
     self.updated_messages.update(vls)
 
     if self.trigger_msg not in self.updated_messages:
+      # Keep publishing the last cluster set between MRR scan cycles
+      if self.radar == RADAR.DELPHI_MRR and self.pts:
+        return self._build_ret()
       return None
+
+    updated_messages = set(self.updated_messages)
     self.updated_messages.clear()
 
     ret = structs.RadarData()
@@ -130,29 +159,31 @@ class RadarInterface(RadarInterfaceBase):
       ret.errors.canError = True
 
     if self.radar == RADAR.DELPHI_ESR:
-      self._update_delphi_esr()
+      self._update_delphi_esr(updated_messages)
     elif self.radar == RADAR.DELPHI_MRR:
+      self._check_mrr_faults(ret)
       _update = self._update_delphi_mrr(ret)
       if not _update:
+        if self.pts:
+          ret.points = list(self.pts.values())
+          return ret
         return None
 
     ret.points = list(self.pts.values())
     return ret
 
-  def _update_delphi_esr(self):
-    for ii in sorted(self.updated_messages):
+  def _update_delphi_esr(self, updated_messages: set[int]):
+    del updated_messages  # trigger frame: refresh all slots from latest CAN parse
+    for ii in DELPHI_ESR_RADAR_MSGS:
+      if ii not in self.rcp.vl:
+        continue
       cpt = self.rcp.vl[ii]
 
       if cpt['X_Rel'] > 0.00001:
-        self.valid_cnt[ii] = 0    # reset counter
-
-      if cpt['X_Rel'] > 0.00001:
-        self.valid_cnt[ii] += 1
+        self.valid_cnt[ii] = min(self.valid_cnt[ii] + 1, 10)
       else:
         self.valid_cnt[ii] = max(self.valid_cnt[ii] - 1, 0)
-      #print ii, self.valid_cnt[ii], cpt['VALID'], cpt['X_Rel'], cpt['Angle']
 
-      # radar point only valid if there have been enough valid measurements
       if self.valid_cnt[ii] > 0:
         if ii not in self.pts:
           self.pts[ii] = structs.RadarData.RadarPoint()
@@ -185,8 +216,8 @@ class RadarInterface(RadarInterfaceBase):
       ret.errors.radarUnavailableTemporary = True
       return True
 
-    # Use points with Doppler coverage of +-60 m/s, reduces similar points
-    if headerScanIndex not in (2, 3):
+    # Use short-range scan 0 (~42 m) plus scan 2/3 for close stationary leads; scan 2/3 have +-60 m/s Doppler
+    if headerScanIndex not in (0, 2, 3):
       return False
 
     if DELPHI_MRR_RADAR_RANGE_COVERAGE[headerScanIndex] != int(self.rcp.vl["MRR_Header_SensorCoverage"]["CAN_RANGE_COVERAGE"]):
@@ -241,11 +272,12 @@ class RadarInterface(RadarInterfaceBase):
         points_by_track_id[self.track_id].append(self.points[idx])
         self.track_id += 1
 
+    new_pts: dict[int, structs.RadarData.RadarPoint] = {}
     self.clusters = []
-    for idx, (track_id, pts) in enumerate(points_by_track_id.items()):
-      dRel = [p[0] for p in pts]
-      min_dRel = min(dRel)
-      dRel = sum(dRel) / len(dRel)
+    for track_id, pts in points_by_track_id.items():
+      dRel_vals = [p[0] for p in pts]
+      min_dRel = min(dRel_vals)
+      dRel = sum(dRel_vals) / len(dRel_vals)
 
       yRel = [p[1] for p in pts]
       yRel = sum(yRel) / len(yRel) / 2
@@ -253,20 +285,19 @@ class RadarInterface(RadarInterfaceBase):
       vRel = [p[2] for p in pts]
       vRel = sum(vRel) / len(vRel) / 2
 
-      # FIXME: creating capnp RadarPoint and accessing attributes are both expensive, so we store a dataclass and reuse the RadarPoint
       self.clusters.append(Cluster(dRel=dRel, yRel=yRel, vRel=vRel, trackId=track_id))
 
-      if idx not in self.pts:
-        self.pts[idx] = structs.RadarData.RadarPoint(measured=True, aRel=float('nan'), yvRel=float('nan'))
+      if track_id not in self.pts:
+        self.pts[track_id] = structs.RadarData.RadarPoint(measured=True, aRel=float('nan'), yvRel=float('nan'))
 
-      self.pts[idx].dRel = min_dRel
-      self.pts[idx].yRel = yRel
-      self.pts[idx].vRel = vRel
-      self.pts[idx].trackId = track_id
+      pt = self.pts[track_id]
+      pt.dRel = min_dRel
+      pt.yRel = yRel
+      pt.vRel = vRel
+      pt.trackId = track_id
+      new_pts[track_id] = pt
 
-    for idx in range(len(points_by_track_id), len(self.pts)):
-      del self.pts[idx]
-
+    self.pts = new_pts
     self.points = []
 
     return True
