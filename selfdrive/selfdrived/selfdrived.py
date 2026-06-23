@@ -25,6 +25,7 @@ from openpilot.system.version import get_build_metadata
 from openpilot.system.hardware import HARDWARE
 
 from openpilot.sunnypilot.mads.mads import ModularAssistiveDrivingSystem
+from openpilot.sunnypilot.mads.state import State as MadsState
 from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
@@ -43,6 +44,8 @@ PandaType = log.PandaState.PandaType
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 EventName = log.OnroadEvent.EventName
+
+LOCATIOND_REENGAGE_HYSTERESIS = int(0.5 / DT_CTRL)
 ButtonType = car.CarState.ButtonEvent.Type
 SafetyModel = car.CarParams.SafetyModel
 AlertLevel = log.DriverMonitoringState.AlertLevel
@@ -145,6 +148,8 @@ class SelfdriveD(CruiseHelper):
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
     self.state_machine = StateMachine()
+    self.await_locationd_reengage = False
+    self.locationd_ok_frames = 0
     self.rk = Ratekeeper(100, print_delay_threshold=None)
 
     self.ignored_processes = {'mapd', }
@@ -413,10 +418,12 @@ class SelfdriveD(CruiseHelper):
     if not self.CP.notCar:
       if not self.sm['livePose'].posenetOK:
         self.events.add(EventName.posenetInvalid)
-      if not self.sm['livePose'].inputsOK:
+      locationd_error = not self.sm['livePose'].inputsOK
+      if locationd_error:
         self.events.add(EventName.locationdTemporaryError)
       if not self.sm['liveParameters'].valid and cal_status == log.LiveCalibrationData.Status.calibrated and not TESTING_CLOSET and (not SIMULATION or REPLAY):
         self.events.add(EventName.paramsdTemporaryError)
+      self._update_locationd_reengage_state(CS, locationd_error)
 
     # conservative HW alert. if the data or frequency are off, locationd will throw an error
     if any((self.sm.frame - self.sm.recv_frame[s])*DT_CTRL > 10. for s in self.sensor_packets):
@@ -605,7 +612,14 @@ class SelfdriveD(CruiseHelper):
     CS = self.data_sample()
     self.update_events(CS)
     if not self.CP.passive and self.initialized:
-      self.enabled, self.active = self.state_machine.update(self.events)
+      inhibit_locationd_disable = self.events.has(EventName.locationdTemporaryError)
+      self.enabled, self.active = self.state_machine.update(self.events, inhibit_locationd_disable)
+      if not self.enabled and self._can_locationd_auto_reengage(CS):
+        self._apply_locationd_auto_reengage()
+        self.enabled, self.active = self.state_machine.update(self.events, inhibit_locationd_disable)
+      elif self.enabled and not inhibit_locationd_disable:
+        self.await_locationd_reengage = False
+        self.locationd_ok_frames = 0
     if not self.CP.notCar:
       self.mads.update(CS)
     self.update_alerts(CS)
@@ -613,6 +627,39 @@ class SelfdriveD(CruiseHelper):
     self.publish_selfdriveState(CS)
 
     self.CS_prev = CS
+
+  def _update_locationd_reengage_state(self, CS: car.CarState, locationd_error: bool) -> None:
+    if self.events.contains(EventName.pedalPressed) or self.events.contains(EventName.buttonCancel) or \
+       self.events.contains(EventName.pcmDisable) or self.events.contains(EventName.steerDisengage):
+      self.await_locationd_reengage = False
+      self.locationd_ok_frames = 0
+      return
+
+    if locationd_error:
+      self.locationd_ok_frames = 0
+      if self.enabled or self.state_machine.state == State.softDisabling or self.mads.active:
+        self.await_locationd_reengage = True
+    elif self.await_locationd_reengage:
+      self.locationd_ok_frames += 1
+
+  def _can_locationd_auto_reengage(self, CS: car.CarState) -> bool:
+    if not self.await_locationd_reengage or self.events.has(EventName.locationdTemporaryError):
+      return False
+    if self.locationd_ok_frames < LOCATIOND_REENGAGE_HYSTERESIS:
+      return False
+    if not CS.canValid or self.events.contains(ET.NO_ENTRY):
+      return False
+    if self.CP.pcmCruise and (not CS.cruiseState.enabled or CS.blockPcmEnable):
+      return False
+    return True
+
+  def _apply_locationd_auto_reengage(self) -> None:
+    self.state_machine.state = State.enabled
+    self.state_machine.soft_disable_timer = 0
+    if self.mads.enabled_toggle:
+      self.mads.state_machine.state = MadsState.enabled
+    self.await_locationd_reengage = False
+    self.locationd_ok_frames = 0
 
   def params_thread(self, evt):
     while not evt.is_set():

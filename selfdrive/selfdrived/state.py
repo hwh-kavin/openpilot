@@ -14,7 +14,7 @@ class StateMachine:
     self.state = State.disabled
     self.soft_disable_timer = 0
 
-  def update(self, events: Events):
+  def update(self, events: Events, inhibit_soft_disable_timeout: bool = False):
     # decrement the soft disable timer at every step, as it's reset on
     # entrance in SOFT_DISABLING state
     self.soft_disable_timer = max(0, self.soft_disable_timer - 1)
@@ -54,7 +54,10 @@ class StateMachine:
             self.current_alert_types.append(ET.SOFT_DISABLE)
 
           elif self.soft_disable_timer <= 0:
-            self.state = State.disabled
+            if inhibit_soft_disable_timeout and events.contains(ET.SOFT_DISABLE):
+              self.soft_disable_timer = int(SOFT_DISABLE_TIME / DT_CTRL)
+            else:
+              self.state = State.disabled
 
         # PRE ENABLING
         elif self.state == State.preEnabled:

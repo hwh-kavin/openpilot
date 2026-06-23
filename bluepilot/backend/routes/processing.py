@@ -752,6 +752,7 @@ def extract_drive_stats_from_segments(segments):
     control_lag_max = 0.0
 
     prev_time = None
+    prev_carstate_time = None
     prev_speed = None
     prev_state = None
 
@@ -871,16 +872,17 @@ def extract_drive_stats_from_segments(segments):
                             speed_sum += speed_mph
                             speed_count += 1
 
-                            # Distance calculation
-                            if prev_speed is not None and prev_time is not None:
-                                dt = current_time - prev_time
-                                if dt > 0 and dt < 1.0:
-                                    # Average speed over interval * time = distance
+                            # Distance calculation uses carState timestamps only.
+                            # prev_time tracks the last message of any type and would
+                            # undercount badly if reused here.
+                            if prev_carstate_time is not None and prev_speed is not None:
+                                dt = current_time - prev_carstate_time
+                                if 0 < dt < 30.0:
                                     avg_speed_mps = (speed_mps + prev_speed) / 2.0
                                     distance_m = avg_speed_mps * dt
-                                    distance_mi = distance_m / 1609.34  # meters to miles
-                                    total_distance += distance_mi
+                                    total_distance += distance_m / 1609.34
 
+                            prev_carstate_time = current_time
                             prev_speed = speed_mps
 
                     # Process selfdriveState for engagement tracking
@@ -1028,8 +1030,18 @@ def get_route_drive_stats(route_base, segments):
             if cache_mtime >= segment_mtime:
                 with open(cache_file) as f:
                     cached_data = json.load(f)
-                    logger.info(f"✓ Using cached drive stats for {route_base}")
-                    return cached_data
+                    distance = float(cached_data.get('distance') or 0)
+                    duration = float(cached_data.get('duration') or 0)
+                    if distance > 0 and duration > 0:
+                        avg_mph = (distance * 1609.34 / duration) * 2.23694
+                        if avg_mph < 3.0:
+                            logger.info(f"Stale drive stats cache for {route_base} (avg {avg_mph:.1f} mph), re-extracting")
+                        else:
+                            logger.info(f"✓ Using cached drive stats for {route_base}")
+                            return cached_data
+                    else:
+                        logger.info(f"✓ Using cached drive stats for {route_base}")
+                        return cached_data
         except Exception as e:
             logger.warning(f"Error reading drive stats cache for {route_base}: {e}")
 
@@ -1093,6 +1105,23 @@ def get_route_gps_metrics_cached_only(route_base):
         return None
 
 
+def _gps_distance_miles(gps_metrics):
+    if not gps_metrics or not gps_metrics.get('has_gps_data'):
+        return 0.0
+    return float(gps_metrics.get('total_distance_meters') or 0) / 1609.34
+
+
+def _best_route_distance_miles(stats_distance, gps_distance):
+    """Prefer the larger of carState-integrated and GPS-derived distance."""
+    stats_distance = float(stats_distance or 0)
+    gps_distance = float(gps_distance or 0)
+    if stats_distance <= 0:
+        return gps_distance
+    if gps_distance <= 0:
+        return stats_distance
+    return max(stats_distance, gps_distance)
+
+
 def get_route_aggregate_stats(route_base, segments_count=0):
     """Return (distance_miles, duration_seconds) for aggregate drive stats.
 
@@ -1106,37 +1135,32 @@ def get_route_aggregate_stats(route_base, segments_count=0):
     fallback_duration = float(segment_count * 60)
 
     if segments:
+        gps = get_route_gps_metrics(route_base, segments)
+        gps_distance = _gps_distance_miles(gps)
+
         stats = get_route_drive_stats(route_base, segments)
         if stats:
-            distance = float(stats.get('distance') or 0)
+            distance = _best_route_distance_miles(stats.get('distance'), gps_distance)
             duration = float(stats.get('duration') or 0)
             if distance > 0:
                 return distance, duration if duration > 0 else fallback_duration
-            if duration > 0:
-                gps = get_route_gps_metrics(route_base, segments)
-                if gps and gps.get('has_gps_data'):
-                    distance = float(gps.get('total_distance_meters') or 0) / 1609.34
-                    if distance > 0:
-                        return distance, duration
+            if duration > 0 and gps_distance > 0:
+                return gps_distance, duration
 
-        gps = get_route_gps_metrics(route_base, segments)
-        if gps and gps.get('has_gps_data'):
-            distance = float(gps.get('total_distance_meters') or 0) / 1609.34
-            if distance > 0:
-                return distance, fallback_duration
+        if gps_distance > 0:
+            return gps_distance, fallback_duration
 
     stats = get_route_drive_stats_cached_only(route_base)
+    gps = get_route_gps_metrics_cached_only(route_base)
+    gps_distance = _gps_distance_miles(gps)
     if stats:
-        distance = float(stats.get('distance') or 0)
+        distance = _best_route_distance_miles(stats.get('distance'), gps_distance)
         duration = float(stats.get('duration') or 0)
         if distance > 0:
             return distance, duration if duration > 0 else fallback_duration
 
-    gps = get_route_gps_metrics_cached_only(route_base)
-    if gps and gps.get('has_gps_data'):
-        distance = float(gps.get('total_distance_meters') or 0) / 1609.34
-        if distance > 0:
-            return distance, fallback_duration
+    if gps_distance > 0:
+        return gps_distance, fallback_duration
 
     return 0.0, fallback_duration
 

@@ -10,7 +10,6 @@ import time
 import pyray as rl
 
 from openpilot.common.api import api_get
-from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.ui.lib.api_helpers import get_token
@@ -25,6 +24,7 @@ from bluepilot.backend.cache.drive_stats_store import (
     save_drive_stats,
     reload_drive_stats,
     get_drive_stats_cache_mtime,
+    format_drive_stats_distance,
 )
 
 
@@ -121,8 +121,7 @@ class TripsLayout(Widget):
     color_unit = rl.Color(160, 160, 160, 255)
 
     routes = int(data.get("routes", 0))
-    distance = data.get("distance", 0)
-    distance_str = str(int(distance * CV.MPH_TO_KPH)) if is_metric else str(int(distance))
+    distance_str = format_drive_stats_distance(data.get("distance", 0), is_metric)
     hours = int(data.get("minutes", 0) / 60)
 
     dist_unit = tr("KM") if is_metric else tr("Miles")

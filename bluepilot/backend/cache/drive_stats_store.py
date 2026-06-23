@@ -35,6 +35,16 @@ _rotating_cache = RotatingJsonCache(
 )
 
 
+def format_drive_stats_distance(distance_miles: float, is_metric: bool) -> str:
+    """Format cached/API drive stats distance for UI (FrogPilot-compatible)."""
+    from openpilot.common.constants import CV
+
+    distance = float(distance_miles or 0)
+    if is_metric:
+        return str(int(distance * CV.MPH_TO_KPH))  # same factor as MILE_TO_KM
+    return str(int(distance))
+
+
 def build_drive_stats_payload(all_stats: Dict[str, Any], week_stats: Dict[str, Any]) -> Dict[str, Any]:
     """Build ApiCache_DriveStats-compatible payload from aggregate counters."""
     return {

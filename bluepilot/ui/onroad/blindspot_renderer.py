@@ -4,8 +4,6 @@ import numpy as np
 import pyray as rl
 
 from openpilot.common.filter_simple import FirstOrderFilter
-from openpilot.common.params import Params
-from openpilot.common.params_pyx import UnknownKeyName
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.application import gui_app
 
@@ -19,19 +17,12 @@ class BlindspotRendererMixin:
   """
 
   def _init_blindspot(self):
-    self._blindspot_params = Params()
     self._blindspot_left_alpha_filter = FirstOrderFilter(0.0, 0.15, 1 / gui_app.target_fps)
     self._blindspot_right_alpha_filter = FirstOrderFilter(0.0, 0.15, 1 / gui_app.target_fps)
     self._blindspot_pulse_start_time = time.monotonic()
 
   def _draw_blindspot_screen_edges(self, rect: rl.Rectangle, blind_spot_width: int = 250):
     """Draw blindspot screen edge indicators - red gradient edge with pulsing animation."""
-    try:
-      if not self._blindspot_params.get_bool("ShowBlindspotOverlay"):
-        return
-    except UnknownKeyName:
-      return
-
     sm = ui_state.sm
     if not sm.valid['carState']:
       return
