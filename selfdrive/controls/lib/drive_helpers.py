@@ -31,10 +31,12 @@ def clip_curvature(v_ego, prev_curvature, new_curvature, roll) -> tuple[float, b
                           prev_curvature - max_curvature_rate * DT_CTRL,
                           prev_curvature + max_curvature_rate * DT_CTRL)
 
+  # Banked roads reduce available lateral accel; apply symmetrically so left/right turns
+  # get equal curvature limits (shifted limits favored one turn direction).
   roll_compensation = roll * ACCELERATION_DUE_TO_GRAVITY
-  max_lat_accel = MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
-  min_lat_accel = -MAX_LATERAL_ACCEL_NO_ROLL + roll_compensation
-  new_curvature, limited_accel = clamp(new_curvature, min_lat_accel / v_ego ** 2, max_lat_accel / v_ego ** 2)
+  max_lat_accel = max(MAX_LATERAL_ACCEL_NO_ROLL - abs(roll_compensation), 0.1)
+  max_curvature_lat = max_lat_accel / v_ego ** 2
+  new_curvature, limited_accel = clamp(new_curvature, -max_curvature_lat, max_curvature_lat)
 
   new_curvature, limited_max_curv = clamp(new_curvature, -MAX_CURVATURE, MAX_CURVATURE)
   return float(new_curvature), limited_accel or limited_max_curv
