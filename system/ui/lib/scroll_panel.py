@@ -33,6 +33,11 @@ class GuiScrollPanel:
       if mouse_event.slot == 0:
         self._handle_mouse_event(mouse_event, bounds, content)
 
+    # Recover from lost release events so clicks are not blocked while dragging
+    if self._scroll_state == ScrollState.DRAGGING_CONTENT:
+      if not gui_app.any_mouse_button_down():
+        self._scroll_state = ScrollState.IDLE
+
     self._update_state(bounds, content)
 
     return float(self._offset_filter_y.x)
@@ -132,6 +137,10 @@ class GuiScrollPanel:
     self._offset_filter_y.x = position
     self._velocity_filter_y.x = 0.0
     self._scroll_state = ScrollState.IDLE
+
+  def reset_input_state(self) -> None:
+    self._scroll_state = ScrollState.IDLE
+    self._velocity_filter_y.x = 0.0
 
   @property
   def offset(self) -> float:

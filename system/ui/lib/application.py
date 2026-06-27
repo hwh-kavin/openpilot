@@ -30,6 +30,8 @@ FPS_DROP_THRESHOLD = 0.9  # FPS drop threshold for triggering a warning
 FPS_CRITICAL_THRESHOLD = 0.5  # Critical threshold for triggering strict actions
 MOUSE_THREAD_RATE = 140  # touch controller runs at 140Hz
 MAX_TOUCH_SLOTS = 2
+MOUSE_EVENT_QUEUE_MAXLEN = 512  # must survive render stalls without dropping press/release
+MOUSE_MOVE_EVENT_THRESHOLD = 4  # px; skip noisy micro-moves to reduce queue pressure
 TOUCH_HISTORY_TIMEOUT = 3.0  # Seconds before touch points fade out
 
 BIG_UI = os.getenv("BIG", "0") == "1"
@@ -165,8 +167,9 @@ class MouseEvent(NamedTuple):
 class MouseState:
   def __init__(self, scale: float = 1.0):
     self._scale = scale
-    self._events: deque[MouseEvent] = deque(maxlen=MOUSE_THREAD_RATE)  # bound event list
+    self._events: deque[MouseEvent] = deque(maxlen=MOUSE_EVENT_QUEUE_MAXLEN)
     self._prev_mouse_event: list[MouseEvent | None] = [None] * MAX_TOUCH_SLOTS
+    self._button_down: list[bool] = [False] * MAX_TOUCH_SLOTS
 
     self._rk = Ratekeeper(MOUSE_THREAD_RATE, print_delay_threshold=None)
     self._lock = threading.Lock()
@@ -178,6 +181,27 @@ class MouseState:
       events = list(self._events)
       self._events.clear()
     return events
+
+  def button_down(self, slot: int) -> bool:
+    with self._lock:
+      return self._button_down[slot]
+
+  def any_button_down(self) -> bool:
+    with self._lock:
+      return any(self._button_down)
+
+  def _should_append_event(self, prev: MouseEvent | None, ev: MouseEvent) -> bool:
+    if prev is None:
+      return True
+    if ev.left_pressed or ev.left_released:
+      return True
+    if prev.left_down != ev.left_down:
+      return True
+    if not ev.left_down:
+      return False
+    dx = ev.pos.x - prev.pos.x
+    dy = ev.pos.y - prev.pos.y
+    return dx * dx + dy * dy >= MOUSE_MOVE_EVENT_THRESHOLD ** 2
 
   def start(self):
     self._exit_event.clear()
@@ -213,9 +237,10 @@ class MouseState:
         rl.is_mouse_button_down(slot),
         time.monotonic(),
       )
-      # Only add changes
       prev = self._prev_mouse_event[slot]
-      if prev is None or ev[:-1] != prev[:-1]:
+      with self._lock:
+        self._button_down[slot] = ev.left_down
+      if self._should_append_event(prev, ev):
         with self._lock:
           self._events.append(ev)
         self._prev_mouse_event[slot] = ev
@@ -410,7 +435,19 @@ class GuiApplication(GuiApplicationExt):
 
   def push_widget(self, widget: object):
     if widget in self._nav_stack:
-      cloudlog.warning("Widget already in stack, cannot push again!")
+      idx = self._nav_stack.index(widget)
+      if idx == len(self._nav_stack) - 1:
+        if getattr(widget, 'is_dismissing', False) and hasattr(widget, 'cancel_dismiss'):
+          widget.cancel_dismiss()
+        else:
+          cloudlog.warning("Widget already in stack, cannot push again!")
+        return
+
+      # Pop widgets above the requested one to bring it back to the top
+      while len(self._nav_stack) > 1 and self._nav_stack[-1] != widget:
+        self.pop_widget()
+      if getattr(widget, 'is_dismissing', False) and hasattr(widget, 'cancel_dismiss'):
+        widget.cancel_dismiss()
       return
 
     # disable previous widget to prevent input processing
@@ -610,6 +647,12 @@ class GuiApplication(GuiApplicationExt):
   @property
   def last_mouse_event(self) -> MouseEvent:
     return self._last_mouse_event
+
+  def mouse_button_down(self, slot: int) -> bool:
+    return self._mouse.button_down(slot)
+
+  def any_mouse_button_down(self) -> bool:
+    return self._mouse.any_button_down()
 
   def render(self):
     try:

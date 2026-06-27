@@ -25,6 +25,7 @@ from bluepilot.backend.cache.drive_stats_store import (
     reload_drive_stats,
     get_drive_stats_cache_mtime,
     format_drive_stats_distance,
+    needs_drive_stats_recalculate,
 )
 
 
@@ -47,10 +48,12 @@ class DriveStatsWidget(Widget):
     self._session = requests.Session()
     self._stats = self._get_stats()
     self._cache_mtime = get_drive_stats_cache_mtime()
+    self._reload_lock = threading.Lock()
 
     self._running = True
     self._update_thread = threading.Thread(target=self._update_loop, daemon=True)
     self._update_thread.start()
+    self._request_background_reload_if_needed()
 
   def __del__(self):
     self._running = False
@@ -70,10 +73,27 @@ class DriveStatsWidget(Widget):
       self._cache_mtime = cache_mtime
       self._stats = self._get_stats()
 
+  def _reload_stats_background(self, recalculate_if_stale: bool = True):
+    if not self._reload_lock.acquire(blocking=False):
+      return
+    try:
+      stats = reload_drive_stats(self._params, recalculate_if_stale=recalculate_if_stale)
+      self._stats = stats
+      self._cache_mtime = get_drive_stats_cache_mtime()
+    except Exception as e:
+      cloudlog.error(f"Failed to reload drive stats: {e}")
+    finally:
+      self._reload_lock.release()
+
+  def _request_background_reload_if_needed(self):
+    if needs_drive_stats_recalculate(self._params):
+      threading.Thread(target=self._reload_stats_background, daemon=True).start()
+
   def show_event(self):
     super().show_event()
-    self._stats = reload_drive_stats(self._params, recalculate_if_stale=True)
+    self._stats = self._get_stats()
     self._cache_mtime = get_drive_stats_cache_mtime()
+    self._request_background_reload_if_needed()
 
   def _fetch_drive_stats(self):
     try:
@@ -98,8 +118,8 @@ class DriveStatsWidget(Widget):
   def _update_loop(self):
     while self._running:
       if not ui_state.started and device._awake:
-        self._stats = reload_drive_stats(self._params, recalculate_if_stale=True)
-        self._cache_mtime = get_drive_stats_cache_mtime()
+        if needs_drive_stats_recalculate(self._params):
+          self._reload_stats_background(recalculate_if_stale=True)
         self._fetch_drive_stats()
       time.sleep(self.UPDATE_INTERVAL)
 

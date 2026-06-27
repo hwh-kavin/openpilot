@@ -36,6 +36,9 @@ from .drive_stats_store import (
     get_drive_stats_cache_mtime,
     reload_drive_stats,
     format_drive_stats_distance,
+    needs_drive_stats_recalculate,
+    boot_incremental_pending,
+    get_system_boot_id,
 )
 from .rotating_json_cache import RotatingJsonCache
 
@@ -69,5 +72,8 @@ __all__ = [
     'get_drive_stats_cache_mtime',
     'reload_drive_stats',
     'format_drive_stats_distance',
+    'needs_drive_stats_recalculate',
+    'boot_incremental_pending',
+    'get_system_boot_id',
     'RotatingJsonCache',
 ]

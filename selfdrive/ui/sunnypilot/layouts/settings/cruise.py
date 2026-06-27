@@ -40,6 +40,11 @@ class CruiseLayout(Widget):
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=True, spacing=0)
 
+    # Cache UI state so _update_state does not redo work every frame
+    self._capability_key: tuple | None = None
+    self._custom_acc_desc_key: tuple | None = None
+    self._custom_acc_items_visible = False
+
   def _initialize_items(self):
 
     self.icbm_toggle = toggle_item_sp(
@@ -113,6 +118,9 @@ class CruiseLayout(Widget):
       self._scroller.render(rect)
 
   def show_event(self):
+    super().show_event()
+    self._capability_key = None
+    self._custom_acc_desc_key = None
     self._set_current_panel(PanelType.CRUISE)
     self._scroller.show_event()
     self.icbm_toggle.show_description(True)
@@ -129,12 +137,41 @@ class CruiseLayout(Widget):
     if ui_state.CP is not None and ui_state.CP_SP is not None:
       has_icbm = ui_state.has_icbm
       has_long = ui_state.has_longitudinal_control
+      capability_key = (
+        has_icbm,
+        has_long,
+        ui_state.CP_SP.intelligentCruiseButtonManagementAvailable,
+        ui_state.CP.alphaLongitudinalAvailable,
+        ui_state.CP.pcmCruise,
+        ui_state.is_offroad(),
+      )
+    else:
+      has_icbm = has_long = False
+      capability_key = (False, False, False, False, False, ui_state.is_offroad())
 
+    if capability_key != self._capability_key:
+      self._capability_key = capability_key
+      self._apply_capability_state(has_icbm, has_long)
+
+    custom_acc_desc_key = (ui_state.is_offroad(), has_long, has_icbm,
+                           ui_state.CP.pcmCruise if ui_state.CP is not None else False)
+    if custom_acc_desc_key != self._custom_acc_desc_key:
+      self._custom_acc_desc_key = custom_acc_desc_key
+      self._apply_custom_acc_description(has_long, has_icbm)
+
+    custom_acc_enabled = self.custom_acc_toggle.action_item.get_state()
+    if custom_acc_enabled != self._custom_acc_items_visible:
+      self._custom_acc_items_visible = custom_acc_enabled
+      self._on_custom_acc_toggle(custom_acc_enabled)
+
+  def _apply_capability_state(self, has_icbm: bool, has_long: bool):
+    # Param cleanup is handled by ui_state._enforce_constraints(); do not remove here every frame.
+
+    if ui_state.CP is not None and ui_state.CP_SP is not None:
       if ui_state.CP_SP.intelligentCruiseButtonManagementAvailable and not has_long:
         self.icbm_toggle.action_item.set_enabled(ui_state.is_offroad())
         self.icbm_toggle.set_description(tr(ICBM_DESC))
       else:
-        ui_state.params.remove("IntelligentCruiseButtonManagement")
         self.icbm_toggle.action_item.set_enabled(False)
 
         long_desc = ICMB_UNAVAILABLE
@@ -155,43 +192,35 @@ class CruiseLayout(Widget):
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(True)
       else:
-        ui_state.params.remove("CustomAccIncrementsEnabled")
-        ui_state.params.remove("DynamicExperimentalControl")
-        ui_state.params.remove("SmartCruiseControlVision")
-        ui_state.params.remove("SmartCruiseControlMap")
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_toggle.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)
-
     else:
-      has_icbm = has_long = False
       self.icbm_toggle.action_item.set_enabled(False)
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
 
+  def _apply_custom_acc_description(self, has_long: bool, has_icbm: bool):
     show_custom_acc_desc = False
 
     if ui_state.is_offroad():
       new_custom_acc_desc = tr(ONROAD_ONLY_DESCRIPTION)
       show_custom_acc_desc = True
-    else:
-      if has_long or has_icbm:
-        if has_long and ui_state.CP.pcmCruise:
-          new_custom_acc_desc = tr(ACC_PCMCRUISE_DISABLED_DESCRIPTION)
-          show_custom_acc_desc = True
-        else:
-          new_custom_acc_desc = tr(ACC_ENABLED_DESCRIPTION)
-      else:
-        new_custom_acc_desc = tr(ACC_NOLONG_DESCRIPTION)
+    elif has_long or has_icbm:
+      if has_long and ui_state.CP is not None and ui_state.CP.pcmCruise:
+        new_custom_acc_desc = tr(ACC_PCMCRUISE_DISABLED_DESCRIPTION)
         show_custom_acc_desc = True
-        self.custom_acc_toggle.action_item.set_state(False)
+      else:
+        new_custom_acc_desc = tr(ACC_ENABLED_DESCRIPTION)
+    else:
+      new_custom_acc_desc = tr(ACC_NOLONG_DESCRIPTION)
+      show_custom_acc_desc = True
+      self.custom_acc_toggle.action_item.set_state(False)
 
     if self.custom_acc_toggle.description != new_custom_acc_desc:
       self.custom_acc_toggle.set_description(new_custom_acc_desc)
       if show_custom_acc_desc:
         self.custom_acc_toggle.show_description(True)
-
-    self._on_custom_acc_toggle(self.custom_acc_toggle.action_item.get_state())
 
   def _on_custom_acc_toggle(self, state):
     self.custom_acc_short_increment.set_visible(state)

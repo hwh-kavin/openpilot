@@ -178,6 +178,12 @@ class Widget(abc.ABC):
         self.__is_pressed[mouse_event.slot] = False
         self._handle_mouse_event(mouse_event)
 
+    # Recover from lost release events (e.g. queue overflow while render stalled)
+    for slot in range(MAX_TOUCH_SLOTS):
+      if (self.__is_pressed[slot] or self.__tracking_is_pressed[slot]) and not gui_app.mouse_button_down(slot):
+        self.__is_pressed[slot] = False
+        self.__tracking_is_pressed[slot] = False
+
   def _layout(self) -> None:
     """Optionally lay out child widgets separately. This is called before rendering."""
 

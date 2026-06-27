@@ -1122,6 +1122,32 @@ def _best_route_distance_miles(stats_distance, gps_distance):
     return max(stats_distance, gps_distance)
 
 
+def get_route_aggregate_stats_cached_only(route_base, segments_count=0):
+    """Return (distance_miles, duration_seconds) using per-route caches only.
+
+    Never decompresses or parses route logs; safe for aggregate stat updates.
+    """
+    from bluepilot.backend.routes.segments import get_route_segments
+
+    segments = get_route_segments(route_base)
+    segment_count = len(segments) if segments else max(0, int(segments_count or 0))
+    fallback_duration = float(segment_count * 60)
+
+    stats = get_route_drive_stats_cached_only(route_base)
+    gps = get_route_gps_metrics_cached_only(route_base)
+    gps_distance = _gps_distance_miles(gps)
+    if stats:
+        distance = _best_route_distance_miles(stats.get('distance'), gps_distance)
+        duration = float(stats.get('duration') or 0)
+        if distance > 0:
+            return distance, duration if duration > 0 else fallback_duration
+
+    if gps_distance > 0:
+        return gps_distance, fallback_duration
+
+    return 0.0, fallback_duration
+
+
 def get_route_aggregate_stats(route_base, segments_count=0):
     """Return (distance_miles, duration_seconds) for aggregate drive stats.
 
@@ -1171,59 +1197,165 @@ def cache_local_drive_stats(all_stats, week_stats):
     return build_drive_stats_payload(all_stats, week_stats)
 
 
-def recalculate_aggregate_drive_stats():
-    """Recalculate aggregate drive stats from local routes and persist to cache."""
-    from datetime import datetime, timezone, timedelta
+def _list_route_bases_fast():
+    """List route base names with date metadata; does not read per-route caches."""
+    from bluepilot.backend.config import ROUTES_DIR
+    from bluepilot.backend.routes.parsing import get_route_base_name, parse_route_datetime
+    from bluepilot.backend.routes.segments import get_route_segments
 
-    from bluepilot.backend.cache.drive_stats_store import save_drive_stats
-    from bluepilot.backend.routes.scanner import scan_routes
+    if not os.path.exists(ROUTES_DIR):
+        return []
 
-    all_routes = scan_routes()
+    processed_bases = set()
+    routes = []
+
+    for entry in os.listdir(ROUTES_DIR):
+        entry_path = os.path.join(ROUTES_DIR, entry)
+        if not os.path.isdir(entry_path):
+            continue
+        if entry in ('boot', 'crash') or '--' not in entry:
+            continue
+
+        base_name = get_route_base_name(entry)
+        if base_name in processed_bases:
+            continue
+        processed_bases.add(base_name)
+
+        route_dt = parse_route_datetime(base_name)
+        segments = get_route_segments(base_name)
+        if not segments:
+            continue
+
+        routes.append({
+            'baseName': base_name,
+            'date': route_dt.date().isoformat() if route_dt else None,
+            'timestamp': route_dt.isoformat() if route_dt else None,
+            'segments': len(segments),
+        })
+
+    return routes
+
+
+def _route_entry_needs_update(processed_entry, distance, duration):
+    if not processed_entry:
+        return True
+    prev_distance = float(processed_entry.get('distance', 0) or 0)
+    prev_duration = float(processed_entry.get('duration', 0) or 0)
+    if prev_distance <= 0 and distance > 0:
+        return True
+    if prev_duration <= 0 and duration > 0:
+        return True
+    return False
+
+
+def _record_route_in_aggregate_meta(meta, route_info, distance, duration):
+    route_base = route_info['baseName']
+    meta['processed_routes'][route_base] = {
+        'date': route_info.get('date'),
+        'distance': float(distance),
+        'duration': float(duration),
+        'timestamp': route_info.get('timestamp'),
+    }
+    route_date = route_info.get('date')
+    if route_date and (
+        meta.get('last_processed_date') is None
+        or route_date >= meta.get('last_processed_date')
+    ):
+        meta['last_processed_date'] = route_date
+
+
+def _bootstrap_aggregate_meta(meta, routes):
+    """One-time cached-only scan of all routes to seed aggregate bookkeeping."""
+    for route in routes:
+        distance, duration = get_route_aggregate_stats_cached_only(
+            route['baseName'], route['segments']
+        )
+        _record_route_in_aggregate_meta(meta, route, distance, duration)
+
+    meta['bootstrapped'] = True
+    logger.info("Bootstrapped aggregate drive stats meta for %s routes", len(routes))
+
+
+def _incremental_update_latest_date(meta, routes):
+    """Only process routes from the most recent date that are new or stale."""
+    dated_routes = [route for route in routes if route.get('date')]
+    if not dated_routes:
+        return 0
+
+    latest_date = max(route['date'] for route in dated_routes)
+    latest_routes = [route for route in dated_routes if route['date'] == latest_date]
+    processed = meta.get('processed_routes', {})
+    updated = 0
+
+    for route in latest_routes:
+        route_base = route['baseName']
+        existing = processed.get(route_base)
+        if existing and float(existing.get('distance', 0) or 0) > 0:
+            continue
+
+        distance, duration = get_route_aggregate_stats_cached_only(
+            route_base, route['segments']
+        )
+        if existing and not _route_entry_needs_update(existing, distance, duration):
+            continue
+
+        _record_route_in_aggregate_meta(meta, route, distance, duration)
+        updated += 1
+
+    meta['last_processed_date'] = latest_date
+    logger.info(
+        "Incremental aggregate update for date %s: %s routes updated (%s on date)",
+        latest_date,
+        updated,
+        len(latest_routes),
+    )
+    return updated
+
+
+def recalculate_aggregate_drive_stats(force_full=False):
+    """Update aggregate drive stats: bootstrap once, then latest-date only per boot."""
+    from datetime import datetime, timedelta, timezone
+
+    from bluepilot.backend.cache.drive_stats_store import (
+        boot_incremental_pending,
+        get_system_boot_id,
+        load_aggregate_meta,
+        mark_boot_incremental_done,
+        save_aggregate_meta,
+        save_drive_stats,
+        sync_cumulative_totals,
+    )
+
+    boot_id = get_system_boot_id()
+    routes = _list_route_bases_fast()
+    meta = load_aggregate_meta()
+    if force_full:
+        meta = {
+            'bootstrapped': False,
+            'last_processed_date': None,
+            'processed_routes': {},
+            'cumulative_all': {'routes': 0, 'distance': 0.0, 'duration': 0.0},
+            'cumulative_week': {'routes': 0, 'distance': 0.0, 'duration': 0.0},
+            'last_incremental_boot_id': None,
+        }
+
     week_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
 
-    all_time_stats = {
-        'routes': 0,
-        'distance': 0.0,
-        'duration': 0.0,
-    }
-    week_stats = {
-        'routes': 0,
-        'distance': 0.0,
-        'duration': 0.0,
-    }
+    if force_full or not meta.get('bootstrapped') or not meta.get('processed_routes'):
+        _bootstrap_aggregate_meta(meta, routes)
+        mark_boot_incremental_done(meta, boot_id)
+    elif boot_incremental_pending(meta):
+        _incremental_update_latest_date(meta, routes)
+        mark_boot_incremental_done(meta, boot_id)
+    else:
+        logger.info("Drive stats boot incremental already completed for boot %s", boot_id)
 
-    for route in all_routes:
-        route_base = route.get('baseName')
-        if not route_base:
-            continue
-
-        segments_count = route.get('segments', 0)
-        if segments_count <= 0:
-            continue
-
-        route_distance, route_duration = get_route_aggregate_stats(route_base, segments_count)
-
-        all_time_stats['routes'] += 1
-        all_time_stats['distance'] += route_distance
-        all_time_stats['duration'] += route_duration
-
-        route_timestamp = route.get('timestamp')
-        if route_timestamp:
-            try:
-                route_dt = datetime.fromisoformat(route_timestamp.replace('Z', '+00:00'))
-                if route_dt.tzinfo is None:
-                    route_dt = route_dt.replace(tzinfo=timezone.utc)
-                if route_dt >= week_cutoff:
-                    week_stats['routes'] += 1
-                    week_stats['distance'] += route_distance
-                    week_stats['duration'] += route_duration
-            except (ValueError, AttributeError) as exc:
-                logger.debug("Could not parse route timestamp %s: %s", route_timestamp, exc)
-
+    all_time_stats, week_stats = sync_cumulative_totals(meta, week_cutoff)
     payload = cache_local_drive_stats(all_time_stats, week_stats)
     save_drive_stats(payload)
+    save_aggregate_meta(meta)
     logger.info(
-        "Recalculated aggregate drive stats: %s routes, %.1f miles, %.1f hours",
+        "Stored cumulative drive stats: %s routes, %.1f miles, %.1f hours",
         all_time_stats['routes'],
         all_time_stats['distance'],
         all_time_stats['duration'] / 3600,

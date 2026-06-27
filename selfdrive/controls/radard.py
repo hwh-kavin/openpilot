@@ -33,7 +33,7 @@ RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame (defau
 FORD_RADAR_TO_CAMERA = 1.35
 FORD_LATERAL_MATCH_GATE = 2.0
 FORD_LOW_SPEED_MIN_DREL = 0.5
-FORD_LOW_SPEED_MAX_DREL = 10.0   # parking / creep: trust radar lead within 10 m
+FORD_LOW_SPEED_MAX_DREL = 25.0   # parking / creep: trust radar lead within 25 m
 FORD_V_EGO_STATIONARY = 6.0      # ~22 km/h, covers parking-lot creep
 FORD_LOW_SPEED_LATERAL = 1.5       # wider gate for bumper-mounted MRR at low speed
 

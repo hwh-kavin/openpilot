@@ -54,6 +54,9 @@ class SpeedLimitSettingsLayout(Widget):
     items = self._initialize_items()
     self._scroller = Scroller(items, line_separator=False, spacing=0)
 
+    self._sla_available = True
+    self._offset_value_visible = False
+
   def _initialize_items(self):
     self._speed_limit_mode = multiple_button_item_sp(
       title=lambda: tr("Speed Limit"),
@@ -141,21 +144,25 @@ class SpeedLimitSettingsLayout(Widget):
 
       if not sla_available and speed_limit_mode_param == int(SpeedLimitMode.assist):
         ui_state.params.put("SpeedLimitMode", int(SpeedLimitMode.warning))
-
     else:
       sla_available = False
 
-    if not sla_available:
-      self._speed_limit_mode.action_item.set_enabled_buttons({
-        int(SpeedLimitMode.off),
-        int(SpeedLimitMode.information),
-        int(SpeedLimitMode.warning),
-      })
-    else:
-      self._speed_limit_mode.action_item.set_enabled_buttons(None)
+    if sla_available != self._sla_available:
+      self._sla_available = sla_available
+      if not sla_available:
+        self._speed_limit_mode.action_item.set_enabled_buttons({
+          int(SpeedLimitMode.off),
+          int(SpeedLimitMode.information),
+          int(SpeedLimitMode.warning),
+        })
+      else:
+        self._speed_limit_mode.action_item.set_enabled_buttons(None)
 
     offset_type = ui_state.params.get("SpeedLimitOffsetType", return_default=True)
-    self._speed_limit_value_offset.set_visible(offset_type != int(SpeedLimitOffsetType.off))
+    offset_visible = offset_type != int(SpeedLimitOffsetType.off)
+    if offset_visible != self._offset_value_visible:
+      self._offset_value_visible = offset_visible
+      self._speed_limit_value_offset.set_visible(offset_visible)
 
   def _render(self, rect):
     if self._current_panel == PanelType.POLICY:
@@ -169,6 +176,9 @@ class SpeedLimitSettingsLayout(Widget):
     self._scroller.render(content_rect)
 
   def show_event(self):
+    super().show_event()
+    self._sla_available = True
+    self._offset_value_visible = False
     self._current_panel = PanelType.SETTINGS
     self._scroller.show_event()
     self._speed_limit_mode.show_description(True)

@@ -299,6 +299,7 @@ class WifiManagerUI(Widget):
   def hide_event(self):
     super().hide_event()
     self._wifi_manager.set_active(False)
+    self.scroll_panel.reset_input_state()
 
   def _load_icons(self):
     for icon in STRENGTH_ICONS + ["icons/checkmark.png", "icons/circled_slash.png", "icons/lock_closed.png"]:

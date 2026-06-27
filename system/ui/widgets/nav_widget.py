@@ -158,18 +158,25 @@ class NavWidget(Widget, abc.ABC):
         self._shown_callback = None
 
     if new_y > self._rect.height + DISMISS_PUSH_OFFSET - 10:
-      gui_app.pop_widget()
+      if gui_app.get_active_widget() is self:
+        gui_app.pop_widget()
 
-      # Only one callback should ever be fired
-      if self._dismiss_callback is not None:
-        self._dismiss_callback()
+        # Only one callback should ever be fired
+        if self._dismiss_callback is not None:
+          self._dismiss_callback()
+          self._dismiss_callback = None
+        elif self._back_callback is not None:
+          self._back_callback()
+      else:
+        # Dismiss animation finished after another widget was pushed on top
         self._dismiss_callback = None
-      elif self._back_callback is not None:
-        self._back_callback()
 
       self._playing_dismiss_animation = False
       self._drag_start_pos = None
       self._dragging_down = False
+      self._y_pos_filter.x = 0.0
+      self._y_pos_filter.velocity.x = 0.0
+      new_y = 0.0
 
     self.set_position(self._rect.x, new_y)
 
@@ -204,6 +211,17 @@ class NavWidget(Widget, abc.ABC):
   @property
   def is_dismissing(self) -> bool:
     return self._dragging_down or self._playing_dismiss_animation
+
+  def cancel_dismiss(self):
+    """Cancel an in-progress dismiss gesture or animation and restore the widget."""
+    self._playing_dismiss_animation = False
+    self._dragging_down = False
+    self._drag_start_pos = None
+    self._dismiss_callback = None
+    self._y_pos_filter.update_alpha(0.1)
+    self._y_pos_filter.x = 0.0
+    self._y_pos_filter.velocity.x = 0.0
+    self.set_position(self._rect.x, 0.0)
 
   def dismiss(self, callback: Callable[[], None] | None = None):
     """Programmatically trigger the dismiss animation. Calls pop_widget when done, then callback."""

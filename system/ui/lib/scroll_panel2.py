@@ -72,6 +72,14 @@ class GuiScrollPanel2:
       self._handle_mouse_event(mouse_event, bounds, bounds_size, content_size)
       self._previous_mouse_event = mouse_event
 
+    # Recover from lost release events so clicks are not blocked in MANUAL_SCROLL
+    if self._state in (ScrollState.PRESSED, ScrollState.MANUAL_SCROLL):
+      if not gui_app.any_mouse_button_down():
+        self._state = ScrollState.STEADY
+        self._velocity = 0.0
+        self._velocity_buffer.clear()
+        self._initial_click_event = None
+
     self._update_state(bounds_size, content_size, snap_target)
 
     if DEBUG:
@@ -258,6 +266,13 @@ class GuiScrollPanel2:
       self._offset.x = value
     else:
       self._offset.y = value
+
+  def reset_input_state(self) -> None:
+    self._state = ScrollState.STEADY
+    self._velocity = 0.0
+    self._velocity_buffer.clear()
+    self._initial_click_event = None
+    self._previous_mouse_event = None
 
   @property
   def state(self) -> ScrollState:

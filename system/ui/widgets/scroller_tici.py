@@ -86,5 +86,6 @@ class Scroller(Widget):
 
   def hide_event(self):
     super().hide_event()
+    self.scroll_panel.reset_input_state()
     for item in self._items:
       item.hide_event()

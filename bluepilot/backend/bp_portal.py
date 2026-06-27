@@ -124,13 +124,15 @@ from bluepilot.backend.routes import (
     # Drive stats
     get_route_drive_stats_cached_only,
     get_route_aggregate_stats,
+    get_route_aggregate_stats_cached_only,
     cache_local_drive_stats,
+    recalculate_aggregate_drive_stats,
 )
 from bluepilot.backend.cache.drive_stats_store import (
     load_drive_stats,
     save_drive_stats,
     has_drive_stats_data,
-    is_drive_stats_cache_fresh,
+    needs_drive_stats_recalculate,
 )
 
 # Video processing
@@ -2434,10 +2436,10 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                     except Exception as api_error:
                         logger.error(f"Error fetching drive stats from Comma API: {api_error}", exc_info=True)
                     
-                    # Fallback: calculate from routes (throttled to reduce flash writes)
-                    if is_drive_stats_cache_fresh():
+                    # Fallback: calculate from routes once per boot (latest date only)
+                    if not needs_drive_stats_recalculate(params):
                         cached_stats, cache_source = load_drive_stats(params)
-                        if cached_stats is not None:
+                        if cached_stats is not None and has_drive_stats_data(cached_stats):
                             all_stats = convert_stats(cached_stats.get('all', {}))
                             week_stats = convert_stats(cached_stats.get('week', {}))
                             self.send_json_response({
@@ -2449,102 +2451,21 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                             })
                             return
 
-                    logger.info("Comma API fetch failed or unavailable, calculating from routes...")
-                    
+                    logger.info("Running boot-time drive stats update (latest date only)...")
+
                     try:
-                        # Get all routes
-                        all_routes = scan_routes()
-                        logger.info(f"Found {len(all_routes)} routes to aggregate")
-                        
-                        # Calculate cutoff for "week" stats (7 days ago)
-                        week_cutoff = datetime.now(timezone.utc) - timedelta(days=7)
-                        
-                        # Aggregate stats
-                        all_time_stats = {
-                            'routes': 0,
-                            'distance': 0.0,  # miles
-                            'duration': 0.0,  # seconds
-                        }
-                        week_stats = {
-                            'routes': 0,
-                            'distance': 0.0,  # miles
-                            'duration': 0.0,  # seconds
-                        }
-                        
-                        for route in all_routes:
-                            route_base = route.get('baseName')
-                            if not route_base:
-                                continue
-
-                            segments_count = route.get('segments', 0)
-                            if segments_count <= 0:
-                                continue
-
-                            route_distance, route_duration = get_route_aggregate_stats(
-                                route_base, segments_count
-                            )
-
-                            # Add to all-time stats
-                            all_time_stats['routes'] += 1
-                            all_time_stats['distance'] += route_distance
-                            all_time_stats['duration'] += route_duration
-
-                            # Check if route is within last week
-                            route_timestamp = route.get('timestamp')
-                            if route_timestamp:
-                                try:
-                                    # Parse timestamp (ISO format)
-                                    route_dt = datetime.fromisoformat(route_timestamp.replace('Z', '+00:00'))
-                                    if route_dt.tzinfo is None:
-                                        route_dt = route_dt.replace(tzinfo=timezone.utc)
-                                    if route_dt >= week_cutoff:
-                                        week_stats['routes'] += 1
-                                        week_stats['distance'] += route_distance
-                                        week_stats['duration'] += route_duration
-                                except (ValueError, AttributeError) as e:
-                                    logger.debug(f"Could not parse route timestamp {route_timestamp}: {e}")
-                        
-                        # Convert to frontend format
-                        def convert_calculated_stats(stats_data):
-                            """Convert calculated stats to frontend format"""
-                            distance_miles = stats_data.get('distance', 0)
-                            distance_meters = distance_miles * 1609.34
-                            duration_seconds = stats_data.get('duration', 0)
-                            duration_minutes = duration_seconds / 60
-                            routes = stats_data.get('routes', 0)
-                            
-                            # Calculate average speed if we have both distance and duration
-                            avg_speed_ms = distance_meters / duration_seconds if duration_seconds > 0 else 0
-                            
-                            return {
-                                'routes': routes,
-                                'distance': distance_meters,
-                                'distanceMiles': distance_miles,
-                                'duration': duration_seconds,
-                                'durationMinutes': duration_minutes,
-                                'averageSpeed': avg_speed_ms,  # m/s
-                            }
-                        
-                        all_stats = convert_calculated_stats(all_time_stats)
-                        week_stats_formatted = convert_calculated_stats(week_stats)
-
-                        save_drive_stats(cache_local_drive_stats(all_time_stats, week_stats))
-                        
-                        logger.info(f"Calculated aggregate stats: {all_time_stats['routes']} routes, "
-                                  f"{round(all_time_stats['distance'], 1)} miles, "
-                                  f"{round(all_time_stats['duration'] / 3600, 1)} hours")
-                        
-                        result = {
+                        payload = recalculate_aggregate_drive_stats()
+                        all_stats = convert_stats(payload.get('all', {}))
+                        week_stats = convert_stats(payload.get('week', {}))
+                        self.send_json_response({
                             'success': True,
                             'all': all_stats,
-                            'week': week_stats_formatted,
+                            'week': week_stats,
                             'source': 'calculated_from_routes',
-                            'timestamp': datetime.now().isoformat()
-                        }
-                        
-                        self.send_json_response(result)
+                            'timestamp': datetime.now().isoformat(),
+                        })
                         return
-                        
+
                     except Exception as calc_error:
                         logger.error(f"Error calculating drive stats from routes: {calc_error}", exc_info=True)
                         # Fall through to return zeros if calculation fails
