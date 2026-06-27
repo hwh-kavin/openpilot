@@ -38,6 +38,12 @@ class LongitudinalPlannerSP:
     self.output_a_target = 0.
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
+    # SCC speed targets must use MPC; E2E acceleration overrides curve deceleration.
+    if self.scc.vision.is_active or self.scc.map.is_active:
+      return False
+    if self.source in (LongitudinalPlanSource.sccVision, LongitudinalPlanSource.sccMap):
+      return False
+
     experimental_mode = sm['selfdriveState'].experimentalMode
     if not self.dec.active():
       return experimental_mode
@@ -52,8 +58,8 @@ class LongitudinalPlannerSP:
     long_enabled = sm['carControl'].enabled
     long_override = sm['carControl'].cruiseControl.override
 
-    # Smart Cruise Control
-    self.scc.update(sm, long_enabled, long_override, v_ego, a_ego, v_cruise)
+    # Smart Cruise Control — use actual vehicle speed; v_desired can run ahead in E2E mode.
+    self.scc.update(sm, long_enabled, long_override, CS.vEgo, CS.aEgo, v_cruise)
 
     # Speed Limit Resolver
     self.resolver.update(v_ego, sm)

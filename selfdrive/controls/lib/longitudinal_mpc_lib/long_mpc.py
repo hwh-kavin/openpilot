@@ -55,8 +55,8 @@ FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0  # legacy default; flat stop gap uses STOP_DISTANCE_FLAT
-STOP_DISTANCE_FLAT = 3.0
-STOP_DISTANCE_SLOPE_MAX = 5.0
+STOP_DISTANCE_FLAT = 4.0
+STOP_DISTANCE_SLOPE_MAX = 6.0
 PITCH_STOP_DISTANCE_MAX = 0.080  # |pitch| (rad) at which stop distance reaches STOP_DISTANCE_SLOPE_MAX
 PITCH_STOP_DISTANCE_DEADZONE = 0.025  # ~1.4 deg; ignore mounting bias on flat roads
 STANDSTILL_HEADWAY_SPEED = 0.3  # below this, use stop buffer only (no time-headway inflation)
@@ -143,12 +143,128 @@ def get_scc_accel_scale(personality=log.LongitudinalPersonality.standard):
   return 1.0
 
 
+# Home SUV curve speed limits (m/s²). v_corner = sqrt(a_lat / curvature).
+def get_scc_lat_accel_max(personality=log.LongitudinalPersonality.standard) -> float:
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 1.35
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 2.05
+  return 1.65
+
+
+def get_scc_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 0.85
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 1.20
+  return 1.00
+
+
+def get_scc_abort_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 0.72
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 1.02
+  return 0.86
+
+
+def get_scc_early_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
+  """Lower threshold on the far lookahead window to start slowing earlier."""
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 0.68
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 0.92
+  return 0.78
+
+
+def get_scc_early_abort_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 0.58
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 0.78
+  return 0.66
+
+
+def get_scc_lookahead_max_reduction(personality=log.LongitudinalPersonality.standard) -> float:
+  """Extra speed reduction when a curve is still far ahead (distance-based lead)."""
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 0.14
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 0.06
+  return 0.10
+
+
+def get_scc_gentle_curve_max_reduction(personality=log.LongitudinalPersonality.standard) -> float:
+  """Max speed reduction fraction on gentle curves (just above enter threshold)."""
+  if personality == log.LongitudinalPersonality.relaxed:
+    return 0.10
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 0.04
+  return 0.07
+
+
+def compute_scc_curve_v_target(v_ego: float, max_pred_lat_acc: float,
+                             personality=log.LongitudinalPersonality.standard,
+                             min_v: float = 0.,
+                             position_x: np.ndarray | None = None,
+                             predicted_lat_accels: np.ndarray | None = None) -> float:
+  """SUV curve speed from predicted lateral accel and driving personality."""
+  a_lat = get_scc_lat_accel_max(personality)
+  enter_th = get_scc_enter_lat_acc_th(personality)
+  max_pred = max(float(max_pred_lat_acc), 1e-3)
+  v_ego = max(float(v_ego), 0.1)
+
+  v_physics = v_ego * float(np.sqrt(a_lat / max_pred))
+
+  if max_pred >= a_lat:
+    v_target = max(min_v, min(v_ego, v_physics))
+  elif max_pred >= enter_th:
+    span = max(a_lat - enter_th, 0.01)
+    t = float(np.clip((max_pred - enter_th) / span, 0.0, 1.0))
+    gentle_red = get_scc_gentle_curve_max_reduction(personality)
+    gentle_factor = 1.0 - gentle_red * (1.0 - t)
+    v_gentle = v_ego * gentle_factor
+    v_target = max(min_v, min(v_ego, min(v_physics, v_gentle)))
+  else:
+    v_target = v_ego
+
+  if position_x is not None and predicted_lat_accels is not None:
+    v_target = apply_scc_lookahead_lead(v_target, v_ego, position_x, predicted_lat_accels,
+                                        enter_th, min_v, personality)
+  return v_target
+
+
+def apply_scc_lookahead_lead(v_target: float, v_ego: float, position_x: np.ndarray,
+                             predicted_lat_accels: np.ndarray, enter_th: float, min_v: float,
+                             personality=log.LongitudinalPersonality.standard) -> float:
+  """Apply extra deceleration when the model sees a curve far ahead."""
+  pred = np.asarray(predicted_lat_accels, dtype=np.float64)
+  x = np.asarray(position_x[:len(pred)], dtype=np.float64)
+  if len(x) == 0 or v_target >= v_ego:
+    return v_target
+
+  curve_th = get_scc_early_enter_lat_acc_th(personality)
+  curve_idxs = np.flatnonzero(pred > curve_th)
+  if len(curve_idxs) == 0:
+    return v_target
+
+  dist_m = max(float(x[curve_idxs[0]]), 0.0)
+  if dist_m <= 0.0:
+    return v_target
+
+  max_red = get_scc_lookahead_max_reduction(personality)
+  # Closer curve -> more lead decel: ~14% at 35 m tapering to 0% by 220 m.
+  extra_red = float(np.interp(dist_m, [35., 120., 220.], [max_red, max_red * 0.35, 0.0]))
+  extra_red = max(0.0, extra_red)
+  return max(min_v, v_target * (1.0 - extra_red))
+
+
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
 
 def get_stop_distance_for_pitch(pitch: float) -> float:
-  """Map road pitch to stop distance: 3 m on flat, up to 5 m on steep up/downhill."""
+  """Map road pitch to stop distance: 4 m on flat, up to 6 m on steep up/downhill."""
   pitch_abs = abs(pitch)
   if pitch_abs <= PITCH_STOP_DISTANCE_DEADZONE:
     return STOP_DISTANCE_FLAT
@@ -419,9 +535,9 @@ class LongitudinalMpc:
     # MPC will not converge if immediate crash is expected
     # Clip lead distance to what is still possible to brake for
     min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead) * (v_ego - v_lead) / (-ACCEL_MIN * 2)
-    # 只有前车已停止时才强制最小3米停车距离
+    # 只有前车已停止时才强制最小停车距离
     if v_lead < 0.5:  # 前车速度<0.5m/s(约2km/h)视为停止
-      min_x_lead = max(min_x_lead, 3.0)
+      min_x_lead = max(min_x_lead, STOP_DISTANCE_FLAT)
     x_lead = np.clip(x_lead, min_x_lead, 1e8)
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10., 5.)
