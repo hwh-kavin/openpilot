@@ -31,6 +31,7 @@ const PANEL_ICONS: Record<string, string> = {
   bp_cruise_panel: 'speed',
   bp_toggles_panel: 'toggle_on',
   bp_steering_panel: 'trip_origin',
+  bp_models_panel: 'model_training',
   bp_developer_panel: 'code',
 }
 

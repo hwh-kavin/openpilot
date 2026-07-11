@@ -270,6 +270,10 @@
     "title": "Device ID",
     "description": ""
   },
+  "DriverModelEnable": {
+    "title": "Driver Model Enable",
+    "description": "When enabled, driver monitoring is disabled"
+  },
   "DriverTooDistracted": {
     "title": "Driver Too Distracted",
     "description": ""

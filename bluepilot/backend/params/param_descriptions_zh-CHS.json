@@ -15,6 +15,7 @@
   "DeviceBootMode": "控制设备启动/唤醒后的状态。默认：正常启动并可随时激活；Offroad：启动后始终处于离线模式。",
   "DisableUpdates": "启用后，将关闭软件更新。需要重启后生效。",
   "DisengageOnAccelerator": "启用后，踩下加速踏板将取消纵向控制。",
+  "DriverModelEnable": "启用后，将关闭驾驶员监控功能。",
   "dp_htd_enabled": "检测到人工大幅度转弯时暂停横向控制，转弯结束后恢复。",
   "dp_htd_turn_angle_threshold": "手握方向盘时，超过该转角将触发人工转弯检测。",
   "dp_htd_resume_angle_diff": "手握方向盘时，模型期望角与实际角差值低于该值可恢复横向控制。",

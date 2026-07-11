@@ -484,6 +484,13 @@ def set_param_value(key: str, value: Any, params: Optional[Params] = None) -> Di
         else:
             params.put(key, str(value))
 
+        try:
+            from bluepilot.backend.params.settings_ui_panels import get_onroad_cycle_params
+            if key in get_onroad_cycle_params():
+                params.put_bool("OnroadCycleRequested", True)
+        except Exception:
+            logger.debug("Failed to request onroad cycle for param %s", key)
+
         return success_response()
 
     except UnknownKeyName:

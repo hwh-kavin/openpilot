@@ -92,6 +92,7 @@ interface BaseControl {
 export interface ToggleControl extends BaseControl {
   type: 'toggle'
   param: string
+  needsOnroadCycle?: boolean
   confirm?: boolean
   confirmation?: boolean
   confirm_text?: string

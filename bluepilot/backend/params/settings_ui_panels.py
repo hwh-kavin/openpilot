@@ -23,6 +23,7 @@ PANEL_ID_MAP = {
   "cruise": "bp_cruise_panel",
   "visuals": "bp_visuals_panel",
   "display": "bp_display_panel",
+  "models": "bp_models_panel",
   "developer": "bp_developer_panel",
 }
 
@@ -33,6 +34,7 @@ PANEL_ORDER = [
   "bp_cruise_panel",
   "bp_visuals_panel",
   "bp_display_panel",
+  "bp_models_panel",
   "bp_vehicle_panel",
   "bp_developer_panel",
 ]
@@ -44,6 +46,7 @@ ICON_BY_PANEL = {
   "bp_cruise_panel": "speed",
   "bp_visuals_panel": "visibility",
   "bp_display_panel": "monitor",
+  "bp_models_panel": "model_training",
   "bp_vehicle_panel": "directions_car",
   "bp_developer_panel": "code",
 }
@@ -149,6 +152,8 @@ def _convert_item(item: dict[str, Any], group_prefix: str, index: int) -> list[d
       "title": title,
       "desc": desc,
     }
+    if item.get("needs_onroad_cycle"):
+      control["needsOnroadCycle"] = True
     enablement = _convert_rules(item.get("enablement"))
     if enablement:
       control["enableConditions"] = enablement
@@ -269,6 +274,36 @@ def _convert_panel(panel: dict[str, Any]) -> dict[str, Any] | None:
     "menuIcon": panel.get("icon") or ICON_BY_PANEL.get(bp_id, ""),
     "groups": groups,
   }
+
+
+@lru_cache(maxsize=1)
+def get_onroad_cycle_params() -> frozenset[str]:
+  """Return param keys that require an onroad cycle after modification."""
+  data = _load_settings_ui()
+  params: set[str] = set()
+
+  def walk_items(items: list[dict[str, Any]] | None) -> None:
+    if not items:
+      return
+    for item in items:
+      if not isinstance(item, dict):
+        continue
+      key = item.get("key")
+      if key and item.get("needs_onroad_cycle"):
+        params.add(str(key))
+      walk_items(item.get("sub_items"))
+
+  for panel in data.get("panels", []):
+    for section in panel.get("sections", []):
+      walk_items(section.get("items"))
+      for sub_panel in section.get("sub_panels", []):
+        walk_items(sub_panel.get("items"))
+
+  vehicle = data.get("vehicle_settings") or {}
+  for section in vehicle.get("sections", []):
+    walk_items(section.get("items"))
+
+  return frozenset(params)
 
 
 @lru_cache(maxsize=1)
