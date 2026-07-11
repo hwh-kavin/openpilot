@@ -146,117 +146,117 @@ def get_scc_accel_scale(personality=log.LongitudinalPersonality.standard):
 # Home SUV curve speed limits (m/s²). v_corner = sqrt(a_lat / curvature).
 def get_scc_lat_accel_max(personality=log.LongitudinalPersonality.standard) -> float:
   if personality == log.LongitudinalPersonality.relaxed:
-    return 1.35
+    return 1.42
   if personality == log.LongitudinalPersonality.aggressive:
-    return 2.05
-  return 1.65
+    return 2.18
+  return 1.75
+
+
+# Slightly raise curve passable speed vs pure physics (reduces depth of SCC decel).
+_SCC_PASSABLE_SPEED_FACTOR = 1.035
 
 
 def get_scc_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
   if personality == log.LongitudinalPersonality.relaxed:
-    return 0.85
+    return 1.05
   if personality == log.LongitudinalPersonality.aggressive:
-    return 1.20
-  return 1.00
+    return 1.40
+  return 1.25
 
 
 def get_scc_abort_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
   if personality == log.LongitudinalPersonality.relaxed:
-    return 0.72
+    return 0.90
   if personality == log.LongitudinalPersonality.aggressive:
-    return 1.02
-  return 0.86
+    return 1.22
+  return 1.08
 
 
 def get_scc_early_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
   """Lower threshold on the far lookahead window to start slowing earlier."""
   if personality == log.LongitudinalPersonality.relaxed:
-    return 0.68
+    return 0.95
   if personality == log.LongitudinalPersonality.aggressive:
-    return 0.92
-  return 0.78
+    return 1.25
+  return 1.10
 
 
 def get_scc_early_abort_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
   if personality == log.LongitudinalPersonality.relaxed:
-    return 0.58
+    return 0.82
   if personality == log.LongitudinalPersonality.aggressive:
-    return 0.78
-  return 0.66
+    return 1.10
+  return 0.98
 
 
-def get_scc_lookahead_max_reduction(personality=log.LongitudinalPersonality.standard) -> float:
-  """Extra speed reduction when a curve is still far ahead (distance-based lead)."""
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 0.14
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 0.06
-  return 0.10
+def cap_vel_plan_for_scc(vel_plan: np.ndarray, v_ego: float) -> np.ndarray:
+  """Cap model velocity so predicted lateral accel is not inflated above road speed."""
+  v_ego = max(float(v_ego), 0.1)
+  v_cap = v_ego * 1.08 + 1.5
+  return np.minimum(np.asarray(vel_plan, dtype=np.float64), v_cap)
 
 
-def get_scc_gentle_curve_max_reduction(personality=log.LongitudinalPersonality.standard) -> float:
-  """Max speed reduction fraction on gentle curves (just above enter threshold)."""
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 0.10
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 0.04
-  return 0.07
+def compute_actual_lat_accel(v_ego: float, curvature: float) -> float:
+  """Lateral acceleration from measured path curvature (steering / yaw). a = v²κ."""
+  v_ego = max(float(v_ego), 0.1)
+  return v_ego ** 2 * abs(float(curvature))
+
+
+def combine_scc_model_actual_lat_acc(model_lat_acc: float, actual_lat_acc: float,
+                                     personality=log.LongitudinalPersonality.standard) -> float:
+  """Fuse model and steering-based lateral accel for SCC passable speed.
+
+  When the vehicle is turning, actual steering can exceed a lagging model estimate.
+  When the vehicle is straight, actual steering vetoes spurious model curve detections.
+  """
+  actual_th = get_scc_abort_enter_lat_acc_th(personality)
+  model_lat_acc = max(float(model_lat_acc), 0.0)
+  actual_lat_acc = max(float(actual_lat_acc), 0.0)
+  if actual_lat_acc > actual_th:
+    return max(model_lat_acc, actual_lat_acc)
+  return min(model_lat_acc, actual_th)
+
+
+def compute_scc_passable_speed(v_ego: float, max_pred_lat_acc: float,
+                               personality=log.LongitudinalPersonality.standard,
+                               min_v: float = 0.) -> float:
+  """Max speed that can navigate a curve with predicted lateral accel max_pred_lat_acc."""
+  a_lat = get_scc_lat_accel_max(personality)
+  max_pred = max(float(max_pred_lat_acc), 1e-3)
+  v_ref = max(float(v_ego), 0.1)
+  return max(min_v, v_ref * float(np.sqrt(a_lat / max_pred)))
 
 
 def compute_scc_curve_v_target(v_ego: float, max_pred_lat_acc: float,
                              personality=log.LongitudinalPersonality.standard,
                              min_v: float = 0.,
                              position_x: np.ndarray | None = None,
-                             predicted_lat_accels: np.ndarray | None = None) -> float:
-  """SUV curve speed from predicted lateral accel and driving personality."""
-  a_lat = get_scc_lat_accel_max(personality)
-  enter_th = get_scc_enter_lat_acc_th(personality)
-  max_pred = max(float(max_pred_lat_acc), 1e-3)
+                             predicted_lat_accels: np.ndarray | None = None,
+                             vel_plan: np.ndarray | None = None) -> float:
+  """Return a speed cap for the curve. If v_ego is already at or below the passable speed, no decel."""
   v_ego = max(float(v_ego), 0.1)
-
-  v_physics = v_ego * float(np.sqrt(a_lat / max_pred))
-
-  if max_pred >= a_lat:
-    v_target = max(min_v, min(v_ego, v_physics))
-  elif max_pred >= enter_th:
-    span = max(a_lat - enter_th, 0.01)
-    t = float(np.clip((max_pred - enter_th) / span, 0.0, 1.0))
-    gentle_red = get_scc_gentle_curve_max_reduction(personality)
-    gentle_factor = 1.0 - gentle_red * (1.0 - t)
-    v_gentle = v_ego * gentle_factor
-    v_target = max(min_v, min(v_ego, min(v_physics, v_gentle)))
-  else:
-    v_target = v_ego
-
-  if position_x is not None and predicted_lat_accels is not None:
-    v_target = apply_scc_lookahead_lead(v_target, v_ego, position_x, predicted_lat_accels,
-                                        enter_th, min_v, personality)
-  return v_target
-
-
-def apply_scc_lookahead_lead(v_target: float, v_ego: float, position_x: np.ndarray,
-                             predicted_lat_accels: np.ndarray, enter_th: float, min_v: float,
-                             personality=log.LongitudinalPersonality.standard) -> float:
-  """Apply extra deceleration when the model sees a curve far ahead."""
-  pred = np.asarray(predicted_lat_accels, dtype=np.float64)
-  x = np.asarray(position_x[:len(pred)], dtype=np.float64)
-  if len(x) == 0 or v_target >= v_ego:
-    return v_target
+  a_lat = get_scc_lat_accel_max(personality)
+  v_limit = compute_scc_passable_speed(v_ego, max_pred_lat_acc, personality, min_v)
 
   curve_th = get_scc_early_enter_lat_acc_th(personality)
-  curve_idxs = np.flatnonzero(pred > curve_th)
-  if len(curve_idxs) == 0:
-    return v_target
+  if predicted_lat_accels is not None:
+    pred = np.asarray(predicted_lat_accels, dtype=np.float64)
+    if vel_plan is None:
+      vel = np.full_like(pred, v_ego)
+    else:
+      vel = np.asarray(vel_plan[:len(pred)], dtype=np.float64)
 
-  dist_m = max(float(x[curve_idxs[0]]), 0.0)
-  if dist_m <= 0.0:
-    return v_target
+    for a_pred, v_plan_pt in zip(pred, vel):
+      if a_pred <= curve_th:
+        continue
+      v_pass = max(min_v, float(v_plan_pt) * np.sqrt(a_lat / a_pred))
+      v_limit = min(v_limit, v_pass)
 
-  max_red = get_scc_lookahead_max_reduction(personality)
-  # Closer curve -> more lead decel: ~14% at 35 m tapering to 0% by 220 m.
-  extra_red = float(np.interp(dist_m, [35., 120., 220.], [max_red, max_red * 0.35, 0.0]))
-  extra_red = max(0.0, extra_red)
-  return max(min_v, v_target * (1.0 - extra_red))
+  v_limit *= _SCC_PASSABLE_SPEED_FACTOR
+
+  if v_ego <= v_limit:
+    return v_ego
+  return max(min_v, min(v_ego, v_limit))
 
 
 def get_stopped_equivalence_factor(v_lead):

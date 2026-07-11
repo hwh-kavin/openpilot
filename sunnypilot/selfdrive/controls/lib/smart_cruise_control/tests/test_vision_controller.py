@@ -176,9 +176,9 @@ class TestSmartCruiseControlVision:
     th = float(get_scc_enter_lat_acc_th(log.LongitudinalPersonality.standard))
 
     if case == "p97_just_above_threshold":
-      # Use the next representable float32 above threshold to avoid float32 rounding flakiness.
-      val = _th_above_f32(th)
-      pred_lat_accels = np.full(n, np.float32(val), dtype=np.float32)
+      # Sharp enough curve that v_ego exceeds passable speed.
+      val = np.float32(2.5)
+      pred_lat_accels = np.full(n, val, dtype=np.float32)
 
     elif case == "single_spike_filtered":
       pred_lat_accels = _build_single_spike_filtered(n, base=0.7)
@@ -201,7 +201,9 @@ class TestSmartCruiseControlVision:
     mdl.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
     self.sm["modelV2"] = mdl.modelV2
 
-    v_ego = float(MIN_V + 5.0)
+    v_ego = 27.8 if case == "p97_just_above_threshold" else float(MIN_V + 5.0)
+    if not should_enter:
+      self.sm["controlsState"].curvature = 0.0
 
     # 1st update: disabled -> enabled
     self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
@@ -210,7 +212,7 @@ class TestSmartCruiseControlVision:
 
     # Controller does percentile on numpy float64 arrays (values already quantized by capnp),
     # so compute expected in float64 to match behavior and avoid interpolation/rounding deltas.
-    expected_p97 = float(np.percentile(pred_lat_accels.astype(np.float64), 95))
+    expected_p97 = float(np.percentile(pred_lat_accels.astype(np.float64), 97))
 
     near_mask = np.array(ModelConstants.T_IDXS[:n]) <= _NEAR_LOOKAHEAD_T_S
     near_pred = pred_lat_accels[near_mask] if np.any(near_mask) else pred_lat_accels
@@ -221,14 +223,25 @@ class TestSmartCruiseControlVision:
     assert np.isclose(self.scc_v.max_pred_lat_acc_enter, expected_enter, rtol=1e-6, atol=1e-5)
 
     if should_enter:
-      # We assert entering primarily by state (this is the actual intended behavior).
       assert self.scc_v.state == VisionState.entering
-      # Optional sanity: should be >= threshold with some margin (since we used nextafter above threshold).
-      assert self.scc_v.max_pred_lat_acc_enter > th
+      assert self.scc_v.v_ego > self.scc_v.v_passable
 
     else:
-      # Difference vs np.amax(): max can be above threshold, but near-term p90 stays at/below it.
-      assert float(np.max(pred_lat_accels)) >= th
+      assert float(np.max(pred_lat_accels)) >= th or self.scc_v.v_ego <= self.scc_v.v_passable
       assert self.scc_v.state == VisionState.enabled
 
-  # TODO-SP: mock modelV2 data to test other states
+  def test_entering_from_actual_steering_when_model_lags(self):
+    n = len(ModelConstants.T_IDXS)
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [0.8 for _ in range(n)]
+    self.sm["modelV2"] = mdl.modelV2
+    self.sm["controlsState"].curvature = 0.05
+
+    v_ego = 27.8
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.actual_lat_acc > get_scc_enter_lat_acc_th(log.LongitudinalPersonality.standard)
+    assert self.scc_v.v_ego > self.scc_v.v_passable
+    assert self.scc_v.state == VisionState.entering
