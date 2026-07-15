@@ -1,12 +1,13 @@
 import pyray as rl
 from enum import IntEnum
 import cereal.messaging as messaging
+from cereal import log
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.layouts.sidebar import Sidebar, SIDEBAR_WIDTH
 from openpilot.selfdrive.ui.layouts.home import HomeLayout
 from openpilot.selfdrive.ui.layouts.settings.settings import SettingsLayout, PanelType
-from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView
+from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView, draw_onroad_border
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.layouts.onboarding import OnboardingWindow
 from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
@@ -14,6 +15,7 @@ from bluepilot.ui.widgets.install_status import InstallStatusTracker, draw_insta
 
 if gui_app.sunnypilot_ui():
   from openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings import SettingsLayoutSP as SettingsLayout
+  from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui import DeveloperUiRenderer
 
 
 class MainState(IntEnum):
@@ -42,6 +44,11 @@ class MainLayout(Widget):
     self._sidebar_rect = rl.Rectangle(0, 0, 0, 0)
     self._content_rect = rl.Rectangle(0, 0, 0, 0)
     self._banner_height = 0.0
+
+    # Split-screen state
+    self._split_screen = False
+    self._amap_view = None
+    self._bottom_dev_ui = DeveloperUiRenderer() if gui_app.sunnypilot_ui() else None
 
     # Set callbacks
     self._setup_callbacks()
@@ -109,6 +116,12 @@ class MainLayout(Widget):
       self._layouts[self._current_mode].show_event()
       if self._road_view is not None:
         self._road_view.set_draw_border(True)
+    # Exit split-screen / stop map worker request when leaving onroad
+    if layout != MainState.ONROAD:
+      if self._split_screen:
+        self._split_screen = False
+      if self._amap_view is not None:
+        self._amap_view.set_enabled(False)
 
   def open_settings(self, panel_type: PanelType):
     self._layouts[MainState.SETTINGS].set_current_panel(panel_type)
@@ -124,7 +137,44 @@ class MainLayout(Widget):
     self._pm.send('bookmarkButton', user_bookmark)
 
   def _on_onroad_clicked(self):
-    self._sidebar.set_visible(not self._sidebar.is_visible)
+    if self._split_screen:
+      # Exit split-screen → show sidebar
+      self._split_screen = False
+      self._sidebar.set_visible(True)
+    elif not self._sidebar.is_visible:
+      # Sidebar hidden → enter split-screen when map is ready, otherwise show sidebar
+      if self._can_enter_split_screen():
+        self._split_screen = True
+      else:
+        self._sidebar.set_visible(True)
+    else:
+      # Sidebar visible → hide sidebar
+      self._sidebar.set_visible(False)
+
+  def _has_amap_prerequisites(self) -> bool:
+    """Check WiFi and API key — map feature available but may still be loading."""
+    sm = ui_state.sm
+    is_wifi = (sm.valid.get('deviceState') and
+               sm['deviceState'].networkType == log.DeviceState.NetworkType.wifi)
+    has_key = bool(ui_state.params.get("AmapApiKey"))
+    return is_wifi and has_key
+
+  def _ensure_amap_view(self) -> None:
+    if self._amap_view is None:
+      from bluepilot.ui.onroad.amap_view import AmapView
+      self._amap_view = AmapView()
+
+  def _prepare_amap(self) -> None:
+    if not self._has_amap_prerequisites():
+      if self._amap_view is not None:
+        self._amap_view.set_enabled(False)
+      return
+    self._ensure_amap_view()
+    self._amap_view.prepare()
+
+  def _can_enter_split_screen(self) -> bool:
+    """Map must be fully prepared (amapd shared frame ready) before split-screen."""
+    return self._has_amap_prerequisites() and self._amap_view is not None and self._amap_view.is_ready()
 
   def _on_body_changed(self):
     self._layouts[MainState.HOME] = self._home_body_layout if ui_state.is_body else self._home_layout
@@ -153,4 +203,61 @@ class MainLayout(Widget):
         self._rect.width,
         max(0.0, self._rect.height - self._banner_height),
       )
-    self._layouts[self._current_mode].render(content_rect)
+
+    if self._current_mode == MainState.ONROAD:
+      self._prepare_amap()
+
+    if self._current_mode == MainState.ONROAD and self._split_screen:
+      self._render_split_screen(content_rect)
+    else:
+      if self._current_mode == MainState.ONROAD:
+        self._road_view.set_draw_border(True)
+      self._layouts[self._current_mode].render(content_rect)
+
+    if self._current_mode == MainState.ONROAD:
+      self._render_bottom_dev_ui(content_rect)
+
+  def _render_bottom_dev_ui(self, rect: rl.Rectangle) -> None:
+    if self._bottom_dev_ui is None:
+      return
+
+    from openpilot.selfdrive.ui import UI_BORDER_SIZE
+
+    inner_rect = rl.Rectangle(
+      rect.x + UI_BORDER_SIZE,
+      rect.y + UI_BORDER_SIZE,
+      rect.width - 2 * UI_BORDER_SIZE,
+      rect.height - 2 * UI_BORDER_SIZE,
+    )
+    self._bottom_dev_ui.render_bottom(inner_rect)
+
+  def _render_split_screen(self, rect: rl.Rectangle):
+    """Render split-screen: driving view (left) + Amap (right), with unified border."""
+    from openpilot.selfdrive.ui import UI_BORDER_SIZE
+
+    # Draw unified border around the full area
+    draw_onroad_border(rect)
+
+    # Inner content area (inside the colored border)
+    inner_x = rect.x + UI_BORDER_SIZE
+    inner_y = rect.y + UI_BORDER_SIZE
+    inner_w = rect.width - 2 * UI_BORDER_SIZE
+    inner_h = rect.height - 2 * UI_BORDER_SIZE
+
+    half_w = int(inner_w / 2)
+
+    left_rect = rl.Rectangle(inner_x, inner_y, half_w, inner_h)
+    right_rect = rl.Rectangle(inner_x + half_w, inner_y, inner_w - half_w, inner_h)
+
+    # Left: driving view without its own border
+    self._road_view.set_draw_border(False)
+    self._road_view.render(left_rect)
+
+    # Right: Amap map view
+    self._ensure_amap_view()
+    self._amap_view.render(right_rect)
+
+    # Divider between driving view and map
+    divider_x = int(inner_x + half_w)
+    rl.draw_line(divider_x, int(inner_y), divider_x, int(inner_y + inner_h), rl.Color(0, 0, 0, 220))
+    rl.draw_line(divider_x + 1, int(inner_y), divider_x + 1, int(inner_y + inner_h), rl.Color(90, 90, 90, 180))

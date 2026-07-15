@@ -93,19 +93,20 @@ class ModelsLayout(Widget):
 
     self.lagd_toggle = toggle_item_sp(tr("Live Learning Steer Delay"), "", param="LagdToggle")
 
-    self.driver_model_enable_toggle = toggle_item_sp(
-      tr("Driver Model Enable"),
-      tr("When enabled, driver monitoring is disabled. Changing this setting will restart sunnypilot if the car is powered on."),
-      param="DriverModelEnable",
-      callback=self._on_driver_model_enable_toggled,
+    self.driver_monitoring_toggle = toggle_item_sp(
+      tr("Driver Monitoring"),
+      tr("Turn off to disable driver monitoring and the driver camera to save compute. Changing this setting will restart sunnypilot if the car is powered on."),
+      initial_state=not ui_state.params.get_bool("DriverModelEnable"),
+      callback=self._on_driver_monitoring_toggled,
     )
 
     self.items = [self.current_model_item, self.cancel_download_item, self.supercombo_label, self.vision_label,
                   self.policy_label, self.off_policy_label, self.on_policy_label, self.refresh_item, self.clear_cache_item,
-                  self.driver_model_enable_toggle, self.lane_turn_desire_toggle,
+                  self.driver_monitoring_toggle, self.lane_turn_desire_toggle,
                   self.lane_turn_value_control, self.lagd_toggle, self.delay_control]
 
-  def _on_driver_model_enable_toggled(self, _state: bool):
+  def _on_driver_monitoring_toggled(self, enabled: bool):
+    ui_state.params.put_bool("DriverModelEnable", not enabled, block=True)
     ui_state.params.put_bool("OnroadCycleRequested", True, block=True)
 
   def _update_lagd_description(self, lagd_toggle: bool):
@@ -244,7 +245,7 @@ class ModelsLayout(Widget):
     turn_desire: bool = ui_state.params.get_bool("LaneTurnDesire")
     live_delay: bool = ui_state.params.get_bool("LagdToggle")
 
-    self.driver_model_enable_toggle.action_item.set_state(ui_state.params.get_bool("DriverModelEnable"))
+    self.driver_monitoring_toggle.action_item.set_state(not ui_state.params.get_bool("DriverModelEnable"))
     self.lane_turn_desire_toggle.action_item.set_state(turn_desire)
     self.lane_turn_value_control.set_visible(turn_desire and advanced_controls)
     self.lagd_toggle.action_item.set_state(live_delay)

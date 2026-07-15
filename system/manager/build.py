@@ -14,9 +14,6 @@ from openpilot.system.version import get_build_metadata
 MAX_CACHE_SIZE = 4e9 if "CI" in os.environ else 2e9
 CACHE_DIR = Path("/data/scons_cache" if AGNOS else "/tmp/scons_cache")
 
-TOTAL_SCONS_NODES = 2705
-MAX_BUILD_PROGRESS = 100
-
 def build(spinner: Spinner, dirty: bool = False, minimal: bool = False) -> None:
   env = os.environ.copy()
   env['SCONS_PROGRESS'] = "1"
@@ -48,8 +45,11 @@ def build(spinner: Spinner, dirty: bool = False, minimal: bool = False) -> None:
 
         prefix = b'progress: '
         if line.startswith(prefix):
-          i = int(line[len(prefix):])
-          spinner.update_progress(MAX_BUILD_PROGRESS * min(1., i / TOTAL_SCONS_NODES), 100.)
+          try:
+            progress_pct = float(line[len(prefix):])
+            spinner.update_progress(progress_pct, 100.)
+          except ValueError:
+            pass
         elif len(line):
           compile_output.append(line)
           print(line.decode('utf8', 'replace'))

@@ -45,9 +45,21 @@ class DeveloperLayoutSP(DeveloperLayout):
 
     self.prebuilt_toggle = toggle_item_sp(tr("Quickboot Mode"), "", param="QuickBootToggle", callback=self._on_prebuilt_toggled)
 
-    self.error_log_btn = button_item(tr("Error Log"), tr("VIEW"), tr("View the error log for sunnypilot crashes."), callback=self._on_error_log_clicked)
+    self.alert_log_toggle = toggle_item_sp(
+      tr("Enable Alert Logging"),
+      tr("When enabled, onroad warnings and errors are appended to the error log while driving."),
+      param="UiAlertLogEnable",
+    )
 
-    self.items: list = [self.show_advanced_controls, self.enable_github_runner_toggle, self.prebuilt_toggle, self.error_log_btn,]
+    self.error_log_btn = button_item(tr("Error Log"), tr("VIEW"), tr("View the error log for sunnypilot crashes and onroad alerts."), callback=self._on_error_log_clicked)
+
+    self.items: list = [
+      self.show_advanced_controls,
+      self.enable_github_runner_toggle,
+      self.prebuilt_toggle,
+      self.alert_log_toggle,
+      self.error_log_btn,
+    ]
 
   @staticmethod
   def _on_prebuilt_toggled(state):
@@ -101,4 +113,5 @@ class DeveloperLayoutSP(DeveloperLayout):
       self.prebuilt_toggle.set_description(tr("Quickboot mode requires updates to be disabled.<br>Enable 'Disable Updates' in the Software panel first."))
 
     self.enable_github_runner_toggle.set_visible(show_advanced and not self._is_release_branch)
+    self.alert_log_toggle.set_visible(not self._is_release_branch)
     self.error_log_btn.set_visible(not self._is_release_branch)

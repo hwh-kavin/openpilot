@@ -1941,6 +1941,22 @@
               ]
             },
             {
+              "key": "UiAlertLogEnable",
+              "widget": "toggle",
+              "title": "Enable Alert Logging",
+              "description": "When enabled, onroad warnings and errors are appended to the error log while driving.",
+              "visibility": [
+                {
+                  "type": "not",
+                  "condition": {
+                    "type": "capability",
+                    "field": "is_sp_release",
+                    "equals": true
+                  }
+                }
+              ]
+            },
+            {
               "key": "EnableCopyparty",
               "widget": "toggle",
               "title": "BluePilot Portal Service",
@@ -2011,8 +2027,8 @@
               "key": "DriverModelEnable",
               "widget": "toggle",
               "needs_onroad_cycle": true,
-              "title": "Driver Model Enable",
-              "description": "When enabled, driver monitoring is disabled. Changing this setting will restart sunnypilot if the car is powered on."
+              "title": "Disable Driver Monitoring",
+              "description": "Turn on to disable driver monitoring and the driver camera to save compute. Changing this setting will restart sunnypilot if the car is powered on."
             },
             {
               "key": "LaneTurnDesire",

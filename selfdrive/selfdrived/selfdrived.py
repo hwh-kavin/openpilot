@@ -100,6 +100,9 @@ class SelfdriveD(CruiseHelper):
     if REPLAY:
       # no vipc in replay will make them ignored anyways
       ignore += ['roadCameraState', 'wideRoadCameraState']
+    # Driver monitoring disabled: driver camera is not started
+    if self.params.get_bool("DriverModelEnable"):
+      ignore += ['driverCameraState']
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'liveCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
@@ -383,7 +386,9 @@ class SelfdriveD(CruiseHelper):
     if self.sm['radarState'].radarErrors.canError:
       self.events.add(EventName.canError)
     elif self.sm['radarState'].radarErrors.radarUnavailableTemporary:
-      self.events.add(EventName.radarTempUnavailable)
+      # Ford MRR (and similar) freezes scan index in R/P; not actionable while undrivable
+      if not self._is_undrivable_gear(CS):
+        self.events.add(EventName.radarTempUnavailable)
     elif any(self.sm['radarState'].radarErrors.to_dict().values()):
       self.events.add(EventName.radarFault)
     if not self.sm.valid['pandaStates']:
@@ -394,9 +399,11 @@ class SelfdriveD(CruiseHelper):
       self.events.add(EventName.canError)
 
     # generic catch-all. ideally, a more specific event should be added above instead
+    # openpilot does not control in P/R; planning messages often go invalid there and
+    # must not surface as scary "Communication Issue Between Processes".
     has_disable_events = self.events.contains(ET.NO_ENTRY) and (self.events.contains(ET.SOFT_DISABLE) or self.events.contains(ET.IMMEDIATE_DISABLE))
     no_system_errors = (not has_disable_events) or (len(self.events) == num_events)
-    if not self.sm.all_checks() and no_system_errors:
+    if not self.sm.all_checks() and no_system_errors and not self._is_undrivable_gear(CS):
       if not self.sm.all_alive():
         self.events.add(EventName.commIssue)
       elif not self.sm.all_freq_ok():
@@ -627,6 +634,13 @@ class SelfdriveD(CruiseHelper):
     self.publish_selfdriveState(CS)
 
     self.CS_prev = CS
+
+  @staticmethod
+  def _is_undrivable_gear(CS: car.CarState) -> bool:
+    """Park/reverse (and creep neutral) — openpilot is not controlling the car."""
+    gear = CS.gearShifter
+    return gear in (car.CarState.GearShifter.park, car.CarState.GearShifter.reverse) or (
+      gear == car.CarState.GearShifter.neutral and CS.vEgo < 1.0)
 
   def _update_locationd_reengage_state(self, CS: car.CarState, locationd_error: bool) -> None:
     if self.events.contains(EventName.pedalPressed) or self.events.contains(EventName.buttonCancel) or \

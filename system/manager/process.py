@@ -43,8 +43,14 @@ def launcher(proc: str, name: str) -> None:
     raise
 
 
-def nativelauncher(pargs: list[str], cwd: str, name: str) -> None:
+def nativelauncher(pargs: list[str], cwd: str, name: str, extra_env: dict | None = None) -> None:
   os.environ['MANAGER_DAEMON'] = name
+  if extra_env:
+    for k, v in extra_env.items():
+      if v is None:
+        os.environ.pop(k, None)
+      else:
+        os.environ[k] = str(v)
 
   # exec the process
   os.chdir(cwd)
@@ -140,7 +146,7 @@ class ManagerProcess(ABC):
 
 
 class NativeProcess(ManagerProcess):
-  def __init__(self, name, cwd, cmdline, should_run, enabled=True, sigkill=False):
+  def __init__(self, name, cwd, cmdline, should_run, enabled=True, sigkill=False, env=None):
     self.name = name
     self.cwd = cwd
     self.cmdline = cmdline
@@ -148,6 +154,8 @@ class NativeProcess(ManagerProcess):
     self.enabled = enabled
     self.sigkill = sigkill
     self.launcher = nativelauncher
+    # optional env for child: dict, or callable(Params) -> dict (None values unset keys)
+    self.env = env
 
   def prepare(self) -> None:
     pass
@@ -162,7 +170,8 @@ class NativeProcess(ManagerProcess):
 
     cwd = os.path.join(BASEDIR, self.cwd)
     cloudlog.info(f"starting process {self.name}")
-    self.proc = Process(name=self.name, target=self.launcher, args=(self.cmdline, cwd, self.name))
+    extra_env = self.env(Params()) if callable(self.env) else self.env
+    self.proc = Process(name=self.name, target=self.launcher, args=(self.cmdline, cwd, self.name, extra_env))
     self.proc.start()
     self.shutting_down = False
 

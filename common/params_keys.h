@@ -156,6 +156,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"DevUIInfo", {PERSISTENT | BACKUP, INT, "0"}},
     {"EnableCopyparty", {PERSISTENT | BACKUP, BOOL}},
+    {"CopypartyPassword", {PERSISTENT | BACKUP, STRING}},
     {"BPPortalPort", {PERSISTENT | BACKUP, INT, "80"}},
     {"BPPortalCrashCount", {PERSISTENT, INT, "0"}},
     {"BPPortalLastCrash", {PERSISTENT, INT, "0"}},
@@ -184,6 +185,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RainbowMode", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"RocketFuel", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ShowAdvancedControls", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"UiAlertLogEnable", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ShowTurnSignals", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"StandstillTimer", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TrueVEgoUI", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -249,6 +251,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
 
     // mapd
+    {"AmapApiKey", {PERSISTENT | BACKUP, STRING}},
     {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},

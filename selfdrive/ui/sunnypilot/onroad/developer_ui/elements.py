@@ -346,3 +346,122 @@ class AltitudeElement(GpsInfoElement):
 
     value = f"{altitude:.1f}" if gps_accuracy != 0.0 else "-"
     return UiElement(value, "ALT.", self.unit, rl.WHITE)
+
+
+class DeviceStateElement:
+  @staticmethod
+  def get_device_state(sm):
+    if sm.valid.get('deviceState', False):
+      return sm['deviceState'], True
+    return None, False
+
+
+class CpuUsageElement(DeviceStateElement):
+  def __init__(self):
+    self.unit = "%"
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    ds, valid = self.get_device_state(sm)
+    if not valid:
+      return UiElement("-", "CPU用", self.unit, rl.WHITE)
+
+    cpu_usage = list(ds.cpuUsagePercent) if hasattr(ds, 'cpuUsagePercent') else []
+    if not cpu_usage:
+      return UiElement("-", "CPU用", self.unit, rl.WHITE)
+
+    avg_cpu = sum(cpu_usage) / len(cpu_usage)
+    color = rl.WHITE
+    if avg_cpu > 80:
+      color = rl.RED
+    elif avg_cpu > 60:
+      color = rl.Color(255, 188, 0, 255)
+
+    return UiElement(f"{avg_cpu:.0f}", "CPU用", self.unit, color)
+
+
+class CpuTempElement(DeviceStateElement):
+  def __init__(self):
+    self.unit = "°C"
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    ds, valid = self.get_device_state(sm)
+    if not valid:
+      return UiElement("-", "CPU温", self.unit, rl.WHITE)
+
+    cpu_temps = list(ds.cpuTempC) if hasattr(ds, 'cpuTempC') else []
+    if not cpu_temps:
+      return UiElement("-", "CPU温", self.unit, rl.WHITE)
+
+    avg_temp = sum(cpu_temps) / len(cpu_temps)
+    color = rl.WHITE
+    if avg_temp > 85:
+      color = rl.RED
+    elif avg_temp > 75:
+      color = rl.Color(255, 188, 0, 255)
+
+    return UiElement(f"{avg_temp:.0f}", "CPU温", self.unit, color)
+
+
+class MemoryUsageElement(DeviceStateElement):
+  def __init__(self):
+    self.unit = "%"
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    ds, valid = self.get_device_state(sm)
+    if not valid:
+      return UiElement("-", "内存", self.unit, rl.WHITE)
+
+    mem_usage = ds.memoryUsagePercent
+    color = rl.WHITE
+    if mem_usage > 90:
+      color = rl.RED
+    elif mem_usage > 75:
+      color = rl.Color(255, 188, 0, 255)
+
+    return UiElement(f"{mem_usage:.0f}", "内存", self.unit, color)
+
+
+class FreeSpaceElement(DeviceStateElement):
+  def __init__(self):
+    self.unit = "%"
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    ds, valid = self.get_device_state(sm)
+    if not valid:
+      return UiElement("-", "存储", self.unit, rl.WHITE)
+
+    free_space = ds.freeSpacePercent
+    color = rl.WHITE
+    if free_space < 7:
+      color = rl.RED
+    elif free_space < 15:
+      color = rl.Color(255, 188, 0, 255)
+
+    return UiElement(f"{free_space:.0f}", "存储", self.unit, color)
+
+
+class ModelTorqueElement:
+  def __init__(self):
+    self.unit = ""
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    if not sm.valid.get('carControl', False):
+      return UiElement("-", "模型扭矩", self.unit, rl.WHITE)
+
+    torque = sm['carControl'].actuators.torque
+    lat_active = sm['carControl'].latActive
+    value = f"{torque:.2f}" if lat_active else "-"
+    color = rl.Color(0, 255, 0, 255) if lat_active else rl.WHITE
+    return UiElement(value, "模型扭矩", self.unit, color)
+
+
+class ModelAccelElement:
+  def __init__(self):
+    self.unit = "m/s^2"
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    if not sm.valid.get('modelV2', False):
+      return UiElement("-", "模型加速度", self.unit, rl.WHITE)
+
+    accel = sm['modelV2'].action.desiredAcceleration
+    return UiElement(f"{accel:.2f}", "模型加速度", self.unit, rl.WHITE)

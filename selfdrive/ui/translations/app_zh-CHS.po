@@ -575,6 +575,18 @@ msgid "Yes, delete all tiles"
 msgstr "是的，删除全部瓦片"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "Not set"
+msgstr "未设置"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "Yes, remove key"
+msgstr "是的，删除密钥"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "This will remove your Amap API key.\\n\\nAre you sure you want to continue?"
+msgstr "这将删除你的高德地图密钥。\\n\\n是否继续？"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Downloading Map"
 msgstr "正在下载地图"
 
@@ -599,12 +611,12 @@ msgid "Driving Model"
 msgstr "驾驶模型"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/models.py
-msgid "Driver Model Enable"
-msgstr "驾驶员模型使能"
+msgid "Driver Monitoring"
+msgstr "驾驶员监控"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/models.py
-msgid "When enabled, driver monitoring is disabled. Changing this setting will restart sunnypilot if the car is powered on."
-msgstr "启用后，将关闭驾驶员监控功能。若车辆已上电，更改此设置将重启 sunnypilot。"
+msgid "Turn off to disable driver monitoring and the driver camera to save compute. Changing this setting will restart sunnypilot if the car is powered on."
+msgstr "关闭后将停止驾驶员监控与车内摄像头以节省算力。若车辆已上电，更改此设置将重启 sunnypilot。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/layouts/settings/toggles.py
 msgid "Driving Personality"
@@ -774,6 +786,18 @@ msgstr "错误"
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/developer.py
 msgid "Error Log"
 msgstr "错误日志"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/developer.py
+msgid "Enable Alert Logging"
+msgstr "日志使能"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/developer.py
+msgid "When enabled, onroad warnings and errors are appended to the error log while driving."
+msgstr "开启后，行驶过程中的报警与错误会写入错误日志，可在错误日志中查看。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/developer.py
+msgid "View the error log for sunnypilot crashes and onroad alerts."
+msgstr "查看崩溃与行车报警错误日志。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Error: Invalid download. Retry."

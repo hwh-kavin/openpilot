@@ -88,18 +88,20 @@ class SmartCruiseControlRenderer(Widget):
     y_scc_m = 0
     idx = 0
 
-    if self.vision_enabled:
+    # Only reserve/show icons while actively managing a curve (not merely enabled on straights)
+    show_vision = self.vision_enabled and self.vision_active
+    show_map = self.map_enabled and self.map_active
+
+    if show_vision:
       y_scc_v = orders[idx]
       idx += 1
 
-    if self.map_enabled:
+    if show_map:
       y_scc_m = orders[idx]
       idx += 1
 
-    if self.vision_enabled:
-      alpha = self._vision_fade.alpha if self.vision_active else 1.0
-      self._draw_icon(rect.x + rect.width / 2, rect.height, x_offset, y_scc_v, "SCC-V", alpha)
+    if show_vision:
+      self._draw_icon(rect.x + rect.width / 2, rect.height, x_offset, y_scc_v, "SCC-V", self._vision_fade.alpha)
 
-    if self.map_enabled:
-      alpha = self._map_fade.alpha if self.map_active else 1.0
-      self._draw_icon(rect.x + rect.width / 2, rect.height, x_offset, y_scc_m, "SCC-M", alpha)
+    if show_map:
+      self._draw_icon(rect.x + rect.width / 2, rect.height, x_offset, y_scc_m, "SCC-M", self._map_fade.alpha)

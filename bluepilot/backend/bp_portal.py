@@ -45,22 +45,22 @@ try:
     root_logger = logging.getLogger()
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
-    
+
     # Create file handler
     file_handler = logging.FileHandler(log_file, mode='a')
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s [%(name)s]: %(message)s'))
-    
+
     # Create console handler
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     console_handler.setFormatter(logging.Formatter('%(levelname)s [%(name)s]: %(message)s'))
-    
+
     # Configure root logger
     root_logger.setLevel(logging.INFO)
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
-    
+
     logger = logging.getLogger(__name__)
     logger.info(f"Logging configured - file: {log_file}")
 except Exception as e:
@@ -2358,19 +2358,19 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                             return
 
                     logger.info("No cached drive stats found, attempting to fetch from Comma API...")
-                    
+
                     # Try fetching from Comma API (same as Qt widget does)
                     try:
                         from openpilot.common.api import api_get, Api
                         from openpilot.system.athena.registration import UNREGISTERED_DONGLE_ID
-                        
+
                         dongle_id = params.get("DongleId")
                         # Handle bytes vs string
                         if isinstance(dongle_id, bytes):
                             dongle_id = dongle_id.decode('utf-8').strip()
-                        
+
                         logger.info(f"Attempting API fetch - DongleId: {dongle_id[:10]}..., Is registered: {dongle_id and dongle_id != UNREGISTERED_DONGLE_ID}")
-                        
+
                         if dongle_id and dongle_id != UNREGISTERED_DONGLE_ID:
                             try:
                                 # Use Api directly instead of get_token helper to avoid cached time validation
@@ -2380,7 +2380,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                                 logger.info(f"Got identity token, fetching stats from API...")
                                 response = api_get(f"v1.1/devices/{dongle_id}/stats", access_token=identity_token, timeout=10)
                                 logger.info(f"API response status: {response.status_code}")
-                                
+
                                 if response.status_code == 200:
                                     api_data = response.json()
                                     if save_drive_stats(api_data):
@@ -2389,7 +2389,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                                             api_data.get('all', {}).get('routes', 0),
                                         )
                                     logger.info(f"Successfully fetched drive stats from Comma API: {api_data.get('all', {}).get('routes', 0)} routes")
-                                    
+
                                     # Parse and return the data
                                     def convert_api_stats(stats_data):
                                         """Convert API stats to frontend format"""
@@ -2398,10 +2398,10 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                                         duration_minutes = stats_data.get('minutes', 0)
                                         duration_seconds = duration_minutes * 60
                                         routes = stats_data.get('routes', 0)
-                                        
+
                                         # Calculate average speed if we have both distance and duration
                                         avg_speed_ms = distance_meters / duration_seconds if duration_seconds > 0 else 0
-                                        
+
                                         return {
                                             'routes': routes,
                                             'distance': distance_meters,
@@ -2410,10 +2410,10 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                                             'durationMinutes': duration_minutes,
                                             'averageSpeed': avg_speed_ms,  # m/s
                                         }
-                                    
+
                                     all_stats = convert_api_stats(api_data.get('all', {}))
                                     week_stats = convert_api_stats(api_data.get('week', {}))
-                                    
+
                                     result = {
                                         'success': True,
                                         'all': all_stats,
@@ -2421,7 +2421,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                                         'source': 'comma_api',
                                         'timestamp': datetime.now().isoformat()
                                     }
-                                    
+
                                     self.send_json_response(result)
                                     return
                                 else:
@@ -2435,7 +2435,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                         logger.error(f"Could not import API helpers: {e}", exc_info=True)
                     except Exception as api_error:
                         logger.error(f"Error fetching drive stats from Comma API: {api_error}", exc_info=True)
-                    
+
                     # Fallback: calculate from routes once per boot (latest date only)
                     if not needs_drive_stats_recalculate(params):
                         cached_stats, cache_source = load_drive_stats(params)
@@ -2469,7 +2469,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                     except Exception as calc_error:
                         logger.error(f"Error calculating drive stats from routes: {calc_error}", exc_info=True)
                         # Fall through to return zeros if calculation fails
-                    
+
                     # If calculation failed or no routes found, return zeros
                     logger.debug("Could not calculate stats from routes, returning zeros")
                     zero_stats = {
@@ -3371,6 +3371,28 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                             'success': True,
                             'message': 'Password saved. Reboot required to apply changes.',
                             'requires_reboot': True
+                        })
+
+                    elif action == 'set_amap_api_key':
+                        # Set Amap API key
+                        api_key = data.get('api_key', '')
+
+                        if api_key is None:
+                            self.send_json_response({
+                                'success': False,
+                                'error': 'Missing api_key field'
+                            }, 400)
+                            return
+
+                        # Empty string means remove key
+                        if api_key == '':
+                            params.remove('AmapApiKey')
+                        else:
+                            params.put('AmapApiKey', api_key)
+
+                        self.send_json_response({
+                            'success': True,
+                            'message': 'Amap API key saved successfully.',
                         })
 
                     elif action == 'view_error_log':

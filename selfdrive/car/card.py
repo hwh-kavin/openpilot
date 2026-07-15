@@ -249,6 +249,10 @@ class Car:
     self.pm.send('carState', cs_send)
 
     if RD is not None:
+      # MRR scan-index freezes in R/P are expected; do not publish as a fault while undrivable
+      gear = CS.gearShifter
+      if RD.errors.radarUnavailableTemporary and gear in (car.CarState.GearShifter.park, car.CarState.GearShifter.reverse):
+        RD.errors.radarUnavailableTemporary = False
       tracks_msg = messaging.new_message('liveTracks')
       tracks_msg.valid = not any(RD.errors.to_dict().values())
       tracks_msg.liveTracks = RD

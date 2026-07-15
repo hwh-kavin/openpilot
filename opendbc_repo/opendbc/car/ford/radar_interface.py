@@ -19,6 +19,9 @@ DELPHI_MRR_RADAR_MSG_COUNT = 64
 DELPHI_MRR_RADAR_RANGE_COVERAGE = {0: 42, 1: 164, 2: 45, 3: 175}  # scan index to detection range (m)
 DELPHI_MRR_MIN_LONG_RANGE_DIST = 30  # meters
 DELPHI_MRR_CLUSTER_THRESHOLD = 5  # meters, lateral distance and relative velocity are weighted
+# Scan index should step 0→1→2→3→0. Treat stuck (R/P repeat) vs skip (missed header) separately.
+DELPHI_MRR_STUCK_THRESHOLD = 15  # same index repeated (typical in reverse)
+DELPHI_MRR_SKIP_THRESHOLD = 10   # non-sequential jumps while driving; ignore brief blips
 
 MRR_FAULT_SIGNALS = (
   'CAN_RADAR_NOT_OP',
@@ -108,8 +111,10 @@ class RadarInterface(RadarInterfaceBase):
     self.track_id = 0
     self.radar = DBC[CP.carFingerprint].get(Bus.radar)
     self.scan_index_invalid_cnt = 0
-    self.radar_unavailable_cnt = 0
+    self.radar_stuck_cnt = 0
+    self.radar_skip_cnt = 0
     self.prev_headerScanIndex = 0
+    self._header_scan_initialized = False
     if CP.radarUnavailable:
       self.rcp = None
     elif self.radar == RADAR.DELPHI_ESR:
@@ -202,19 +207,34 @@ class RadarInterface(RadarInterfaceBase):
   def _update_delphi_mrr(self, ret: structs.RadarData):
     headerScanIndex = int(self.rcp.vl["MRR_Header_InformationDetections"]['CAN_SCAN_INDEX']) & 0b11
 
-    # In reverse, the radar continually sends the last messages. Mark this as invalid
-    if (self.prev_headerScanIndex + 1) % 4 != headerScanIndex:
-      self.radar_unavailable_cnt += 1
+    # Scan index should advance by 1 each header. Reverse often repeats the same index (stuck);
+    # driving more often drops a header (skip). Require sustained faults before failing out.
+    if not self._header_scan_initialized:
+      self.prev_headerScanIndex = headerScanIndex
+      self._header_scan_initialized = True
     else:
-      self.radar_unavailable_cnt = 0
-    self.prev_headerScanIndex = headerScanIndex
+      expected = (self.prev_headerScanIndex + 1) % 4
+      if headerScanIndex == expected:
+        self.radar_stuck_cnt = 0
+        self.radar_skip_cnt = 0
+      elif headerScanIndex == self.prev_headerScanIndex:
+        self.radar_stuck_cnt += 1
+        self.radar_skip_cnt = 0
+      else:
+        self.radar_skip_cnt += 1
+        self.radar_stuck_cnt = 0
+      self.prev_headerScanIndex = headerScanIndex
 
-    if self.radar_unavailable_cnt >= 5:
+    if self.radar_stuck_cnt >= DELPHI_MRR_STUCK_THRESHOLD or self.radar_skip_cnt >= DELPHI_MRR_SKIP_THRESHOLD:
       self.pts.clear()
       self.points.clear()
       self.clusters.clear()
       ret.errors.radarUnavailableTemporary = True
       return True
+
+    # Brief stuck/skip: keep last tracks, do not ingest this cycle
+    if self.radar_stuck_cnt > 0 or self.radar_skip_cnt > 0:
+      return False
 
     # Use short-range scan 0 (~42 m) plus scan 2/3 for close stationary leads; scan 2/3 have +-60 m/s Doppler
     if headerScanIndex not in (0, 2, 3):

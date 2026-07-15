@@ -254,9 +254,16 @@ void camerad_thread() {
   m.init();
 
   // *** per-cam init ***
+  // DriverModelEnable: skip driver camera ISP to save compute (unless driver-view preview)
+  const bool disable_driver = Params().getBool("DriverModelEnable") && !Params().getBool("IsDriverViewEnabled");
   std::vector<std::unique_ptr<CameraState>> cams;
   for (const auto &config : ALL_CAMERA_CONFIGS) {
-    auto cam = std::make_unique<CameraState>(&m, config);
+    CameraConfig cfg = config;
+    if (disable_driver && cfg.stream_type == VISION_STREAM_DRIVER) {
+      cfg.enabled = false;
+      LOGW("driver camera disabled by DriverModelEnable");
+    }
+    auto cam = std::make_unique<CameraState>(&m, cfg);
     cam->init(&v);
     cams.emplace_back(std::move(cam));
   }

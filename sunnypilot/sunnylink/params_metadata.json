@@ -271,8 +271,8 @@
     "description": ""
   },
   "DriverModelEnable": {
-    "title": "Driver Model Enable",
-    "description": "When enabled, driver monitoring is disabled"
+    "title": "Disable Driver Monitoring",
+    "description": "When on, driver monitoring and the driver camera are disabled to save compute"
   },
   "DriverTooDistracted": {
     "title": "Driver Too Distracted",

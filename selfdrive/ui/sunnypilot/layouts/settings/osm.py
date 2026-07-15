@@ -32,6 +32,7 @@ from openpilot.system.ui.sunnypilot.lib.styles import style
 from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP
 from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeFolder, TreeNode, TreeOptionDialog
 from openpilot.system.ui.sunnypilot.widgets.progress_bar import progress_item
+from openpilot.system.ui.widgets.keyboard import Keyboard
 
 MAP_PATH = Path(Paths.mapd_root()) / "offline"
 
@@ -100,6 +101,8 @@ class OSMLayout(Widget):
     self._update_btn = ListItemSP(tr("Database Update"), action_item=NoElideButtonAction(tr("CHECK"), enabled=True), callback=self._update_db)
     self._country_btn = ListItemSP(tr("Country"), action_item=NoElideButtonAction(tr("SELECT"), enabled=True), callback=lambda: self._select_region("Country"))
     self._state_btn = ListItemSP(tr("State"), action_item=NoElideButtonAction(tr("SELECT"), enabled=True), callback=lambda: self._select_region("State"))
+    self._amap_key_btn = ListItemSP(tr("Amap API Key"), action_item=NoElideButtonAction(tr("SET"), enabled=True), callback=self._set_amap_key)
+    self._keyboard: Keyboard | None = None
 
     self.items = [
       self._osm_section,
@@ -110,6 +113,7 @@ class OSMLayout(Widget):
       self._update_btn,
       self._country_btn,
       self._state_btn,
+      self._amap_key_btn,
     ]
 
   def _show_confirm(self, msg, confirm_text, func):
@@ -151,6 +155,31 @@ class OSMLayout(Widget):
   def _delete_maps(self):
     self._show_confirm(tr("This will delete ALL downloaded OSM offline maps\n\nAre you sure you want to delete all maps?"),
                        tr("Yes, delete all maps"), self._on_confirm_delete_maps)
+
+  def _set_amap_key(self):
+    current_key = ui_state.params.get("AmapApiKey") or ""
+    if current_key:
+      self._show_confirm(tr("This will remove your Amap API key.\n\nAre you sure you want to continue?"),
+                         tr("Yes, remove key"), self._do_clear_amap_key)
+    else:
+      if self._keyboard is None:
+        self._keyboard = Keyboard(min_text_size=1)
+      self._keyboard.reset()
+      self._keyboard.set_title(tr("Amap API Key"))
+      self._keyboard.set_callback(self._on_amap_key_submit)
+      gui_app.push_widget(self._keyboard)
+
+  def _do_clear_amap_key(self):
+    ui_state.params.remove("AmapApiKey")
+
+  def _on_amap_key_submit(self, result):
+    if result != DialogResult.CONFIRM:
+      return
+    key = self._keyboard.text.strip()
+    if key:
+      ui_state.params.put("AmapApiKey", key)
+    else:
+      ui_state.params.remove("AmapApiKey")
 
   def _update_db(self):
     self._show_confirm(tr("This will start the download process and it might take a while to complete."), tr("Start Download"),
@@ -218,6 +247,15 @@ class OSMLayout(Widget):
 
     self._country_btn.action_item.set_value(ui_state.params.get("OsmLocationTitle") or "")
     self._state_btn.action_item.set_value(ui_state.params.get("OsmStateTitle") or "")
+
+    amap_key = ui_state.params.get("AmapApiKey") or ""
+    if amap_key:
+      masked = amap_key[:4] + "****" + amap_key[-4:] if len(amap_key) > 8 else "****"
+      self._amap_key_btn.action_item.set_value(masked)
+      self._amap_key_btn.action_item.set_text(tr("CLEAR"))
+    else:
+      self._amap_key_btn.action_item.set_value(tr("Not set"))
+      self._amap_key_btn.action_item.set_text(tr("SET"))
 
     pending = ui_state.params.get_bool("OsmDbUpdatesCheck")
     if downloading or pending:

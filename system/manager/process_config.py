@@ -21,6 +21,13 @@ def driverview(started: bool, params: Params, CP: car.CarParams) -> bool:
 def dmonitoringmodeld_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
   return (WEBCAM or not PC) and driverview(started, params, CP) and not params.get_bool("DriverModelEnable")
 
+def camerad_env(params: Params) -> dict:
+  # When driver monitoring is disabled, skip driver camera ISP (saves significant compute).
+  # Keep camera for offroad driver-view preview.
+  if params.get_bool("DriverModelEnable") and not params.get_bool("IsDriverViewEnabled"):
+    return {"DISABLE_DRIVER": "1"}
+  return {"DISABLE_DRIVER": None}
+
 def notcar(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and CP.notCar
 
@@ -79,6 +86,10 @@ def route_preprocessor_enabled(started: bool, params: Params, CP: car.CarParams)
   """Route preprocessor - only when portal enabled and offroad."""
   return params.get_bool("EnableCopyparty") and only_offroad(started, params, CP)
 
+def amapd_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  """Low-priority Amap stitch worker — onroad only when API key is configured."""
+  return started and bool(params.get("AmapApiKey"))
+
 def sunnylink_ready_shim(started, params, CP: car.CarParams) -> bool:
   """Shim for sunnylink_ready to match the process manager signature."""
   return sunnylink_ready(params)
@@ -122,7 +133,7 @@ procs = [
   NativeProcess("stream_encoderd", "system/loggerd", ["./encoderd", "--stream"], notcar),
   PythonProcess("logmessaged", "system.logmessaged", always_run),
 
-  NativeProcess("camerad", "system/camerad", ["./camerad"], driverview, enabled=not WEBCAM),
+  NativeProcess("camerad", "system/camerad", ["./camerad"], driverview, enabled=not WEBCAM, env=camerad_env),
   PythonProcess("webcamerad", "tools.webcam.camerad", driverview, enabled=WEBCAM),
   PythonProcess("proclogd", "system.proclogd", only_onroad, enabled=platform.system() != "Darwin"),
   PythonProcess("journald", "system.journald", only_onroad, platform.system() != "Darwin"),
@@ -202,6 +213,8 @@ if os.path.exists("../../sunnypilot/sunnylink/uploader.py"):
 procs += [
   PythonProcess("bp_portal", "bluepilot.backend.bp_portal", portal_enabled),
   PythonProcess("bp_route_preprocessor", "bluepilot.backend.routes.preprocessor", route_preprocessor_enabled),
+  # Amap split-screen map: CPU stitch in lowest-priority process (2Hz)
+  PythonProcess("amapd", "bluepilot.mapd.amapd", amapd_enabled),
 ]
 
 managed_processes = {p.name: p for p in procs}

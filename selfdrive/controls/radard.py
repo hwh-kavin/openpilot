@@ -37,6 +37,13 @@ FORD_LOW_SPEED_MAX_DREL = 25.0   # parking / creep: trust radar lead within 25 m
 FORD_V_EGO_STATIONARY = 6.0      # ~22 km/h, covers parking-lot creep
 FORD_LOW_SPEED_LATERAL = 1.5       # wider gate for bumper-mounted MRR at low speed
 
+# Ford: vision gates empty-road radar FPs; close-range / creep prefers OEM radar distance
+FORD_RADAR_CLOSE_DIST = 30.0       # within this, prefer radar distance over vision
+FORD_RADAR_SEARCH_MARGIN = 20.0    # search radar around vision distance when unmatched
+FORD_RADAR_SEARCH_MAX = 120.0
+# Vision near-range distance is often biased high; allow large mismatch for association
+FORD_MATCH_DIST_SANE = 15.0
+
 
 def get_radar_to_camera(CP: structs.CarParams) -> float:
   if CP.brand == "ford":
@@ -166,7 +173,8 @@ def laplacian_pdf(x: float, mu: float, b: float):
 
 
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
-                          radar_to_camera: float = RADAR_TO_CAMERA, lateral_gate: float = 2.5):
+                          radar_to_camera: float = RADAR_TO_CAMERA, lateral_gate: float = 2.5,
+                          dist_sane_min: float = 5.0):
   offset_vision_dist = lead.x[0] - radar_to_camera
   vision_y = -lead.y[0]
 
@@ -187,7 +195,8 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
 
   # if no 'sane' match is found return -1
   # stationary radar points can be false positives
-  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.25, 5.0])
+  # Ford: raise dist_sane_min — vision near-range dRel is often biased high
+  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.25, dist_sane_min])
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
     return track
@@ -214,6 +223,88 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
   }
 
 
+def _vision_matched_track(v_ego: float, ready: bool, tracks: dict[int, Track],
+                          lead_msg: capnp._DynamicStructReader, lead_prob: float,
+                          radar_to_camera: float, lateral_gate: float,
+                          dist_sane_min: float = 5.0) -> Track | None:
+  if len(tracks) > 0 and ready and lead_prob > .5:
+    return match_vision_to_track(v_ego, lead_msg, tracks, radar_to_camera, lateral_gate, dist_sane_min)
+  return None
+
+
+def _closest_in_path_radar_track(tracks: dict[int, Track], lateral_gate: float,
+                                 min_d_rel: float, max_d_rel: float) -> Track | None:
+  candidates = [c for c in tracks.values()
+                if abs(c.yRel) < lateral_gate and min_d_rel < c.dRel < max_d_rel]
+  if not candidates:
+    return None
+  return min(candidates, key=lambda c: c.dRel)
+
+
+def get_ford_lead(v_ego: float, ready: bool, tracks: dict[int, Track],
+                  lead_msg: capnp._DynamicStructReader, model_v_ego: float, lead_prob: float,
+                  CP: structs.CarParams, CP_SP: structs.CarParamsSP) -> dict[str, Any]:
+  """Ford lead: vision gates empty-road radar FPs; creep/close range uses OEM radar distance."""
+  radar_to_camera = get_radar_to_camera(CP)
+  lateral_gate = get_lateral_match_gate(CP)
+  low_speed_min_drel = get_low_speed_min_drel(CP)
+  low_speed_lateral = get_low_speed_lateral(CP)
+  v_ego_stationary = get_v_ego_stationary(CP)
+  vision_has_lead = ready and lead_prob > .5
+
+  vision_lead: dict[str, Any] = {'status': False}
+  if vision_has_lead:
+    vision_lead = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob, radar_to_camera)
+
+  # Match with relaxed distance sanity: vision near-range dRel is often several meters high
+  track = _vision_matched_track(v_ego, ready, tracks, lead_msg, lead_prob,
+                                radar_to_camera, lateral_gate, FORD_MATCH_DIST_SANE)
+  matched_radar: dict[str, Any] = {'status': False}
+  if track is not None:
+    matched_radar = track.get_RadarState(lead_prob)
+    matched_radar = get_custom_yrel(CP, CP_SP, matched_radar, lead_msg)
+
+  # Closest in-path radar for creep / park / close follow (does not require vision assoc)
+  creep = v_ego < v_ego_stationary
+  lat = low_speed_lateral if creep else lateral_gate
+  max_d = FORD_LOW_SPEED_MAX_DREL if creep else FORD_RADAR_CLOSE_DIST
+  if vision_has_lead and vision_lead.get('status'):
+    # Prefer radar near the real bumper; vision dRel can be far too large
+    max_d = max(max_d, min(float(vision_lead['dRel']) + FORD_RADAR_SEARCH_MARGIN, FORD_RADAR_SEARCH_MAX))
+  closest = _closest_in_path_radar_track(tracks, lat, low_speed_min_drel, max_d)
+  closest_radar: dict[str, Any] = {'status': False}
+  if closest is not None:
+    closest_radar = closest.get_RadarState(lead_prob if vision_has_lead else 0.0)
+
+  # --- Creep / standstill: OEM radar distance is the authority when available ---
+  if creep:
+    if closest_radar.get('status'):
+      return closest_radar
+    if matched_radar.get('status') and matched_radar['dRel'] <= FORD_LOW_SPEED_MAX_DREL:
+      return matched_radar
+    # No near radar: use vision only if it reports a close lead; else clear (allow start)
+    if vision_lead.get('status') and vision_lead['dRel'] < FORD_LOW_SPEED_MAX_DREL:
+      return vision_lead
+    return {'status': False}
+
+  # --- Above creep: ignore unmatched radar when vision sees no car (empty-road FP) ---
+  if not vision_has_lead:
+    return {'status': False}
+
+  # Vision has lead: prefer radar distance within close range; vision is fallback only
+  if matched_radar.get('status') and matched_radar['dRel'] <= FORD_RADAR_CLOSE_DIST:
+    return matched_radar
+  if closest_radar.get('status') and closest_radar['dRel'] <= FORD_RADAR_CLOSE_DIST:
+    # Prefer nearer of unmatched in-path radar vs vision
+    if (not vision_lead.get('status')) or closest_radar['dRel'] < vision_lead['dRel']:
+      return closest_radar
+  if matched_radar.get('status'):
+    return matched_radar
+  if vision_lead.get('status'):
+    return vision_lead
+  return {'status': False}
+
+
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, lead_prob: float, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
              low_speed_override: bool = True) -> dict[str, Any]:
@@ -225,10 +316,7 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
   low_speed_lateral = get_low_speed_lateral(CP)
 
   # Determine leads, this is where the essential logic happens
-  if len(tracks) > 0 and ready and lead_prob > .5:
-    track = match_vision_to_track(v_ego, lead_msg, tracks, radar_to_camera, lateral_gate)
-  else:
-    track = None
+  track = _vision_matched_track(v_ego, ready, tracks, lead_msg, lead_prob, radar_to_camera, lateral_gate)
 
   lead_dict = {'status': False}
   if track is not None:
@@ -244,12 +332,8 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
     if len(low_speed_tracks) > 0:
       closest_track = min(low_speed_tracks, key=lambda c: c.dRel)
 
-      # Ford: within 10 m at parking speeds, prefer radar even over uncorrelated vision
-      ford_radar_priority = (CP.brand == "ford" and v_ego < v_ego_stationary and
-                             closest_track.dRel <= low_speed_max_drel)
-
       # Only choose new track if it is actually closer than the previous one
-      if ford_radar_priority or (not lead_dict['status']) or (closest_track.dRel < lead_dict['dRel']):
+      if (not lead_dict['status']) or (closest_track.dRel < lead_dict['dRel']):
         lead_dict = closest_track.get_RadarState()
 
   return lead_dict
@@ -333,10 +417,18 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
-                                          self.CP, self.CP_SP, low_speed_override=True)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
-                                          self.CP, self.CP_SP, low_speed_override=False)
+      if self.CP.brand == "ford":
+        # Creep/close range: OEM radar distance; empty road: vision gates radar FPs
+        self.radar_state.leadOne = get_ford_lead(
+          self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+          self.lead_prob_filters[0].x, self.CP, self.CP_SP)
+      else:
+        self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+                                            self.lead_prob_filters[0].x, self.CP, self.CP_SP,
+                                            low_speed_override=True)
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
+                                          self.lead_prob_filters[1].x, self.CP, self.CP_SP,
+                                          low_speed_override=False)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

@@ -82,6 +82,8 @@ export function CommandButton({ control, disabled, disabledReason }: CommandButt
       handleManageSshKeys()
     } else if (control.action === 'set_copyparty_password') {
       handleSetCopypartyPassword()
+    } else if (control.action === 'set_amap_api_key') {
+      handleSetAmapApiKey()
     } else if (control.action === 'view_error_log') {
       handleViewErrorLog()
     } else if (control.confirm) {
@@ -116,6 +118,15 @@ export function CommandButton({ control, disabled, disabledReason }: CommandButt
       message: 'Enter a password to protect your Copyparty server.<br>Leave empty to disable password protection.',
       placeholder: 'Password',
       isPassword: true,
+    })
+    setShowInput(true)
+  }
+
+  const handleSetAmapApiKey = () => {
+    setInputConfig({
+      title: 'Amap API Key',
+      message: 'Enter your Gaode/Amap API key for the onroad driving map.',
+      placeholder: 'Amap API Key',
     })
     setShowInput(true)
   }
@@ -173,6 +184,12 @@ export function CommandButton({ control, disabled, disabledReason }: CommandButt
         response = await panelAPI.executePanelCommand({
           action: 'set_copyparty_password',
           password: value,
+        })
+      } else if (control.action === 'set_amap_api_key') {
+        // Set Amap API key
+        response = await panelAPI.executePanelCommand({
+          action: 'set_amap_api_key',
+          api_key: value,
         })
       } else {
         response = { success: false, error: 'Unknown action' }
