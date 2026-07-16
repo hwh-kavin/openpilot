@@ -51,7 +51,42 @@ ICON_BY_PANEL = {
   "bp_developer_panel": "code",
 }
 
-STRING_PARAM_ACTIONS: dict[str, str] = {}
+STRING_PARAM_ACTIONS: dict[str, str] = {
+  "AmapApiKey": "set_amap_api_key",
+  "AmapSecurityJsCode": "set_amap_security_js_code",
+  "AmapWebServiceKey": "set_amap_web_service_key",
+}
+
+AMAP_SETTINGS_GROUP: dict[str, Any] = {
+  "groupName": "amap_online_map",
+  "title": "Amap Online Map",
+  "controls": [
+    {
+      "type": "command_button",
+      "param": "AmapApiKey",
+      "title": "Amap API Key",
+      "desc": "JS API 2.0 Key for the driving split-screen map display",
+      "button_text": "EDIT",
+      "action": "set_amap_api_key",
+    },
+    {
+      "type": "command_button",
+      "param": "AmapSecurityJsCode",
+      "title": "Amap Security Key",
+      "desc": "JS API 2.0 security key for the driving split-screen map",
+      "button_text": "EDIT",
+      "action": "set_amap_security_js_code",
+    },
+    {
+      "type": "command_button",
+      "param": "AmapWebServiceKey",
+      "title": "Amap Web Service Key",
+      "desc": "Web Service Key for on-device route planning (required for navigation)",
+      "button_text": "EDIT",
+      "action": "set_amap_web_service_key",
+    },
+  ],
+}
 
 
 def _resolve_unit(unit: Any) -> str | None:
@@ -360,18 +395,32 @@ def list_panels() -> list[dict[str, str]]:
 def get_panel(panel_id: str) -> dict[str, Any] | None:
   """Return full panel config for /api/panels/{id}."""
   json_path = PANEL_DIR / f"{panel_id}.json"
+  panel: dict[str, Any] | None = None
   if json_path.exists():
     try:
-      return json.loads(json_path.read_text(encoding="utf-8"))
+      panel = json.loads(json_path.read_text(encoding="utf-8"))
     except Exception:
       logger.exception("Failed to load panel file %s", json_path)
 
-  ui_id = {v: k for k, v in PANEL_ID_MAP.items()}.get(panel_id)
-  if not ui_id:
+  if panel is None:
+    ui_id = {v: k for k, v in PANEL_ID_MAP.items()}.get(panel_id)
+    if not ui_id:
+      return None
+
+    data = _load_settings_ui()
+    for ui_panel in data.get("panels", []):
+      if ui_panel.get("id") == ui_id:
+        panel = _convert_panel(ui_panel)
+        break
+
+  if panel is None:
     return None
 
-  data = _load_settings_ui()
-  for panel in data.get("panels", []):
-    if panel.get("id") == ui_id:
-      return _convert_panel(panel)
-  return None
+  # Always expose Amap key editors on Developer settings (Portal).
+  if panel_id == "bp_developer_panel":
+    groups = list(panel.get("groups") or [])
+    if not any(g.get("groupName") == "amap_online_map" for g in groups):
+      groups.append(dict(AMAP_SETTINGS_GROUP))
+      panel = {**panel, "groups": groups}
+
+  return panel

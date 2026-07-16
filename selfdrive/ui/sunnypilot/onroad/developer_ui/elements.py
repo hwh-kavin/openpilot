@@ -136,7 +136,7 @@ class DesiredSteeringAngleElement(LateralControlElement):
     controls_state = sm['controlsState']
     lat_active = sm['carControl'].latActive
     angle_steers = car_state.steeringAngleDeg
-    steer_angle_desired = controls_state.lateralControlState.angleState.steeringAngleDeg
+    steer_angle_desired = controls_state.lateralControlState.angleState.steeringAngleDesiredDeg
 
     value = f"{steer_angle_desired:.1f}°" if lat_active else "-"
 
@@ -441,18 +441,34 @@ class FreeSpaceElement(DeviceStateElement):
 
 
 class ModelTorqueElement:
+  """Bottom-bar element: shows desired steering angle (期望转角)."""
+
   def __init__(self):
     self.unit = ""
 
   def update(self, sm, is_metric: bool) -> UiElement:
     if not sm.valid.get('carControl', False):
-      return UiElement("-", "模型扭矩", self.unit, rl.WHITE)
+      return UiElement("-", "期望转角", self.unit, rl.WHITE)
 
-    torque = sm['carControl'].actuators.torque
     lat_active = sm['carControl'].latActive
-    value = f"{torque:.2f}" if lat_active else "-"
     color = rl.Color(0, 255, 0, 255) if lat_active else rl.WHITE
-    return UiElement(value, "模型扭矩", self.unit, color)
+    if not lat_active:
+      return UiElement("-", "期望转角", self.unit, color)
+
+    desired = None
+    if sm.valid.get('controlsState', False):
+      which = sm['controlsState'].lateralControlState.which()
+      lat = sm['controlsState'].lateralControlState
+      if which == 'angleState':
+        desired = float(lat.angleState.steeringAngleDesiredDeg)
+      elif which == 'pidState':
+        desired = float(lat.pidState.steeringAngleDesiredDeg)
+
+    # Fallback: commanded actuator angle from controlsd
+    if desired is None:
+      desired = float(sm['carControl'].actuators.steeringAngleDeg)
+
+    return UiElement(f"{desired:.1f}°", "期望转角", self.unit, color)
 
 
 class ModelAccelElement:

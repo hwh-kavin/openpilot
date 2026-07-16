@@ -100,6 +100,7 @@ function App() {
         <Route path="/routes" element={<RoutesView deviceStatus={deviceStatus} />} />
         <Route path="/parameters" element={<ParametersView deviceStatus={deviceStatus} />} />
         <Route path="/logs" element={<LogsView deviceStatus={deviceStatus} />} />
+        <Route path="/nav" element={<Navigate to="/nav.html" replace />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

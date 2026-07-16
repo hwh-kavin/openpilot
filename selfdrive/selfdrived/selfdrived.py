@@ -46,6 +46,8 @@ LaneChangeDirection = log.LaneChangeDirection
 EventName = log.OnroadEvent.EventName
 
 LOCATIOND_REENGAGE_HYSTERESIS = int(0.5 / DT_CTRL)
+# Ford MRR (and similar) scan index freezes in P/R/N; radar + planning need a moment to recover after D
+GEAR_RECOVERY_HOLDOFF = int(2.0 / DT_CTRL)
 ButtonType = car.CarState.ButtonEvent.Type
 SafetyModel = car.CarParams.SafetyModel
 AlertLevel = log.DriverMonitoringState.AlertLevel
@@ -153,6 +155,8 @@ class SelfdriveD(CruiseHelper):
     self.state_machine = StateMachine()
     self.await_locationd_reengage = False
     self.locationd_ok_frames = 0
+    # Already past holdoff at boot; only arms after visiting P/R/N
+    self.gear_recovery_frames = GEAR_RECOVERY_HOLDOFF
     self.rk = Ratekeeper(100, print_delay_threshold=None)
 
     self.ignored_processes = {'mapd', }
@@ -383,11 +387,12 @@ class SelfdriveD(CruiseHelper):
           self.events.add(EventName.cameraFrameRate)
     if not REPLAY and self.rk.lagging:
       self.events.add(EventName.selfdrivedLagging)
+    ignore_gear_faults = self._ignore_gear_transition_faults(CS)
     if self.sm['radarState'].radarErrors.canError:
       self.events.add(EventName.canError)
     elif self.sm['radarState'].radarErrors.radarUnavailableTemporary:
-      # Ford MRR (and similar) freezes scan index in R/P; not actionable while undrivable
-      if not self._is_undrivable_gear(CS):
+      # Ford MRR (and similar) freezes scan index in R/P/N; not actionable there or briefly after D
+      if not ignore_gear_faults:
         self.events.add(EventName.radarTempUnavailable)
     elif any(self.sm['radarState'].radarErrors.to_dict().values()):
       self.events.add(EventName.radarFault)
@@ -399,11 +404,11 @@ class SelfdriveD(CruiseHelper):
       self.events.add(EventName.canError)
 
     # generic catch-all. ideally, a more specific event should be added above instead
-    # openpilot does not control in P/R; planning messages often go invalid there and
-    # must not surface as scary "Communication Issue Between Processes".
+    # openpilot does not control in P/R/N; planning messages often go invalid there and
+    # briefly after returning to D — must not surface as "Communication Issue Between Processes".
     has_disable_events = self.events.contains(ET.NO_ENTRY) and (self.events.contains(ET.SOFT_DISABLE) or self.events.contains(ET.IMMEDIATE_DISABLE))
     no_system_errors = (not has_disable_events) or (len(self.events) == num_events)
-    if not self.sm.all_checks() and no_system_errors and not self._is_undrivable_gear(CS):
+    if not self.sm.all_checks() and no_system_errors and not ignore_gear_faults:
       if not self.sm.all_alive():
         self.events.add(EventName.commIssue)
       elif not self.sm.all_freq_ok():
@@ -641,6 +646,16 @@ class SelfdriveD(CruiseHelper):
     gear = CS.gearShifter
     return gear in (car.CarState.GearShifter.park, car.CarState.GearShifter.reverse) or (
       gear == car.CarState.GearShifter.neutral and CS.vEgo < 1.0)
+
+  def _ignore_gear_transition_faults(self, CS: car.CarState) -> bool:
+    """Suppress radar/comm faults in P/R/N and for a short recovery window after returning to D."""
+    if self._is_undrivable_gear(CS):
+      self.gear_recovery_frames = 0
+      return True
+    if self.gear_recovery_frames < GEAR_RECOVERY_HOLDOFF:
+      self.gear_recovery_frames += 1
+      return True
+    return False
 
   def _update_locationd_reengage_state(self, CS: car.CarState, locationd_error: bool) -> None:
     if self.events.contains(EventName.pedalPressed) or self.events.contains(EventName.buttonCancel) or \

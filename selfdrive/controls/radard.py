@@ -43,6 +43,13 @@ FORD_RADAR_SEARCH_MARGIN = 20.0    # search radar around vision distance when un
 FORD_RADAR_SEARCH_MAX = 120.0
 # Vision near-range distance is often biased high; allow large mismatch for association
 FORD_MATCH_DIST_SANE = 15.0
+# Above this ego speed, MRR stationary in-path points are treated as clutter unless vision agrees
+FORD_REJECT_STATIONARY_VEGO = 8.0          # ~29 km/h
+FORD_STATIONARY_VLEAD_MAX = 2.0            # m/s — radar "stopped"
+FORD_VISION_STATIONARY_VLEAD_MAX = 4.0     # vision must also look slow to accept stopped radar
+FORD_STATIONARY_DIST_AGREE = 12.0          # |dRel_radar - dRel_vision| must be within this
+FORD_STATIONARY_MIN_TRACK_CNT = 8          # ignore brand-new stopped tracks at speed
+FORD_MATCH_VEL_SANE = 6.0                  # tighter than default 10 m/s for vision↔radar match
 
 
 def get_radar_to_camera(CP: structs.CarParams) -> float:
@@ -174,7 +181,9 @@ def laplacian_pdf(x: float, mu: float, b: float):
 
 def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
                           radar_to_camera: float = RADAR_TO_CAMERA, lateral_gate: float = 2.5,
-                          dist_sane_min: float = 5.0):
+                          dist_sane_min: float = 5.0, vel_sane_max: float = 10.0,
+                          stationary_vlead_max: float | None = None,
+                          reject_stationary_vego: float | None = None):
   offset_vision_dist = lead.x[0] - radar_to_camera
   vision_y = -lead.y[0]
 
@@ -197,7 +206,15 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   # stationary radar points can be false positives
   # Ford: raise dist_sane_min — vision near-range dRel is often biased high
   dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.25, dist_sane_min])
-  vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
+  vel_err = abs(track.vRel + v_ego - lead.v[0])
+  v_lead_track = v_ego + track.vRel
+  # Moving radar tracks get a looser gate; near-stationary must closely match vision speed
+  # (otherwise MRR roadside clutter associates to a moving vision lead and trips FCW).
+  if (stationary_vlead_max is not None and reject_stationary_vego is not None and
+      v_lead_track <= stationary_vlead_max and v_ego >= reject_stationary_vego):
+    vel_sane = vel_err < min(vel_sane_max, 4.0)
+  else:
+    vel_sane = (vel_err < vel_sane_max) or (v_lead_track > 3)
   if dist_sane and vel_sane:
     return track
   else:
@@ -226,9 +243,13 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
 def _vision_matched_track(v_ego: float, ready: bool, tracks: dict[int, Track],
                           lead_msg: capnp._DynamicStructReader, lead_prob: float,
                           radar_to_camera: float, lateral_gate: float,
-                          dist_sane_min: float = 5.0) -> Track | None:
+                          dist_sane_min: float = 5.0, vel_sane_max: float = 10.0,
+                          stationary_vlead_max: float | None = None,
+                          reject_stationary_vego: float | None = None) -> Track | None:
   if len(tracks) > 0 and ready and lead_prob > .5:
-    return match_vision_to_track(v_ego, lead_msg, tracks, radar_to_camera, lateral_gate, dist_sane_min)
+    return match_vision_to_track(v_ego, lead_msg, tracks, radar_to_camera, lateral_gate,
+                                 dist_sane_min, vel_sane_max, stationary_vlead_max,
+                                 reject_stationary_vego)
   return None
 
 
@@ -239,6 +260,43 @@ def _closest_in_path_radar_track(tracks: dict[int, Track], lateral_gate: float,
   if not candidates:
     return None
   return min(candidates, key=lambda c: c.dRel)
+
+
+def _ford_accept_radar_lead(v_ego: float, radar: dict[str, Any], vision: dict[str, Any],
+                            track_cnt: int | None = None) -> bool:
+  """Reject MRR stationary clutter that falsely looks like an in-path stopped car.
+
+  At speed, Delphi MRR often reports roadside/overhead objects as vLead≈0 ahead of the
+  bumper. Those lock longitudinal MPC into a crash prediction and fire FCW (also shown
+  on the Ford IPC). Only keep stopped radar when vision agrees on a nearby slow lead,
+  and the track has been stable for a few frames.
+  """
+  if not radar.get('status'):
+    return False
+  if v_ego < FORD_REJECT_STATIONARY_VEGO:
+    return True
+
+  v_lead_r = float(radar['vLead'])
+  if v_lead_r > FORD_STATIONARY_VLEAD_MAX:
+    return True
+
+  # Brand-new stopped tracks at speed are almost always clutter
+  if track_cnt is not None and track_cnt < FORD_STATIONARY_MIN_TRACK_CNT:
+    return False
+
+  if not vision.get('status'):
+    return False
+
+  v_lead_v = float(vision['vLead'])
+  if v_lead_v > FORD_VISION_STATIONARY_VLEAD_MAX:
+    # Vision says the lead is moving; radar stopped point is a mismatch / ghost
+    return False
+
+  if abs(float(radar['dRel']) - float(vision['dRel'])) > FORD_STATIONARY_DIST_AGREE:
+    # Vision lead is much farther (or nearer) than the stopped radar blob
+    return False
+
+  return True
 
 
 def get_ford_lead(v_ego: float, ready: bool, tracks: dict[int, Track],
@@ -256,13 +314,19 @@ def get_ford_lead(v_ego: float, ready: bool, tracks: dict[int, Track],
   if vision_has_lead:
     vision_lead = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob, radar_to_camera)
 
-  # Match with relaxed distance sanity: vision near-range dRel is often several meters high
-  track = _vision_matched_track(v_ego, ready, tracks, lead_msg, lead_prob,
-                                radar_to_camera, lateral_gate, FORD_MATCH_DIST_SANE)
+  # Match with relaxed distance sanity: vision near-range dRel is often several meters high.
+  # Tighten velocity for stationary MRR points so roadside clutter cannot bind to a moving vision lead.
+  track = _vision_matched_track(
+    v_ego, ready, tracks, lead_msg, lead_prob,
+    radar_to_camera, lateral_gate, FORD_MATCH_DIST_SANE, FORD_MATCH_VEL_SANE,
+    FORD_STATIONARY_VLEAD_MAX, FORD_REJECT_STATIONARY_VEGO,
+  )
   matched_radar: dict[str, Any] = {'status': False}
+  matched_cnt: int | None = None
   if track is not None:
     matched_radar = track.get_RadarState(lead_prob)
     matched_radar = get_custom_yrel(CP, CP_SP, matched_radar, lead_msg)
+    matched_cnt = track.cnt
 
   # Closest in-path radar for creep / park / close follow (does not require vision assoc)
   creep = v_ego < v_ego_stationary
@@ -273,8 +337,10 @@ def get_ford_lead(v_ego: float, ready: bool, tracks: dict[int, Track],
     max_d = max(max_d, min(float(vision_lead['dRel']) + FORD_RADAR_SEARCH_MARGIN, FORD_RADAR_SEARCH_MAX))
   closest = _closest_in_path_radar_track(tracks, lat, low_speed_min_drel, max_d)
   closest_radar: dict[str, Any] = {'status': False}
+  closest_cnt: int | None = None
   if closest is not None:
     closest_radar = closest.get_RadarState(lead_prob if vision_has_lead else 0.0)
+    closest_cnt = closest.cnt
 
   # --- Creep / standstill: OEM radar distance is the authority when available ---
   if creep:
@@ -291,14 +357,17 @@ def get_ford_lead(v_ego: float, ready: bool, tracks: dict[int, Track],
   if not vision_has_lead:
     return {'status': False}
 
+  matched_ok = _ford_accept_radar_lead(v_ego, matched_radar, vision_lead, matched_cnt)
+  closest_ok = _ford_accept_radar_lead(v_ego, closest_radar, vision_lead, closest_cnt)
+
   # Vision has lead: prefer radar distance within close range; vision is fallback only
-  if matched_radar.get('status') and matched_radar['dRel'] <= FORD_RADAR_CLOSE_DIST:
+  if matched_ok and matched_radar['dRel'] <= FORD_RADAR_CLOSE_DIST:
     return matched_radar
-  if closest_radar.get('status') and closest_radar['dRel'] <= FORD_RADAR_CLOSE_DIST:
+  if closest_ok and closest_radar['dRel'] <= FORD_RADAR_CLOSE_DIST:
     # Prefer nearer of unmatched in-path radar vs vision
     if (not vision_lead.get('status')) or closest_radar['dRel'] < vision_lead['dRel']:
       return closest_radar
-  if matched_radar.get('status'):
+  if matched_ok:
     return matched_radar
   if vision_lead.get('status'):
     return vision_lead

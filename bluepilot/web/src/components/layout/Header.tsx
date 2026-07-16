@@ -31,6 +31,7 @@ export const Header = ({
     if (location.pathname.startsWith('/parameters')) return t('nav.parameters')
     if (location.pathname.startsWith('/logs')) return t('nav.logs')
     if (location.pathname.startsWith('/settings')) return t('nav.settings')
+    if (location.pathname.startsWith('/nav')) return t('nav.navigation')
     return t('app.name')
   }
 

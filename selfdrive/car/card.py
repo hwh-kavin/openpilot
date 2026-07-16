@@ -28,6 +28,9 @@ REPLAY = "REPLAY" in os.environ
 
 EventName = log.OnroadEvent.EventName
 
+# Match selfdrived: MRR scan freezes in P/R/N and needs a moment after returning to D
+GEAR_RECOVERY_HOLDOFF = int(2.0 / DT_CTRL)
+
 # forward
 carlog.addHandler(ForwardingHandler(cloudlog))
 
@@ -79,6 +82,8 @@ class Car:
     self.CS_prev = car.CarState.new_message()
     self.CS_SP_prev = custom.CarStateSP.new_message()
     self.initialized_prev = False
+    # Already past holdoff at boot; only arms after visiting P/R/N
+    self.radar_temp_recovery_frames = GEAR_RECOVERY_HOLDOFF
 
     self.last_actuators_output = structs.CarControl.Actuators()
 
@@ -249,9 +254,9 @@ class Car:
     self.pm.send('carState', cs_send)
 
     if RD is not None:
-      # MRR scan-index freezes in R/P are expected; do not publish as a fault while undrivable
-      gear = CS.gearShifter
-      if RD.errors.radarUnavailableTemporary and gear in (car.CarState.GearShifter.park, car.CarState.GearShifter.reverse):
+      # MRR scan-index freezes in R/P/N are expected; mask while undrivable and briefly after D
+      mask_radar_temp = self._should_mask_radar_temp_unavailable(CS)
+      if RD.errors.radarUnavailableTemporary and mask_radar_temp:
         RD.errors.radarUnavailableTemporary = False
       tracks_msg = messaging.new_message('liveTracks')
       tracks_msg.valid = not any(RD.errors.to_dict().values())
@@ -269,6 +274,19 @@ class Car:
     cs_sp_send.valid = CS.canValid
     cs_sp_send.carStateSP = CS_SP
     self.pm.send('carStateSP', cs_sp_send)
+
+  def _should_mask_radar_temp_unavailable(self, CS: car.CarState) -> bool:
+    """Mask MRR temporary faults in P/R/N and briefly after returning to D."""
+    gear = CS.gearShifter
+    undrivable = gear in (car.CarState.GearShifter.park, car.CarState.GearShifter.reverse) or (
+      gear == car.CarState.GearShifter.neutral and CS.vEgo < 1.0)
+    if undrivable:
+      self.radar_temp_recovery_frames = 0
+      return True
+    if self.radar_temp_recovery_frames < GEAR_RECOVERY_HOLDOFF:
+      self.radar_temp_recovery_frames += 1
+      return True
+    return False
 
   def controls_update(self, CS: car.CarState, CC: car.CarControl, CC_SP: custom.CarControlSP):
     """control update loop, driven by carControl"""

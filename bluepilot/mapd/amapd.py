@@ -7,6 +7,8 @@ Pipeline (independent of screen resolution for downloads):
   3. Crop to display aspect ratio (as large as content allows)
   4. Upscale the crop to the UI panel size
 
+Road names use Amap JS API 2.0 reverse geocoding (key + securityJsCode/jscode).
+
 Writes a finished RGBA viewport into shared memory for the UI to blit.
 Never touches OpenGL; must not interfere with modeld/selfdrived.
 """
@@ -23,13 +25,15 @@ from io import BytesIO
 import cereal.messaging as messaging
 import numpy as np
 import requests
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper
 from openpilot.common.swaglog import cloudlog
 
 from bluepilot.mapd.amap_ipc import AmapFrameShm, MAX_H, MAX_W
+from bluepilot.mapd.coords import wgs84_to_gcj02
+from bluepilot.mapd import nav_params as navp
 
 TILE_URL = "https://webrd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scale=1&style=8"
 REGEO_URL = "https://restapi.amap.com/v3/geocode/regeo"
@@ -48,9 +52,8 @@ BG = (30, 30, 30, 255)
 # Rotation void color — unique so we can detect "black edge" after rotate.
 FILL = (255, 0, 254, 255)
 FILL_MASK = 0  # mask fill after rotate (0 = void, 255 = map content)
-
-_GCJ_A = 6378245.0
-_GCJ_EE = 0.00669342162296594323
+ROUTE_COLOR = (30, 144, 255, 230)
+DEST_COLOR = (220, 40, 40, 240)
 
 
 def _lower_priority() -> None:
@@ -84,32 +87,7 @@ def _lower_priority() -> None:
 
 
 def _wgs84_to_gcj02(lat: float, lon: float) -> tuple[float, float]:
-  if not (-180 <= lon <= 180 and -90 <= lat <= 90):
-    return lat, lon
-
-  def _trans_lat(x: float, y: float) -> float:
-    ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * math.sqrt(abs(x))
-    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
-    ret += (20.0 * math.sin(y * math.pi) + 40.0 * math.sin(y / 3.0 * math.pi)) * 2.0 / 3.0
-    ret += (160.0 * math.sin(y / 12.0 * math.pi) + 320.0 * math.sin(y * math.pi / 30.0)) * 2.0 / 3.0
-    return ret
-
-  def _trans_lon(x: float, y: float) -> float:
-    ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * math.sqrt(abs(x))
-    ret += (20.0 * math.sin(6.0 * x * math.pi) + 20.0 * math.sin(2.0 * x * math.pi)) * 2.0 / 3.0
-    ret += (20.0 * math.sin(x * math.pi) + 40.0 * math.sin(x / 3.0 * math.pi)) * 2.0 / 3.0
-    ret += (150.0 * math.sin(x / 12.0 * math.pi) + 300.0 * math.sin(x / 30.0 * math.pi)) * 2.0 / 3.0
-    return ret
-
-  dlat = _trans_lat(lon - 105.0, lat - 35.0)
-  dlon = _trans_lon(lon - 105.0, lat - 35.0)
-  radlat = lat / 180.0 * math.pi
-  magic = math.sin(radlat)
-  magic = 1.0 - _GCJ_EE * magic * magic
-  sqrtmagic = math.sqrt(magic)
-  dlat = (dlat * 180.0) / ((_GCJ_A * (1.0 - _GCJ_EE)) / (magic * sqrtmagic) * math.pi)
-  dlon = (dlon * 180.0) / (_GCJ_A / sqrtmagic * math.cos(radlat) * math.pi)
-  return lat + dlat, lon + dlon
+  return wgs84_to_gcj02(lat, lon)
 
 
 def _latlon_to_tile_fractional(lat: float, lon: float, zoom: int) -> tuple[int, int, float, float]:
@@ -258,15 +236,15 @@ class AmapWorker:
       return lat, lon, self._resolve_bearing(g), True
     return 0.0, 0.0, self._last_bearing if self._have_bearing else 0.0, False
 
-  def _fetch_road_name(self, lat: float, lon: float, api_key: str) -> str:
-    """Resolve nearby road name via Amap reverse geocoding (GCJ-02)."""
+  def _fetch_road_name(self, lat: float, lon: float, api_key: str, security_code: str) -> str:
+    """Resolve nearby road name via Amap JS API 2.0 reverse geocoding (GCJ-02)."""
     now = time.monotonic()
     moved = _haversine_m(lat, lon, self._road_name_lat, self._road_name_lon)
     if (self._road_name_ts > 0 and
         (now - self._road_name_ts) < REGEO_MIN_INTERVAL_S and
         moved < REGEO_MIN_MOVE_M):
       return self._road_name
-    if not api_key or not self._wifi_ok():
+    if not api_key or not security_code or not self._wifi_ok():
       return self._road_name
 
     self._road_name_lat = lat
@@ -274,17 +252,24 @@ class AmapWorker:
     self._road_name_ts = now
     try:
       gcj_lat, gcj_lon = _wgs84_to_gcj02(lat, lon)
-      resp = requests.get(
-        REGEO_URL,
-        params={
-          "key": api_key,
-          "location": f"{gcj_lon:.6f},{gcj_lat:.6f}",
-          "extensions": "all",
-          "roadlevel": "0",
-          "radius": "100",
-        },
-        timeout=REGEO_TIMEOUT,
-      )
+      # Prefer Web服务 Key for REST regeo; JS Key returns USERKEY_PLAT_NOMATCH.
+      web_key = ""
+      try:
+        web_key = self.params.get("AmapWebServiceKey") or ""
+      except Exception:
+        pass
+      params = {
+        "location": f"{gcj_lon:.6f},{gcj_lat:.6f}",
+        "extensions": "all",
+        "roadlevel": "0",
+        "radius": "100",
+      }
+      if web_key:
+        params["key"] = web_key
+      else:
+        params["key"] = api_key
+        params["jscode"] = security_code
+      resp = requests.get(REGEO_URL, params=params, timeout=REGEO_TIMEOUT)
       resp.raise_for_status()
       data = resp.json()
       if str(data.get("status")) != "1":
@@ -428,6 +413,41 @@ class AmapWorker:
 
     return img.crop(box)
 
+  def _gcj_to_stitch_px(self, lat: float, lon: float, tx0: int, ty0: int) -> tuple[float, float]:
+    cx, cy, frac_x, frac_y = _latlon_to_tile_fractional(lat, lon, self.zoom)
+    return (cx + frac_x - tx0) * TILE_SIZE, (cy + frac_y - ty0) * TILE_SIZE
+
+  def _draw_route(self, canvas: Image.Image, tx0: int, ty0: int) -> None:
+    route = navp.get_route_geometry(self.params)
+    if not route:
+      return
+    coords = route.get("coordinates") or []
+    if len(coords) < 2:
+      return
+    pts = []
+    # Downsample for draw performance on large routes
+    step = max(1, len(coords) // 300)
+    for pt in coords[::step]:
+      try:
+        plat, plon = float(pt["latitude"]), float(pt["longitude"])
+      except (KeyError, TypeError, ValueError):
+        continue
+      pts.append(self._gcj_to_stitch_px(plat, plon, tx0, ty0))
+    if len(pts) < 2:
+      return
+    draw = ImageDraw.Draw(canvas)
+    # Outline then fill for contrast
+    draw.line(pts, fill=(255, 255, 255, 200), width=8)
+    draw.line(pts, fill=ROUTE_COLOR, width=5)
+    dest = route.get("destination") or {}
+    try:
+      dlat, dlon = float(dest["latitude"]), float(dest["longitude"])
+      dx, dy = self._gcj_to_stitch_px(dlat, dlon, tx0, ty0)
+      r = 10
+      draw.ellipse((dx - r, dy - r, dx + r, dy + r), fill=DEST_COLOR, outline=(255, 255, 255, 220))
+    except (KeyError, TypeError, ValueError):
+      pass
+
   def _render_viewport(self, view_w: int, view_h: int, lat: float, lon: float, bearing: float) -> tuple[bytes | None, bool]:
     """Returns (rgba_bytes, ready). Downloads at most 4 native tiles."""
     gcj_lat, gcj_lon = _wgs84_to_gcj02(lat, lon)
@@ -450,6 +470,12 @@ class AmapWorker:
           canvas.paste(patch, (x0, y0))
         else:
           canvas.paste(tile, (x0, y0))
+
+    # 1b) Paint route polyline in stitch space (rotates with map)
+    try:
+      self._draw_route(canvas, tx0, ty0)
+    except Exception:
+      pass
 
     # 2) Rotate heading-up around GPS (void corners get FILL / mask=0)
     rot_kwargs = dict(
@@ -474,7 +500,8 @@ class AmapWorker:
     hdr = self.shm.read_header()
     enable = bool(hdr and hdr.enable)
     api_key = self.params.get("AmapApiKey") or ""
-    if not enable or not api_key:
+    security_code = self.params.get("AmapSecurityJsCode") or ""
+    if not enable or not api_key or not security_code:
       # Keep header alive but mark not ready
       if hdr is not None:
         hdr.ready = 0
@@ -495,7 +522,7 @@ class AmapWorker:
       )
       return
 
-    road_name = self._fetch_road_name(lat, lon, api_key)
+    road_name = self._fetch_road_name(lat, lon, api_key, security_code)
     rgba, ready = self._render_viewport(view_w, view_h, lat, lon, bearing)
     if rgba is None:
       return

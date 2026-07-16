@@ -377,7 +377,9 @@ def setNavDestination(latitude: int = 0, longitude: int = 0, place_name: str | N
     "place_name": place_name,
     "place_details": place_details,
   }
-  Params().put("NavDestination", json.dumps(destination))
+  params = Params()
+  params.put("NavDestination", destination)
+  params.put("NavSavedDestination", destination)
 
   return {"success": 1}
 

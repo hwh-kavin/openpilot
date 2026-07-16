@@ -585,8 +585,13 @@ class LongitudinalMpc:
     self.params[:,5] = LEAD_DANGER_FACTOR
 
     self.run()
+    # FCW gate: high vision confidence, or a *moving* radar lead.
+    # Stationary radar-only tracks (common Ford MRR clutter) previously satisfied
+    # `or radar` and spammed FCW / stock IPC collision warnings.
+    lead = radarstate.leadOne
+    fcw_confident = lead.modelProb > 0.9 or (lead.radar and lead.vLead > 2.0)
     if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
-            (radarstate.leadOne.modelProb > 0.9 or radarstate.leadOne.radar)):
+            fcw_confident):
       self.crash_cnt += 1
     else:
       self.crash_cnt = 0

@@ -28,6 +28,7 @@ export const zhCHS: Record<TranslationKey, string> = {
   'nav.parameters': '参数',
   'nav.logs': '系统日志',
   'nav.settings': '设置',
+  'nav.navigation': '导航',
   'nav.deviceStatus': '设备状态',
   'nav.systemMetrics': '系统指标',
 
@@ -98,6 +99,7 @@ export const zhCHS: Record<TranslationKey, string> = {
   'home.routesUnavailableDriving': '行驶中无法查看路线',
   'home.manageParams': '管理系统参数',
   'home.viewLiveLogs': '查看实时系统日志',
+  'home.setNavDestination': '目的地、家、公司与导航偏好',
   'home.recentCrash': '最近崩溃',
   'home.viewFullLogs': '查看完整日志',
 

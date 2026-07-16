@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, UTC
 
 from openpilot.common.api.base import BaseApi
 from openpilot.common.params import Params
+from openpilot.common.swaglog import cloudlog
 from openpilot.system.hardware import HARDWARE
 from openpilot.system.hardware.hw import Paths
 
@@ -15,6 +16,10 @@ API_HOST = os.getenv('SUNNYLINK_API_HOST', 'https://stg.api.sunnypilot.ai')
 UNREGISTERED_SUNNYLINK_DONGLE_ID = "UnregisteredDevice"
 MAX_RETRIES = 6
 CRASH_LOG_DIR = Paths.crash_log_root()
+
+
+class SunnylinkRegistrationAbort(Exception):
+  """Non-retryable registration failure (e.g. duplicate key). Do not spam error.txt."""
 
 
 class SunnylinkApi(BaseApi):
@@ -89,6 +94,11 @@ class SunnylinkApi(BaseApi):
 
       backoff = 1
       while True:
+        # Master switch off → stop immediately (no error.txt spam)
+        if not self.params.get_bool("SunnylinkEnabled"):
+          self._status_update("Sunnylink disabled, aborting registration.")
+          break
+
         register_token = jwt.encode({'register': True, 'exp': datetime.now(UTC).replace(tzinfo=None) + timedelta(hours=1)},
                                     cast(str, private_key), algorithm=jwt_algo)
         try:
@@ -101,14 +111,16 @@ class SunnylinkApi(BaseApi):
                               comma_dongle_id=comma_dongle_id, public_key=public_key, register_token=register_token)
 
           if resp is None:
+            # api_get returns None when SunnylinkEnabled is off
+            if not self.params.get_bool("SunnylinkEnabled"):
+              break
             raise Exception("Unable to register device, request was None")
 
           if resp.status_code in (409, 412):
-            timeout = time.monotonic() - start_time  # Don't retry if the public key is already in use
             key_in_use = "Public key is already in use, is your key unique? Contact your vendor for a new key."
             unsafe_key = "Public key is known to not be unique and it's unsafe. Contact your vendor for a new key."
             error_message = key_in_use if resp.status_code == 409 else unsafe_key
-            raise Exception(error_message)
+            raise SunnylinkRegistrationAbort(error_message)
 
           if resp.status_code != 200:
             raise Exception(f"Failed to register with sunnylink. Status code: {resp.status_code}\nData\n:{resp.text}")
@@ -119,6 +131,11 @@ class SunnylinkApi(BaseApi):
             self._status_update("Device registered successfully.")
             successful_registration = True
             break
+        except SunnylinkRegistrationAbort as e:
+          # Duplicate/unsafe key: log once, disable sunnylink, do not treat as crash
+          cloudlog.warning(f"sunnylink registration aborted: {e}")
+          self._status_update(str(e))
+          break
         except Exception as e:
           if verbose:
             self._status_update(f"Waiting {backoff}s before retry, Exception occurred during registration: [{str(e)}]")

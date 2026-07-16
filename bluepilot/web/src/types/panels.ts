@@ -254,6 +254,8 @@ export interface PanelCommandRequest {
   username?: string
   password?: string
   api_key?: string
+  security_js_code?: string
+  web_service_key?: string
   remove?: boolean
 }
 

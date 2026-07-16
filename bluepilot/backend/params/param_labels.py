@@ -75,6 +75,7 @@ NATIVE_TITLE_OVERRIDES: dict[str, dict[str, str]] = {
 }
 
 
+@lru_cache(maxsize=1)
 def _load_po_translations() -> dict[str, str]:
     try:
         from openpilot.system.ui.lib.multilang import load_translations

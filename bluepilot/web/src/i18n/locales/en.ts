@@ -26,6 +26,7 @@ export const en = {
   'nav.parameters': 'Parameters',
   'nav.logs': 'System Logs',
   'nav.settings': 'Settings',
+  'nav.navigation': 'Navigation',
   'nav.deviceStatus': 'Device status',
   'nav.systemMetrics': 'System metrics',
 
@@ -96,6 +97,7 @@ export const en = {
   'home.routesUnavailableDriving': 'Routes unavailable while driving',
   'home.manageParams': 'Manage system params',
   'home.viewLiveLogs': 'View live system logs',
+  'home.setNavDestination': 'Destination, home, work & preferences',
   'home.recentCrash': 'Recent Crash',
   'home.viewFullLogs': 'View Full Logs',
 

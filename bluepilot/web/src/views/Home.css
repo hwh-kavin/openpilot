@@ -426,6 +426,14 @@
   border-color: #8b5cf6;
 }
 
+.quick-link-card.navigation .quick-link-icon .material-icons {
+  color: #38bdf8;
+}
+
+.quick-link-card.navigation:hover {
+  border-color: #38bdf8;
+}
+
 .quick-link-card.logs .quick-link-icon .material-icons {
   color: #10b981;
 }

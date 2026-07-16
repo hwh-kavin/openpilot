@@ -324,6 +324,19 @@ export const Home = ({ deviceStatus = 'checking' }: HomeProps) => {
                 </div>
                 <span className="link-badge">{status?.routes_count || 0}</span>
               </button>
+              <button
+                className="quick-link-card navigation"
+                onClick={() => { window.location.href = '/nav.html' }}
+                type="button"
+              >
+                <div className="quick-link-icon">
+                  <Icon name="map" />
+                </div>
+                <div className="quick-link-copy">
+                  <span className="label">{t('nav.navigation')}</span>
+                  <span className="subtext">{t('home.setNavDestination')}</span>
+                </div>
+              </button>
               <button className="quick-link-card parameters" onClick={() => navigate('/parameters')}>
                 <div className="quick-link-icon">
                   <Icon name="tune" />

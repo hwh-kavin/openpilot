@@ -252,6 +252,16 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // mapd
     {"AmapApiKey", {PERSISTENT | BACKUP, STRING}},
+    {"AmapSecurityJsCode", {PERSISTENT | BACKUP, STRING}},
+    {"AmapWebServiceKey", {PERSISTENT | BACKUP, STRING}},
+    {"NavDestination", {PERSISTENT, JSON}},
+    {"NavSavedDestination", {PERSISTENT | BACKUP, JSON}},
+    {"NavHome", {PERSISTENT | BACKUP, JSON}},
+    {"NavWork", {PERSISTENT | BACKUP, JSON}},
+    {"NavSettings", {PERSISTENT | BACKUP, JSON}},
+    {"NavRouteGeometry", {CLEAR_ON_MANAGER_START, JSON}},
+    {"NavRouteError", {CLEAR_ON_MANAGER_START, STRING}},
+    {"NavGuidance", {CLEAR_ON_MANAGER_START, JSON}},
     {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},

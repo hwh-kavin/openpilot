@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <meta name="theme-color" content="#151515" />
+  <title>BluePilot 导航</title>
+  <link rel="stylesheet" href="/vendor/material-icons.css" />
+  <style>
+    :root {
+      --bp-bg-primary: #1a1a1a;
+      --bp-bg-secondary: #242424;
+      --bp-bg-tertiary: #303030;
+      --bp-accent-blue: #2196f3;
+      --bp-text-primary: #e4e4e4;
+      --bp-text-secondary: #aaaaaa;
+      --bp-border: rgba(255, 255, 255, 0.1);
+      --bp-success: #4caf50;
+      --bp-warning: #ff9800;
+      --bp-error: #f44336;
+      --bg: var(--bp-bg-primary);
+      --panel: var(--bp-bg-secondary);
+      --text: var(--bp-text-primary);
+      --muted: var(--bp-text-secondary);
+      --accent: var(--bp-accent-blue);
+      --home: #2e7d32;
+      --work: #1565c0;
+      --danger: #c62828;
+      --border: var(--bp-border);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* Match Portal Header (parameters / settings / routes) */
+    .header {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: var(--bp-bg-secondary);
+      border-bottom: 2px solid var(--bp-border);
+      padding: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      flex-shrink: 0;
+    }
+    .header-title-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+      min-width: 0;
+    }
+    .header-title {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      color: var(--bp-text-primary);
+    }
+    .header-stats {
+      display: flex;
+      gap: 1rem;
+      font-size: 0.9rem;
+      color: var(--bp-text-secondary);
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .header-actions {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .icon-btn {
+      background: transparent;
+      border: 1px solid var(--bp-border);
+      color: var(--bp-text-secondary);
+      padding: 0.5rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      text-decoration: none;
+      font-weight: 400;
+    }
+    .icon-btn:hover {
+      background: var(--bp-bg-tertiary);
+      border-color: var(--bp-text-secondary);
+      color: #ffffff;
+    }
+    .icon-btn .material-icons {
+      font-size: 24px;
+      line-height: 1;
+      user-select: none;
+    }
+    .home-btn { flex-shrink: 0; }
+    .device-status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.25rem 0.75rem;
+      background: var(--bp-bg-tertiary);
+      border-radius: 12px;
+      transition: all 0.3s ease;
+      font-size: 0.875rem;
+      flex-shrink: 0;
+    }
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--bp-text-secondary);
+      animation: pulse 2s ease-in-out infinite;
+    }
+    .device-status.online .status-indicator { background: var(--bp-success); }
+    .device-status.onroad .status-indicator { background: var(--bp-warning); }
+    .device-status.offline .status-indicator,
+    .device-status.no-network .status-indicator {
+      background: var(--bp-error);
+      animation: none;
+    }
+    .device-status.checking .status-indicator { background: var(--bp-text-secondary); }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    @media (max-width: 768px) {
+      .header { padding: 0.75rem; gap: 0.75rem; }
+      .header-title { font-size: 1.2rem; }
+      .header-stats { gap: 0.5rem; }
+      .device-status { font-size: 0.8rem; }
+    }
+    @media (max-width: 480px) {
+      .header { padding: 0.5rem; gap: 0.5rem; }
+      .device-status { font-size: 0.7rem; padding: 0.25rem 0.5rem; }
+      .status-indicator { width: 6px; height: 6px; }
+      .icon-btn { padding: 0.4rem; }
+      .icon-btn .material-icons { font-size: 20px; }
+    }
+
+    .layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) 1fr;
+      min-height: 0;
+    }
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
+      .sidebar { max-height: 42vh; overflow: auto; }
+    }
+    .sidebar {
+      background: var(--panel);
+      border-right: 1px solid var(--border);
+      padding: 16px;
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+    #map {
+      width: 100%;
+      height: 100%;
+      min-height: 320px;
+      background: #15202b;
+    }
+    .section-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: var(--muted);
+      margin: 4px 0;
+    }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; }
+    input[type="text"], select {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #121212;
+      color: var(--text);
+      font-size: 14px;
+    }
+    .sidebar button {
+      border: none;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 14px;
+      cursor: pointer;
+      background: var(--accent);
+      color: white;
+      font-weight: 600;
+    }
+    .sidebar button.secondary { background: #334155; }
+    .sidebar button.home { background: var(--home); }
+    .sidebar button.work { background: var(--work); }
+    .sidebar button.danger { background: var(--danger); }
+    .sidebar button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .card {
+      background: #1d1d1d;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+    }
+    .place-name { font-weight: 600; margin-bottom: 4px; }
+    .place-detail { color: var(--muted); font-size: 12px; word-break: break-all; }
+    .empty { color: var(--muted); font-size: 13px; }
+    label.chk {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14px;
+      margin: 6px 0;
+    }
+    #status {
+      font-size: 12px;
+      color: var(--muted);
+      min-height: 18px;
+    }
+    #suggestions {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      display: none;
+    }
+    #suggestions li {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      font-size: 13px;
+      background: #121212;
+    }
+    #suggestions li:last-child { border-bottom: none; }
+    #suggestions li:hover { background: var(--bp-bg-tertiary); }
+    .hint { font-size: 12px; color: var(--muted); line-height: 1.4; }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <a class="icon-btn home-btn" href="/" title="首页" aria-label="首页">
+      <span class="material-icons">home</span>
+    </a>
+    <div class="header-title-wrapper">
+      <h1 class="header-title">导航</h1>
+    </div>
+    <div class="header-stats">
+      <div id="deviceStatus" class="device-status checking" title="设备状态">
+        <span class="status-indicator"></span>
+        <span id="statusText">检查中</span>
+      </div>
+    </div>
+    <div class="header-actions">
+      <a class="icon-btn" href="/parameters" title="参数" aria-label="参数">
+        <span class="material-icons">tune</span>
+      </a>
+    </div>
+  </header>
+  <div class="layout">
+    <aside class="sidebar">
+      <div>
+        <div class="section-title">搜索地点</div>
+        <input id="search" type="text" placeholder="输入关键词，例如：人民广场" autocomplete="off" />
+        <ul id="suggestions"></ul>
+        <p class="hint">也可直接在地图上点击选点。</p>
+      </div>
+
+      <div>
+        <div class="section-title">当前选点</div>
+        <div class="card" id="selectedCard">
+          <div class="empty">尚未选择地点</div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <button id="btnNav" disabled>设为目的地</button>
+          <button id="btnHome" class="home" disabled>设为家</button>
+          <button id="btnWork" class="work" disabled>设为公司</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="section-title">已保存地址</div>
+        <div class="card">
+          <div class="place-name">家</div>
+          <div id="homeInfo" class="place-detail empty">未设置</div>
+          <div class="row" style="margin-top:8px">
+            <button id="goHome" class="home" disabled>导航回家</button>
+            <button id="clearHome" class="secondary" disabled>清除</button>
+          </div>
+        </div>
+        <div class="card" style="margin-top:8px">
+          <div class="place-name">公司</div>
+          <div id="workInfo" class="place-detail empty">未设置</div>
+          <div class="row" style="margin-top:8px">
+            <button id="goWork" class="work" disabled>导航去公司</button>
+            <button id="clearWork" class="secondary" disabled>清除</button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="section-title">当前导航</div>
+        <div class="card">
+          <div id="destInfo" class="place-detail empty">无目的地</div>
+          <div id="routeInfo" class="place-detail" style="margin-top:6px"></div>
+          <div class="row" style="margin-top:8px">
+            <button id="clearNav" class="danger" disabled>取消导航</button>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="section-title">导航参数（自动保存）</div>
+        <div class="card">
+          <label class="chk"><input type="checkbox" id="enabled" checked /> 启用导航</label>
+          <label class="chk"><input type="checkbox" id="avoidTolls" /> 少收费 / 躲避收费</label>
+          <label class="chk"><input type="checkbox" id="avoidHighway" /> 不走高速</label>
+          <div style="margin-top:8px">
+            <div class="hint" style="margin-bottom:4px">策略</div>
+            <select id="strategy">
+              <option value="0">速度优先</option>
+              <option value="1">费用优先</option>
+              <option value="2">距离优先</option>
+              <option value="3">不走高速</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div id="status"></div>
+    </aside>
+    <div id="map"></div>
+  </div>
+
+  <script>
+    let map = null;
+    let marker = null;
+    let placeSearch = null;
+    let selected = null;
+    let statusTimer = null;
+
+    function setStatus(msg, isError) {
+      const el = document.getElementById('status');
+      el.textContent = msg || '';
+      el.style.color = isError ? '#ef5350' : 'var(--muted)';
+    }
+
+    function fmtPlace(p) {
+      if (!p) return null;
+      const name = p.place_name || '未命名地点';
+      const detail = p.place_details || `${p.longitude.toFixed(5)}, ${p.latitude.toFixed(5)}`;
+      return { name, detail };
+    }
+
+    function renderSelected() {
+      const card = document.getElementById('selectedCard');
+      const enabled = !!selected;
+      document.getElementById('btnNav').disabled = !enabled;
+      document.getElementById('btnHome').disabled = !enabled;
+      document.getElementById('btnWork').disabled = !enabled;
+      if (!selected) {
+        card.innerHTML = '<div class="empty">尚未选择地点</div>';
+        return;
+      }
+      const f = fmtPlace(selected);
+      card.innerHTML = `<div class="place-name">${f.name}</div><div class="place-detail">${f.detail}</div>`;
+    }
+
+    function renderSaved(status) {
+      const home = status.home;
+      const work = status.work;
+      const dest = status.destination;
+      const homeInfo = document.getElementById('homeInfo');
+      const workInfo = document.getElementById('workInfo');
+      const destInfo = document.getElementById('destInfo');
+      const routeInfo = document.getElementById('routeInfo');
+
+      if (home) {
+        const f = fmtPlace(home);
+        homeInfo.className = 'place-detail';
+        homeInfo.textContent = `${f.name} · ${f.detail}`;
+      } else {
+        homeInfo.className = 'place-detail empty';
+        homeInfo.textContent = '未设置';
+      }
+      document.getElementById('goHome').disabled = !home;
+      document.getElementById('clearHome').disabled = !home;
+
+      if (work) {
+        const f = fmtPlace(work);
+        workInfo.className = 'place-detail';
+        workInfo.textContent = `${f.name} · ${f.detail}`;
+      } else {
+        workInfo.className = 'place-detail empty';
+        workInfo.textContent = '未设置';
+      }
+      document.getElementById('goWork').disabled = !work;
+      document.getElementById('clearWork').disabled = !work;
+
+      if (dest) {
+        const f = fmtPlace(dest);
+        destInfo.className = 'place-detail';
+        destInfo.textContent = `${f.name} · ${f.detail}`;
+        document.getElementById('clearNav').disabled = false;
+      } else {
+        destInfo.className = 'place-detail empty';
+        destInfo.textContent = '无目的地';
+        document.getElementById('clearNav').disabled = true;
+      }
+
+      const route = status.route || {};
+      if (route.has_geometry) {
+        const km = route.distance_m != null ? (route.distance_m / 1000).toFixed(1) + ' km' : '';
+        const mins = route.duration_s != null ? Math.round(route.duration_s / 60) + ' 分钟' : '';
+        routeInfo.textContent = [km, mins].filter(Boolean).join(' · ');
+      } else {
+        routeInfo.textContent = dest ? '等待车机规划路线…' : '';
+      }
+
+      const s = status.settings || {};
+      document.getElementById('enabled').checked = !!s.enabled;
+      document.getElementById('avoidTolls').checked = !!s.avoid_tolls;
+      document.getElementById('avoidHighway').checked = !!s.avoid_highway;
+      document.getElementById('strategy').value = String(s.strategy ?? 0);
+
+      if (!status.credentials?.has_api_key || !status.credentials?.has_security_js_code) {
+        setStatus('请先在车机「OSM地图 → 高德在线地图」配置 Key 与安全密钥', true);
+      }
+    }
+
+    async function api(method, path, body) {
+      const opts = { method, headers: { 'Content-Type': 'application/json' } };
+      if (body !== undefined) opts.body = JSON.stringify(body);
+      const res = await fetch(path, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.error || res.statusText || '请求失败');
+      }
+      return data;
+    }
+
+    async function refreshStatus() {
+      const data = await api('GET', '/api/nav/status');
+      renderSaved(data);
+      return data;
+    }
+
+    function placeFromLngLat(lng, lat, name, details) {
+      return {
+        longitude: lng,
+        latitude: lat,
+        place_name: name || null,
+        place_details: details || null,
+        coord_type: 'gcj02',
+      };
+    }
+
+    function setSelected(place, moveMap) {
+      selected = place;
+      renderSelected();
+      if (!map || !place) return;
+      const lnglat = [place.longitude, place.latitude];
+      if (!marker) {
+        marker = new AMap.Marker({ position: lnglat, map });
+      } else {
+        marker.setPosition(lnglat);
+      }
+      if (moveMap) map.setCenter(lnglat);
+    }
+
+    async function savePlace(endpoint, place) {
+      await api('POST', endpoint, place);
+      await refreshStatus();
+      setStatus('已保存');
+    }
+
+    async function saveSettings() {
+      const body = {
+        enabled: document.getElementById('enabled').checked,
+        avoid_tolls: document.getElementById('avoidTolls').checked,
+        avoid_highway: document.getElementById('avoidHighway').checked,
+        strategy: Number(document.getElementById('strategy').value || 0),
+      };
+      await api('POST', '/api/nav/settings', body);
+      setStatus('导航参数已保存');
+    }
+
+    function bindUi() {
+      document.getElementById('btnNav').onclick = async () => {
+        if (!selected) return;
+        try {
+          await savePlace('/api/nav/destination', selected);
+          setStatus('已设为目的地，车机将开始规划');
+        } catch (e) { setStatus(e.message, true); }
+      };
+      document.getElementById('btnHome').onclick = async () => {
+        if (!selected) return;
+        try {
+          await savePlace('/api/nav/home', selected);
+        } catch (e) { setStatus(e.message, true); }
+      };
+      document.getElementById('btnWork').onclick = async () => {
+        if (!selected) return;
+        try {
+          await savePlace('/api/nav/work', selected);
+        } catch (e) { setStatus(e.message, true); }
+      };
+      document.getElementById('goHome').onclick = async () => {
+        try {
+          await api('POST', '/api/nav/navigate', { slot: 'home' });
+          await refreshStatus();
+          setStatus('已开始导航回家');
+        } catch (e) { setStatus(e.message, true); }
+      };
+      document.getElementById('goWork').onclick = async () => {
+        try {
+          await api('POST', '/api/nav/navigate', { slot: 'work' });
+          await refreshStatus();
+          setStatus('已开始导航去公司');
+        } catch (e) { setStatus(e.message, true); }
+      };
+      document.getElementById('clearHome').onclick = async () => {
+        try {
+          await api('POST', '/api/nav/home', {});
+          await refreshStatus();
+          setStatus('已清除家地址');
+        } catch (e) { setStatus(e.message, true); }
+      };
+      document.getElementById('clearWork').onclick = async () => {
+        try {
+          await api('POST', '/api/nav/work', {});
+          await refreshStatus();
+          setStatus('已清除公司地址');
+        } catch (e) { setStatus(e.message, true); }
+      };
+      document.getElementById('clearNav').onclick = async () => {
+        try {
+          await api('POST', '/api/nav/clear', {});
+          await refreshStatus();
+          setStatus('已取消导航');
+        } catch (e) { setStatus(e.message, true); }
+      };
+
+      ['enabled', 'avoidTolls', 'avoidHighway', 'strategy'].forEach((id) => {
+        document.getElementById(id).addEventListener('change', () => {
+          saveSettings().catch((e) => setStatus(e.message, true));
+        });
+      });
+
+      let searchTimer = null;
+      document.getElementById('search').addEventListener('input', (ev) => {
+        const q = ev.target.value.trim();
+        clearTimeout(searchTimer);
+        if (!q || !placeSearch) {
+          document.getElementById('suggestions').style.display = 'none';
+          return;
+        }
+        searchTimer = setTimeout(() => {
+          placeSearch.search(q, (status, result) => {
+            const list = document.getElementById('suggestions');
+            list.innerHTML = '';
+            if (status !== 'complete' || !result.poiList || !result.poiList.pois) {
+              list.style.display = 'none';
+              return;
+            }
+            result.poiList.pois.slice(0, 8).forEach((poi) => {
+              const li = document.createElement('li');
+              li.textContent = `${poi.name} · ${poi.address || poi.district || ''}`;
+              li.onclick = () => {
+                const lng = poi.location.lng;
+                const lat = poi.location.lat;
+                setSelected(placeFromLngLat(lng, lat, poi.name, poi.address || poi.district || ''), true);
+                list.style.display = 'none';
+                document.getElementById('search').value = poi.name;
+              };
+              list.appendChild(li);
+            });
+            list.style.display = list.children.length ? 'block' : 'none';
+          });
+        }, 250);
+      });
+    }
+
+    // AMap default / failed-IP fallback is near Tiananmen, Beijing.
+    const AMAP_DEFAULT_BEIJING = [116.397428, 39.90923];
+
+    function distKm(a, b) {
+      const toRad = (d) => (d * Math.PI) / 180;
+      const dLat = toRad(b[1] - a[1]);
+      const dLng = toRad(b[0] - a[0]);
+      const lat1 = toRad(a[1]);
+      const lat2 = toRad(b[1]);
+      const h = Math.sin(dLat / 2) ** 2
+        + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+      return 6371 * 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+    }
+
+    function isLikelyBeijingDefault(lng, lat) {
+      return distKm([lng, lat], AMAP_DEFAULT_BEIJING) < 25;
+    }
+
+    function convertWgs84ToGcj02(lng, lat) {
+      return new Promise((resolve) => {
+        try {
+          AMap.convertFrom([lng, lat], 'gps', (status, result) => {
+            if (status === 'complete' && result && result.locations && result.locations[0]) {
+              const p = result.locations[0];
+              resolve([p.lng, p.lat]);
+            } else {
+              resolve([lng, lat]);
+            }
+          });
+        } catch (_) {
+          resolve([lng, lat]);
+        }
+      });
+    }
+
+    async function locateByDeviceGps() {
+      // Static snapshot first for instant first paint; live API second (may be slow / stale process).
+      for (const path of ['/nav-location.json', '/api/nav/location']) {
+        try {
+          const res = await fetch(path, { cache: 'no-store' });
+          if (!res.ok) continue;
+          const ctype = (res.headers.get('content-type') || '').toLowerCase();
+          if (ctype && !ctype.includes('json')) continue;
+          const data = await res.json().catch(() => null);
+          if (data && data.valid && Number.isFinite(data.longitude) && Number.isFinite(data.latitude)) {
+            if (isLikelyBeijingDefault(data.longitude, data.latitude)) continue;
+            return {
+              lng: data.longitude,
+              lat: data.latitude,
+              source: data.source || 'device_gps',
+              label: data.source === 'last_gps' ? '车机上次定位' : '车机定位',
+            };
+          }
+        } catch (_) {}
+      }
+      return null;
+    }
+
+    function locateByBrowserGps() {
+      return new Promise((resolve) => {
+        if (!navigator.geolocation) {
+          resolve(null);
+          return;
+        }
+        navigator.geolocation.getCurrentPosition(
+          async (pos) => {
+            const wgsLng = pos.coords.longitude;
+            const wgsLat = pos.coords.latitude;
+            const [lng, lat] = await convertWgs84ToGcj02(wgsLng, wgsLat);
+            resolve({ lng, lat, source: 'browser_gps', label: '手机定位' });
+          },
+          () => resolve(null),
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 60000 }
+        );
+      });
+    }
+
+    function getLocalCityByIp() {
+      return new Promise((resolve) => {
+        try {
+          const citySearch = new AMap.CitySearch();
+          citySearch.getLocalCity((status, result) => {
+            if (status === 'complete' && result && result.info === 'OK') {
+              resolve(result);
+            } else {
+              resolve(null);
+            }
+          });
+        } catch (_) {
+          resolve(null);
+        }
+      });
+    }
+
+    function centerFromCityResult(result) {
+      if (!result) return null;
+      if (result.bounds && typeof result.bounds.getCenter === 'function') {
+        const c = result.bounds.getCenter();
+        if (c) return [c.lng, c.lat];
+      }
+      if (typeof result.rectangle === 'string') {
+        const parts = result.rectangle.split(';');
+        if (parts.length === 2) {
+          const a = parts[0].split(',').map(Number);
+          const b = parts[1].split(',').map(Number);
+          if (a.length === 2 && b.length === 2 && a.every(Number.isFinite) && b.every(Number.isFinite)) {
+            return [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+          }
+        }
+      }
+      return null;
+    }
+
+    async function locateByIpCity() {
+      const cityResult = await getLocalCityByIp();
+      const cityName = (cityResult && (cityResult.city || cityResult.province)) || null;
+      const center = centerFromCityResult(cityResult);
+      if (!center) return null;
+      // Carrier / hotspot IP often mis-resolves to Beijing (AMap default). Reject it.
+      if (isLikelyBeijingDefault(center[0], center[1])) {
+        return null;
+      }
+      return {
+        lng: center[0],
+        lat: center[1],
+        source: 'ip_city',
+        label: cityName ? `IP定位 · ${cityName}` : 'IP定位',
+        city: cityName,
+      };
+    }
+
+    function reverseGeocodeSelect(geocoder, lng, lat, fallbackName, moveMap) {
+      return new Promise((resolve) => {
+        geocoder.getAddress([lng, lat], (status, result) => {
+          let name = fallbackName || '定位点';
+          let details = `${lng.toFixed(5)}, ${lat.toFixed(5)}`;
+          if (status === 'complete' && result && result.regeocode) {
+            name = result.regeocode.formattedAddress || name;
+            details = result.regeocode.formattedAddress || details;
+          }
+          setSelected(placeFromLngLat(lng, lat, name, details), moveMap);
+          resolve(name);
+        });
+      });
+    }
+
+    async function resolveInitialLocation(amapReady) {
+      // Prefer real GPS: device → phone → IP city (IP alone often wrongly lands in Beijing).
+      const device = await locateByDeviceGps();
+      if (device) return device;
+      if (!amapReady) return null;
+      const browser = await locateByBrowserGps();
+      if (browser) return browser;
+      return locateByIpCity();
+    }
+
+    async function initMap() {
+      setStatus('正在定位并加载地图…');
+
+      // Resolve device GPS in parallel with credentials/script so the first map paint
+      // is already at the real location (avoids Beijing → Shanghai flash).
+      const credPromise = api('GET', '/api/nav/credentials');
+      const devicePromise = locateByDeviceGps();
+
+      const cred = await credPromise;
+      if (!cred.api_key || !cred.security_js_code) {
+        setStatus('缺少高德 JS API Key 或安全密钥', true);
+        await refreshStatus();
+        return;
+      }
+
+      window._AMapSecurityConfig = { securityJsCode: cred.security_js_code };
+
+      const scriptPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(cred.api_key)}&plugin=AMap.PlaceSearch,AMap.Geocoder,AMap.CitySearch`;
+        s.onload = resolve;
+        s.onerror = () => reject(new Error('高德 JS API 加载失败'));
+        document.head.appendChild(s);
+      });
+
+      let loc = await devicePromise;
+      await scriptPromise;
+
+      if (!loc) {
+        setStatus('正在定位地图中心…');
+        loc = await resolveInitialLocation(true);
+      }
+
+      const mapOpts = {
+        zoom: loc ? 14 : 5,
+        viewMode: '2D',
+        mapStyle: 'amap://styles/dark',
+      };
+      if (loc) {
+        mapOpts.center = [loc.lng, loc.lat];
+      }
+      // If still unknown, omit center and accept AMap default — rarer after GPS snapshot.
+      map = new AMap.Map('map', mapOpts);
+      const geocoder = new AMap.Geocoder();
+
+      map.on('click', (e) => {
+        const lng = e.lnglat.getLng();
+        const lat = e.lnglat.getLat();
+        reverseGeocodeSelect(geocoder, lng, lat, '地图选点', false).catch(() => {});
+      });
+
+      bindUi();
+      await refreshStatus();
+
+      if (loc) {
+        await reverseGeocodeSelect(geocoder, loc.lng, loc.lat, loc.label, false);
+        let cityForSearch = loc.city || '全国';
+        placeSearch = new AMap.PlaceSearch({ city: cityForSearch, pageSize: 8 });
+        if (!loc.city) {
+          try {
+            const c = await new Promise((resolve) => {
+              map.getCity((info) => resolve((info && (info.city || info.province)) || null));
+            });
+            if (c) placeSearch = new AMap.PlaceSearch({ city: c, pageSize: 8 });
+          } catch (_) {}
+        }
+        setStatus(`地图已${loc.label}`);
+      } else {
+        placeSearch = new AMap.PlaceSearch({ city: '全国', pageSize: 8 });
+        setStatus('未能自动定位，请搜索或点击地图选点', true);
+      }
+
+      statusTimer = setInterval(() => {
+        refreshStatus().catch(() => {});
+      }, 5000);
+    }
+
+    const STATUS_TEXTS = {
+      online: '在线',
+      onroad: '行驶中',
+      offline: '离线',
+      'no-network': '无网络',
+      checking: '检查中...',
+    };
+
+    function setDeviceStatus(status) {
+      const el = document.getElementById('deviceStatus');
+      const text = document.getElementById('statusText');
+      if (!el || !text) return;
+      el.className = `device-status ${status}`;
+      text.textContent = STATUS_TEXTS[status] || STATUS_TEXTS.checking;
+    }
+
+    async function refreshDeviceStatus() {
+      if (!navigator.onLine) {
+        setDeviceStatus('no-network');
+        return;
+      }
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch('/api/status', { signal: controller.signal });
+        clearTimeout(timeoutId);
+        if (!res.ok) throw new Error('status failed');
+        const data = await res.json();
+        if (data.onroad) setDeviceStatus('onroad');
+        else if (data.online !== false) setDeviceStatus('online');
+        else setDeviceStatus('offline');
+      } catch (_) {
+        setDeviceStatus('offline');
+      }
+    }
+
+    refreshDeviceStatus();
+    setInterval(refreshDeviceStatus, 60000);
+    window.addEventListener('online', refreshDeviceStatus);
+    window.addEventListener('offline', () => setDeviceStatus('no-network'));
+
+    initMap().catch((e) => setStatus(e.message || String(e), true));
+  </script>
+</body>
+</html>

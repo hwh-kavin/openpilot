@@ -2,6 +2,7 @@ import pyray as rl
 from enum import IntEnum
 import cereal.messaging as messaging
 from cereal import log
+from openpilot.common.params import UnknownKeyName
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.layouts.sidebar import Sidebar, SIDEBAR_WIDTH
@@ -152,12 +153,16 @@ class MainLayout(Widget):
       self._sidebar.set_visible(False)
 
   def _has_amap_prerequisites(self) -> bool:
-    """Check WiFi and API key — map feature available but may still be loading."""
+    """Check WiFi and JS API 2.0 credentials — map feature available but may still be loading."""
     sm = ui_state.sm
     is_wifi = (sm.valid.get('deviceState') and
                sm['deviceState'].networkType == log.DeviceState.NetworkType.wifi)
-    has_key = bool(ui_state.params.get("AmapApiKey"))
-    return is_wifi and has_key
+    try:
+      has_key = bool(ui_state.params.get("AmapApiKey"))
+      has_security = bool(ui_state.params.get("AmapSecurityJsCode"))
+    except UnknownKeyName:
+      return False
+    return is_wifi and has_key and has_security
 
   def _ensure_amap_view(self) -> None:
     if self._amap_view is None:

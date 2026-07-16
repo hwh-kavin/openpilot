@@ -3,7 +3,7 @@ import operator
 import platform
 
 from cereal import car, custom
-from openpilot.common.params import Params
+from openpilot.common.params import Params, UnknownKeyName
 from openpilot.system.hardware import PC, TICI
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
 from openpilot.system.hardware.hw import Paths
@@ -86,9 +86,28 @@ def route_preprocessor_enabled(started: bool, params: Params, CP: car.CarParams)
   """Route preprocessor - only when portal enabled and offroad."""
   return params.get_bool("EnableCopyparty") and only_offroad(started, params, CP)
 
+def _amap_credentials_configured(params: Params) -> bool:
+  try:
+    return bool(params.get("AmapApiKey")) and bool(params.get("AmapSecurityJsCode"))
+  except UnknownKeyName:
+    return False
+
 def amapd_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
-  """Low-priority Amap stitch worker — onroad only when API key is configured."""
-  return started and bool(params.get("AmapApiKey"))
+  """Low-priority Amap stitch worker — onroad only when JS API 2.0 key + security code are set."""
+  return started and _amap_credentials_configured(params)
+
+def navd_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  """Navigation planner — onroad when nav enabled and Web服务 Key configured."""
+  if not started:
+    return False
+  from bluepilot.mapd import nav_params as np
+  if not np.get_web_service_key(params):
+    return False
+  return bool(np.get_nav_settings(params).get("enabled", True))
+
+def sunnylink_enabled_shim(started, params, CP: car.CarParams) -> bool:
+  """Master switch: no sunnylink daemons when Enable sunnylink is off."""
+  return params.get_bool("SunnylinkEnabled")
 
 def sunnylink_ready_shim(started, params, CP: car.CarParams) -> bool:
   """Shim for sunnylink_ready to match the process manager signature."""
@@ -180,8 +199,8 @@ procs = [
   PythonProcess("webjoystick", "tools.bodyteleop.web", notcar),
   PythonProcess("joystick", "tools.joystick.joystick_control", and_(joystick, iscar)),
 
-  # sunnylink <3
-  DaemonProcess("manage_sunnylinkd", "sunnypilot.sunnylink.athena.manage_sunnylinkd", "SunnylinkdPid"),
+  # sunnylink <3 — all gated on SunnylinkEnabled (settings master switch)
+  PythonProcess("manage_sunnylinkd", "sunnypilot.sunnylink.athena.manage_sunnylinkd", sunnylink_enabled_shim),
   PythonProcess("sunnylink_registration_manager", "sunnypilot.sunnylink.registration_manager", sunnylink_need_register_shim),
   PythonProcess("statsd_sp", "sunnypilot.sunnylink.statsd", and_(always_run, sunnylink_ready_shim)),
 ]
@@ -215,6 +234,8 @@ procs += [
   PythonProcess("bp_route_preprocessor", "bluepilot.backend.routes.preprocessor", route_preprocessor_enabled),
   # Amap split-screen map: CPU stitch in lowest-priority process (2Hz)
   PythonProcess("amapd", "bluepilot.mapd.amapd", amapd_enabled),
+  # Navigation route planner (Amap driving API)
+  PythonProcess("navd", "bluepilot.mapd.navd", navd_enabled),
 ]
 
 managed_processes = {p.name: p for p in procs}

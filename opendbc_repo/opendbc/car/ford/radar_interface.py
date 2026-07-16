@@ -23,6 +23,12 @@ DELPHI_MRR_CLUSTER_THRESHOLD = 5  # meters, lateral distance and relative veloci
 DELPHI_MRR_STUCK_THRESHOLD = 15  # same index repeated (typical in reverse)
 DELPHI_MRR_SKIP_THRESHOLD = 10   # non-sequential jumps while driving; ignore brief blips
 
+# Temporal / kinematic clutter filter (one publish cycle ≈ full 0→3 scan rotation)
+DELPHI_MRR_CONFIRM_CYCLES = 3          # new tracks must persist this many cycles before publish
+DELPHI_MRR_MAX_DREL_JUMP = 10.0        # m — reject single-cycle range spikes
+DELPHI_MRR_MAX_VREL_JUMP = 10.0        # m/s — reject Doppler spikes
+DELPHI_MRR_MAX_YREL_JUMP = 3.0         # m — reject lateral teleport
+
 MRR_FAULT_SIGNALS = (
   'CAN_RADAR_NOT_OP',
   'CAN_RADAR_OVERHEAT_ERROR',
@@ -37,6 +43,16 @@ class Cluster:
   yRel: float = 0.0
   vRel: float = 0.0
   trackId: int = 0
+
+
+@dataclass
+class _TrackFilter:
+  """Per-track state for MRR publish gating (association still uses Cluster)."""
+  dRel: float
+  yRel: float
+  vRel: float
+  confirm_cnt: int = 0
+  published: bool = False
 
 
 def cluster_points(pts_l: list[list[float]], pts2_l: list[list[float]], max_dist: float) -> list[int]:
@@ -106,6 +122,7 @@ class RadarInterface(RadarInterfaceBase):
 
     self.points: list[list[float]] = []
     self.clusters: list[Cluster] = []
+    self._track_filters: dict[int, _TrackFilter] = {}
 
     self.updated_messages = set()
     self.track_id = 0
@@ -126,6 +143,18 @@ class RadarInterface(RadarInterfaceBase):
       self.trigger_msg = DELPHI_MRR_RADAR_HEADER_ADDR
     else:
       raise ValueError(f"Unsupported radar: {self.radar}")
+
+  def _reset_mrr_tracks(self) -> None:
+    self.pts.clear()
+    self.points.clear()
+    self.clusters.clear()
+    self._track_filters.clear()
+
+  @staticmethod
+  def _mrr_kinematic_jump(prev: _TrackFilter, d_rel: float, y_rel: float, v_rel: float) -> bool:
+    return (abs(d_rel - prev.dRel) > DELPHI_MRR_MAX_DREL_JUMP or
+            abs(y_rel - prev.yRel) > DELPHI_MRR_MAX_YREL_JUMP or
+            abs(v_rel - prev.vRel) > DELPHI_MRR_MAX_VREL_JUMP)
 
   def _build_ret(self) -> structs.RadarData:
     ret = structs.RadarData()
@@ -226,9 +255,7 @@ class RadarInterface(RadarInterfaceBase):
       self.prev_headerScanIndex = headerScanIndex
 
     if self.radar_stuck_cnt >= DELPHI_MRR_STUCK_THRESHOLD or self.radar_skip_cnt >= DELPHI_MRR_SKIP_THRESHOLD:
-      self.pts.clear()
-      self.points.clear()
-      self.clusters.clear()
+      self._reset_mrr_tracks()
       ret.errors.radarUnavailableTemporary = True
       return True
 
@@ -294,6 +321,8 @@ class RadarInterface(RadarInterfaceBase):
 
     new_pts: dict[int, structs.RadarData.RadarPoint] = {}
     self.clusters = []
+    alive_ids: set[int] = set()
+
     for track_id, pts in points_by_track_id.items():
       dRel_vals = [p[0] for p in pts]
       min_dRel = min(dRel_vals)
@@ -305,17 +334,52 @@ class RadarInterface(RadarInterfaceBase):
       vRel = [p[2] for p in pts]
       vRel = sum(vRel) / len(vRel) / 2
 
+      # Always keep cluster for next-cycle association (even if not yet published)
       self.clusters.append(Cluster(dRel=dRel, yRel=yRel, vRel=vRel, trackId=track_id))
+      alive_ids.add(track_id)
+
+      prev = self._track_filters.get(track_id)
+      pub_dRel, pub_yRel, pub_vRel = min_dRel, yRel, vRel
+
+      if prev is None:
+        # New track: start confirmation, do not publish single-frame clutter
+        self._track_filters[track_id] = _TrackFilter(dRel=min_dRel, yRel=yRel, vRel=vRel, confirm_cnt=1)
+        continue
+
+      if self._mrr_kinematic_jump(prev, min_dRel, yRel, vRel):
+        if prev.published:
+          # Hold last good measurement for one cycle (reject spike)
+          pub_dRel, pub_yRel, pub_vRel = prev.dRel, prev.yRel, prev.vRel
+        else:
+          # Unconfirmed + unstable → restart confirmation
+          self._track_filters[track_id] = _TrackFilter(dRel=min_dRel, yRel=yRel, vRel=vRel, confirm_cnt=1)
+          continue
+      else:
+        prev.dRel = min_dRel
+        prev.yRel = yRel
+        prev.vRel = vRel
+        prev.confirm_cnt += 1
+        if prev.confirm_cnt >= DELPHI_MRR_CONFIRM_CYCLES:
+          prev.published = True
+        pub_dRel, pub_yRel, pub_vRel = prev.dRel, prev.yRel, prev.vRel
+
+      if not self._track_filters[track_id].published:
+        continue
 
       if track_id not in self.pts:
         self.pts[track_id] = structs.RadarData.RadarPoint(measured=True, aRel=float('nan'), yvRel=float('nan'))
 
       pt = self.pts[track_id]
-      pt.dRel = min_dRel
-      pt.yRel = yRel
-      pt.vRel = vRel
+      pt.dRel = pub_dRel
+      pt.yRel = pub_yRel
+      pt.vRel = pub_vRel
       pt.trackId = track_id
       new_pts[track_id] = pt
+
+    # Drop filters for tracks that disappeared this cycle
+    for tid in list(self._track_filters.keys()):
+      if tid not in alive_ids:
+        self._track_filters.pop(tid, None)
 
     self.pts = new_pts
     self.points = []

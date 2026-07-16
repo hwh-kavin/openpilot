@@ -535,6 +535,26 @@ msgid "Speed limits, road names, and offline navigation data"
 msgstr "限速、路名与离线导航数据"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "Amap Online Map"
+msgstr "高德在线地图"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "JS API 2.0 key and security code for the driving split-screen map"
+msgstr "行驶分屏地图所需的 JS API 2.0 Key 与安全密钥"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "JS key for map display; Web Service key for on-device route planning"
+msgstr "JS Key 用于地图显示；Web 服务 Key 用于车机路径规划"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "Amap Web Service Key"
+msgstr "高德 Web 服务 Key"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "This will remove your Amap Web Service key.\n\nAre you sure you want to continue?"
+msgstr "这将删除你的高德 Web 服务 Key。\n\n是否继续？"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Amap Driving Map"
 msgstr "高德行驶地图"
 
@@ -560,7 +580,11 @@ msgstr "已下载地图"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Amap API Key"
-msgstr "高德地图密钥"
+msgstr "高德JS Key"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "Amap Security Key"
+msgstr "高德JS安全密钥"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Amap Map Tiles"
@@ -583,8 +607,12 @@ msgid "Yes, remove key"
 msgstr "是的，删除密钥"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
-msgid "This will remove your Amap API key.\\n\\nAre you sure you want to continue?"
-msgstr "这将删除你的高德地图密钥。\\n\\n是否继续？"
+msgid "This will remove your Amap API key.\n\nAre you sure you want to continue?"
+msgstr "这将删除你的高德 Key。\n\n是否继续？"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "This will remove your Amap security key.\n\nAre you sure you want to continue?"
+msgstr "这将删除你的高德安全密钥。\n\n是否继续？"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Downloading Map"

@@ -350,6 +350,7 @@ def get_all_params(params: Optional[Params] = None, locale: Optional[str] = None
     # Try to get all params by listing the params directory
     params_dir = "/data/params/d" if os.path.exists("/data/params/d") else None
 
+    param_keys: list[str] = []
     if params_dir and os.path.exists(params_dir):
         # List all param files
         try:
@@ -359,9 +360,17 @@ def get_all_params(params: Optional[Params] = None, locale: Optional[str] = None
             param_keys = []
     else:
         # Fallback to known params
-        param_keys = []
         for category_info in PARAM_CATEGORIES.values():
             param_keys.extend(category_info["params"])
+
+    # Also include declared keys from params_keys.h even if not yet written to disk,
+    # so unset values (e.g. AmapSecurityJsCode) are still editable in Portal.
+    try:
+        declared = set(_load_param_type_cache().keys())
+        param_keys = sorted(set(param_keys) | declared)
+    except Exception as e:
+        logger.debug(f"Failed to merge declared param keys: {e}")
+        param_keys = sorted(set(param_keys))
 
     for key in param_keys:
         result[key] = _build_param_entry(key, params, params_dir, locale)
@@ -750,9 +759,16 @@ def get_params_by_category(params: Optional[Params] = None) -> Dict[str, Any]:
             "params": []
         }
 
-    # Organize params into categories
-    for param_data in all_params.values():
-        category = param_data["category"]
+    # Organize params into categories (English keys from categorize_param, not
+    # localized category_label which may not exist as a result bucket).
+    for key, param_data in all_params.items():
+        category = categorize_param(key)
+        if category not in result:
+            result[category] = {
+                "name": category,
+                "description": "",
+                "params": [],
+            }
         result[category]["params"].append(param_data)
 
     # Sort params within each category

@@ -188,6 +188,8 @@ from bluepilot.backend.utils.power import (
 # WebSocket
 from bluepilot.backend.realtime import WebSocketBroadcaster, WebSocketEvent
 
+from bluepilot.backend import nav_api
+
 # Log download handlers
 from bluepilot.backend.handlers.log_downloads import (
     handle_qlog_download, handle_rlog_download
@@ -571,6 +573,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
 
     def send_file_response(self, filepath, mime_type=None, download_filename=None):
         """Send file response with optional byte-range support"""
+        filepath = str(filepath)
         if not os.path.exists(filepath):
             self.send_json_response({'error': 'File not found'}, 404)
             return
@@ -923,6 +926,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                     '/api/status',
                     '/api/health',
                     '/api/params',
+                    '/api/nav',
                     '/api/system',
                     '/api/logs',
                     '/api/manager-logs',
@@ -947,6 +951,15 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
             SPA_ROUTES = {'/', '/index.html', '/settings', '/parameters', '/routes', '/logs'}
 
             # Route handlers
+            if path in {'/nav', '/nav/'}:
+                # Standalone navigation page (works without React rebuild)
+                nav_path = WEBAPP_DIR / 'nav.html'
+                if nav_path.exists():
+                    self.send_file_response(str(nav_path))
+                else:
+                    self.send_error(404, 'Navigation page not found')
+                return
+
             if path in SPA_ROUTES or path.startswith('/settings/'):
                 self.send_spa_index_response()
                 return
@@ -1565,6 +1578,18 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                         'success': False,
                         'error': str(e)
                     }, 500)
+
+            elif path == '/api/nav/status':
+                body, code = nav_api.handle_get_status()
+                self.send_json_response(body, code)
+
+            elif path == '/api/nav/credentials':
+                body, code = nav_api.handle_get_credentials()
+                self.send_json_response(body, code)
+
+            elif path == '/api/nav/location':
+                body, code = nav_api.handle_get_location()
+                self.send_json_response(body, code)
 
             elif path.startswith('/api/routes/') and '/video/' not in path:
                 # Get specific route details
@@ -2843,6 +2868,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                 # Allow params write operations when onroad
                 allowed_onroad_post = [
                     '/api/params',
+                    '/api/nav',
                     '/api/manager-logs/stream',
                     '/api/manager-logs/clear',
                 ]
@@ -2997,6 +3023,59 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                 else:
                     # Return error from set_route_preserve
                     self.send_json_response(result, 400 if 'disk space' in result.get('error', '').lower() else 500)
+
+            elif path == '/api/nav/settings':
+                content_length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(content_length).decode('utf-8') or '{}') if content_length else {}
+                body, code = nav_api.handle_put_settings(data)
+                if body.get('success'):
+                    broadcast_websocket_event(WebSocketEvent.PARAM_UPDATED, {'key': 'NavSettings'})
+                self.send_json_response(body, code)
+                return
+
+            elif path == '/api/nav/destination':
+                content_length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(content_length).decode('utf-8') or '{}') if content_length else {}
+                body, code = nav_api.handle_put_place('destination', data if data else None)
+                if body.get('success'):
+                    broadcast_websocket_event(WebSocketEvent.PARAM_UPDATED, {'key': 'NavDestination'})
+                self.send_json_response(body, code)
+                return
+
+            elif path == '/api/nav/home':
+                content_length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(content_length).decode('utf-8') or '{}') if content_length else {}
+                body, code = nav_api.handle_put_place('home', data if data else None)
+                if body.get('success'):
+                    broadcast_websocket_event(WebSocketEvent.PARAM_UPDATED, {'key': 'NavHome'})
+                self.send_json_response(body, code)
+                return
+
+            elif path == '/api/nav/work':
+                content_length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(content_length).decode('utf-8') or '{}') if content_length else {}
+                body, code = nav_api.handle_put_place('work', data if data else None)
+                if body.get('success'):
+                    broadcast_websocket_event(WebSocketEvent.PARAM_UPDATED, {'key': 'NavWork'})
+                self.send_json_response(body, code)
+                return
+
+            elif path == '/api/nav/navigate':
+                content_length = int(self.headers.get('Content-Length', 0))
+                data = json.loads(self.rfile.read(content_length).decode('utf-8') or '{}') if content_length else {}
+                slot = (data.get('slot') or '').strip().lower()
+                body, code = nav_api.handle_navigate_to_saved(slot)
+                if body.get('success'):
+                    broadcast_websocket_event(WebSocketEvent.PARAM_UPDATED, {'key': 'NavDestination'})
+                self.send_json_response(body, code)
+                return
+
+            elif path == '/api/nav/clear':
+                body, code = nav_api.handle_clear_navigation()
+                if body.get('success'):
+                    broadcast_websocket_event(WebSocketEvent.PARAM_UPDATED, {'key': 'NavDestination'})
+                self.send_json_response(body, code)
+                return
 
             elif path == '/api/params/set':
                 # Set parameter value
@@ -3374,7 +3453,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                         })
 
                     elif action == 'set_amap_api_key':
-                        # Set Amap API key
+                        # Set Amap JS API 2.0 key
                         api_key = data.get('api_key', '')
 
                         if api_key is None:
@@ -3393,6 +3472,48 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                         self.send_json_response({
                             'success': True,
                             'message': 'Amap API key saved successfully.',
+                        })
+
+                    elif action == 'set_amap_security_js_code':
+                        # Set Amap JS API 2.0 security key (安全密钥)
+                        security_js_code = data.get('security_js_code', '')
+
+                        if security_js_code is None:
+                            self.send_json_response({
+                                'success': False,
+                                'error': 'Missing security_js_code field'
+                            }, 400)
+                            return
+
+                        if security_js_code == '':
+                            params.remove('AmapSecurityJsCode')
+                        else:
+                            params.put('AmapSecurityJsCode', security_js_code)
+
+                        self.send_json_response({
+                            'success': True,
+                            'message': 'Amap security key saved successfully.',
+                        })
+
+                    elif action == 'set_amap_web_service_key':
+                        # Set Amap Web服务 Key (route planning / regeo)
+                        web_service_key = data.get('web_service_key', '')
+
+                        if web_service_key is None:
+                            self.send_json_response({
+                                'success': False,
+                                'error': 'Missing web_service_key field'
+                            }, 400)
+                            return
+
+                        if web_service_key == '':
+                            params.remove('AmapWebServiceKey')
+                        else:
+                            params.put('AmapWebServiceKey', web_service_key)
+
+                        self.send_json_response({
+                            'success': True,
+                            'message': 'Amap Web Service key saved successfully.',
                         })
 
                     elif action == 'view_error_log':
