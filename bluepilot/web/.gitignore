@@ -30,3 +30,6 @@ node_modules
 .env
 .env.local
 .env.*.local
+
+# Runtime device GPS snapshot (written by nav_api; must not be committed)
+public/nav-location.json

@@ -160,7 +160,11 @@ def handle_get_location() -> tuple[dict[str, Any], int]:
 
 
 def _write_nav_location_snapshot(payload: dict[str, Any]) -> None:
-  """Write a static JSON the map page can read without a portal code reload."""
+  """Write a local-only GPS snapshot for faster map first paint.
+
+  This file is gitignored — it may contain real device coordinates and must
+  never be committed. Prefer /api/nav/location for the live fix.
+  """
   try:
     from bluepilot.backend.config import WEBAPP_DIR
     path = WEBAPP_DIR / "nav-location.json"

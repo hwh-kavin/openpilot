@@ -1,13 +1,13 @@
 """
-amapd — isolated low-priority Amap tile fetch + stitch/rotate/crop at 2Hz.
+amapd — isolated low-priority Amap tile fetch + stitch/crop at 2Hz.
 
 Pipeline (independent of screen resolution for downloads):
   1. Fetch a fixed 2x2 (4) tiles around GPS at native 256px
-  2. Stitch → rotate heading-up around GPS
-  3. Crop to display aspect ratio (as large as content allows)
+  2. Stitch north-up (no map rotation); UI rotates the GPS arrow by bearing
+  3. Crop to display aspect ratio centered on GPS
   4. Upscale the crop to the UI panel size
 
-Road names use Amap JS API 2.0 reverse geocoding (key + securityJsCode/jscode).
+Road names use Amap Web服务 reverse geocoding (AmapWebServiceKey).
 
 Writes a finished RGBA viewport into shared memory for the UI to blit.
 Never touches OpenGL; must not interfere with modeld/selfdrived.
@@ -49,9 +49,6 @@ REGEO_MIN_INTERVAL_S = 3.0
 REGEO_MIN_MOVE_M = 40.0
 TILE_CACHE_DIR = "/tmp/amap_tiles"
 BG = (30, 30, 30, 255)
-# Rotation void color — unique so we can detect "black edge" after rotate.
-FILL = (255, 0, 254, 255)
-FILL_MASK = 0  # mask fill after rotate (0 = void, 255 = map content)
 ROUTE_COLOR = (30, 144, 255, 230)
 DEST_COLOR = (220, 40, 40, 240)
 
@@ -114,8 +111,20 @@ def _amap_str(val) -> str:
   return val if isinstance(val, str) and val else ""
 
 
-def _parse_amap_road_name(data: dict) -> str:
+def _parse_amap_address(data: dict) -> str:
+  """Pick a short on-road label from Amap regeo (Web服务)."""
   regeocode = data.get("regeocode") or {}
+  addr = regeocode.get("addressComponent") or {}
+  if isinstance(addr, dict):
+    street_num = addr.get("streetNumber") or {}
+    if isinstance(street_num, dict):
+      street = _amap_str(street_num.get("street"))
+      number = _amap_str(street_num.get("number"))
+      if street and number:
+        return f"{street}{number}"
+      if street:
+        return street
+
   roads = regeocode.get("roads") or []
   best_name = ""
   best_dist = float("inf")
@@ -136,16 +145,18 @@ def _parse_amap_road_name(data: dict) -> str:
   if best_name:
     return best_name
 
-  addr = regeocode.get("addressComponent") or {}
   if isinstance(addr, dict):
-    street_num = addr.get("streetNumber") or {}
-    if isinstance(street_num, dict):
-      street = _amap_str(street_num.get("street"))
-      if street:
-        return street
     township = _amap_str(addr.get("township"))
     if township:
       return township
+    district = _amap_str(addr.get("district"))
+    if district:
+      return district
+
+  formatted = _amap_str(regeocode.get("formatted_address"))
+  if formatted:
+    # Keep within shm budget (~40 CJK chars with 128-byte field).
+    return formatted if len(formatted) <= 24 else formatted[:23] + "…"
   return ""
 
 
@@ -171,6 +182,13 @@ class AmapWorker:
       return False
     from cereal import log
     return self.sm["deviceState"].networkType == log.DeviceState.NetworkType.wifi
+
+  def _network_ok(self) -> bool:
+    """Any online network (wifi/cell/ethernet) — regeo is tiny vs tile downloads."""
+    if not self.sm.valid.get("deviceState"):
+      return False
+    from cereal import log
+    return self.sm["deviceState"].networkType != log.DeviceState.NetworkType.none
 
   @staticmethod
   def _bearing_from_vned(g) -> float | None:
@@ -236,15 +254,17 @@ class AmapWorker:
       return lat, lon, self._resolve_bearing(g), True
     return 0.0, 0.0, self._last_bearing if self._have_bearing else 0.0, False
 
-  def _fetch_road_name(self, lat: float, lon: float, api_key: str, security_code: str) -> str:
-    """Resolve nearby road name via Amap JS API 2.0 reverse geocoding (GCJ-02)."""
+  def _fetch_road_name(self, lat: float, lon: float) -> str:
+    """Resolve nearby address via Amap Web服务 reverse geocoding (GCJ-02)."""
     now = time.monotonic()
     moved = _haversine_m(lat, lon, self._road_name_lat, self._road_name_lon)
     if (self._road_name_ts > 0 and
         (now - self._road_name_ts) < REGEO_MIN_INTERVAL_S and
         moved < REGEO_MIN_MOVE_M):
       return self._road_name
-    if not api_key or not security_code or not self._wifi_ok():
+
+    web_key = navp.get_web_service_key(self.params)
+    if not web_key or not self._network_ok():
       return self._road_name
 
     self._road_name_lat = lat
@@ -252,33 +272,25 @@ class AmapWorker:
     self._road_name_ts = now
     try:
       gcj_lat, gcj_lon = _wgs84_to_gcj02(lat, lon)
-      # Prefer Web服务 Key for REST regeo; JS Key returns USERKEY_PLAT_NOMATCH.
-      web_key = ""
-      try:
-        web_key = self.params.get("AmapWebServiceKey") or ""
-      except Exception:
-        pass
       params = {
+        "key": web_key,
         "location": f"{gcj_lon:.6f},{gcj_lat:.6f}",
         "extensions": "all",
         "roadlevel": "0",
         "radius": "100",
       }
-      if web_key:
-        params["key"] = web_key
-      else:
-        params["key"] = api_key
-        params["jscode"] = security_code
       resp = requests.get(REGEO_URL, params=params, timeout=REGEO_TIMEOUT)
       resp.raise_for_status()
       data = resp.json()
       if str(data.get("status")) != "1":
+        cloudlog.warning("amapd regeo failed: %s %s", data.get("infocode"), data.get("info"))
         return self._road_name
-      name = _parse_amap_road_name(data)
+      name = _parse_amap_address(data)
       if name:
         self._road_name = name
       return self._road_name
     except Exception:
+      cloudlog.exception("amapd regeo request failed")
       return self._road_name
 
   def _load_tile(self, x: int, y: int, zoom: int) -> Image.Image | None:
@@ -355,63 +367,19 @@ class AmapWorker:
     return True
 
   @staticmethod
-  def _crop_box(gps_x: float, gps_y: float, aspect: float, half_h: float,
-                img_w: int, img_h: int) -> tuple[int, int, int, int]:
-    hh = half_h
-    hw = hh * aspect
-    left = int(math.floor(gps_x - hw))
-    top = int(math.floor(gps_y - hh))
-    right = int(math.ceil(gps_x + hw))
-    bottom = int(math.ceil(gps_y + hh))
-    left = max(0, left)
-    top = max(0, top)
-    right = min(img_w, right)
-    bottom = min(img_h, bottom)
-    return left, top, right, bottom
-
-  @staticmethod
-  def _crop_has_void(mask: np.ndarray, box: tuple[int, int, int, int], threshold: int = 200) -> bool:
-    """True if the crop window still contains rotation fill (black edge)."""
-    left, top, right, bottom = box
-    if right - left < 2 or bottom - top < 2:
-      return True
-    region = mask[top:bottom, left:right]
-    # Any void/soft-edge pixel means we still have black border risk.
-    return bool(region.min() < threshold)
-
-  @classmethod
-  def _crop_no_black(cls, img: Image.Image, mask_img: Image.Image,
-                     gps_x: float, gps_y: float, aspect: float) -> Image.Image:
-    """Largest aspect crop centered on GPS with no rotation fill; shrink (=zoom in) until clean."""
+  def _crop_aspect(img: Image.Image, gps_x: float, gps_y: float, aspect: float) -> Image.Image:
+    """Largest aspect crop centered on GPS that fits inside the north-up stitch."""
     w, h = img.size
-    mask = np.asarray(mask_img, dtype=np.uint8)
-
     max_hh = min(gps_y, h - gps_y, w / (2.0 * aspect), h / 2.0)
-    if max_hh < 4:
-      max_hh = 4.0
-
-    # Binary search largest half-height with no void pixels in the crop.
-    lo, hi = 4.0, float(max_hh)
-    best_box = cls._crop_box(gps_x, gps_y, aspect, lo, w, h)
-    for _ in range(16):
-      mid = (lo + hi) * 0.5
-      box = cls._crop_box(gps_x, gps_y, aspect, mid, w, h)
-      if cls._crop_has_void(mask, box):
-        hi = mid  # too large → black edge → zoom in (smaller crop)
-      else:
-        best_box = box
-        lo = mid
-
-    # Final safety: if best still voids (degenerate), keep shrinking.
-    box = best_box
-    hh = max(4.0, (box[3] - box[1]) * 0.5)
-    for _ in range(12):
-      if not cls._crop_has_void(mask, box):
-        break
-      hh *= 0.85
-      box = cls._crop_box(gps_x, gps_y, aspect, hh, w, h)
-
-    return img.crop(box)
+    hh = max(4.0, float(max_hh))
+    hw = hh * aspect
+    left = max(0, int(math.floor(gps_x - hw)))
+    top = max(0, int(math.floor(gps_y - hh)))
+    right = min(w, int(math.ceil(gps_x + hw)))
+    bottom = min(h, int(math.ceil(gps_y + hh)))
+    if right - left < 2 or bottom - top < 2:
+      return img
+    return img.crop((left, top, right, bottom))
 
   def _gcj_to_stitch_px(self, lat: float, lon: float, tx0: int, ty0: int) -> tuple[float, float]:
     cx, cy, frac_x, frac_y = _latlon_to_tile_fractional(lat, lon, self.zoom)
@@ -448,8 +416,8 @@ class AmapWorker:
     except (KeyError, TypeError, ValueError):
       pass
 
-  def _render_viewport(self, view_w: int, view_h: int, lat: float, lon: float, bearing: float) -> tuple[bytes | None, bool]:
-    """Returns (rgba_bytes, ready). Downloads at most 4 native tiles."""
+  def _render_viewport(self, view_w: int, view_h: int, lat: float, lon: float) -> tuple[bytes | None, bool]:
+    """Returns (rgba_bytes, ready). Downloads at most 4 native tiles. Map stays north-up."""
     gcj_lat, gcj_lon = _wgs84_to_gcj02(lat, lon)
     cx, cy, frac_x, frac_y = _latlon_to_tile_fractional(gcj_lat, gcj_lon, self.zoom)
     tx0, ty0, gps_px, gps_py = self._tile_block_origin(cx, cy, frac_x, frac_y)
@@ -457,9 +425,8 @@ class AmapWorker:
     self._load_block(tx0, ty0)
     ready = self._has_block(tx0, ty0)
 
-    # 1) Stitch 2x2 at native tile resolution (512x512)
+    # 1) Stitch 2x2 at native tile resolution (512x512), north-up
     canvas = Image.new("RGBA", (STITCH_SIZE, STITCH_SIZE), BG)
-    content_mask = Image.new("L", (STITCH_SIZE, STITCH_SIZE), 255)
     for dy in range(GRID):
       for dx in range(GRID):
         tile = self._tile_images.get((tx0 + dx, ty0 + dy, self.zoom))
@@ -471,26 +438,17 @@ class AmapWorker:
         else:
           canvas.paste(tile, (x0, y0))
 
-    # 1b) Paint route polyline in stitch space (rotates with map)
+    # 1b) Paint route polyline in north-up stitch space
     try:
       self._draw_route(canvas, tx0, ty0)
     except Exception:
       pass
 
-    # 2) Rotate heading-up around GPS (void corners get FILL / mask=0)
-    rot_kwargs = dict(
-      resample=Image.BILINEAR,
-      expand=False,
-      center=(gps_px, gps_py),
-    )
-    rotated = canvas.rotate(-bearing, fillcolor=FILL, **rot_kwargs)
-    rotated_mask = content_mask.rotate(-bearing, fillcolor=FILL_MASK, **rot_kwargs)
-
-    # 3) Aspect crop; if black/void edges remain, zoom in until clean
+    # 2) Aspect crop centered on GPS (no rotation)
     aspect = view_w / max(view_h, 1)
-    cropped = self._crop_no_black(rotated, rotated_mask, gps_px, gps_py, aspect)
+    cropped = self._crop_aspect(canvas, gps_px, gps_py, aspect)
 
-    # 4) Upscale to panel resolution
+    # 3) Upscale to panel resolution
     out = cropped.resize((view_w, view_h), Image.BILINEAR)
     arr = np.ascontiguousarray(np.array(out, dtype=np.uint8))
     return arr.tobytes(), ready
@@ -522,8 +480,8 @@ class AmapWorker:
       )
       return
 
-    road_name = self._fetch_road_name(lat, lon, api_key, security_code)
-    rgba, ready = self._render_viewport(view_w, view_h, lat, lon, bearing)
+    road_name = self._fetch_road_name(lat, lon)
+    rgba, ready = self._render_viewport(view_w, view_h, lat, lon)
     if rgba is None:
       return
 

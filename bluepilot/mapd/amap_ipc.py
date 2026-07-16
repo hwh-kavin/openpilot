@@ -24,10 +24,10 @@ SLOT_COUNT = 2
 # Header packing (little-endian)
 # magic(4s) version(I) seq(I) active(I) ready(I) gps_valid(I)
 # width(I) height(I) bearing(f) request_w(I) request_h(I) enable(I)
-# road_name(64s)
+# road_name(128s) — UTF-8 address label under GPS arrow
 # magic, version, seq, active, ready, gps_valid, width, height, bearing,
 # request_w, request_h, enable, road_name
-_HEADER_FMT = "<4sIIIIIIIfIII64s"
+_HEADER_FMT = "<4sIIIIIIIfIII128s"
 _HEADER_STRUCT = struct.Struct(_HEADER_FMT)
 assert _HEADER_STRUCT.size <= HEADER_SIZE
 
@@ -50,8 +50,20 @@ class AmapFrameHeader:
   road_name: str = ""
 
 
+def _utf8_truncate(s: str, max_bytes: int) -> bytes:
+  raw = (s or "").encode("utf-8", errors="ignore")
+  if len(raw) <= max_bytes:
+    return raw
+  raw = raw[:max_bytes]
+  while raw and (raw[-1] & 0xC0) == 0x80:
+    raw = raw[:-1]
+  if raw and (raw[-1] & 0xC0) == 0xC0:
+    raw = raw[:-1]
+  return raw
+
+
 def _pack_header(h: AmapFrameHeader) -> bytes:
-  name = h.road_name.encode("utf-8", errors="ignore")[:63]
+  name = _utf8_truncate(h.road_name, 127)
   raw = _HEADER_STRUCT.pack(
     MAGIC, h.version, h.seq, h.active, h.ready, h.gps_valid,
     h.width, h.height, float(h.bearing),

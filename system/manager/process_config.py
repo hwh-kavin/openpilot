@@ -232,7 +232,7 @@ if os.path.exists("../../sunnypilot/sunnylink/uploader.py"):
 procs += [
   PythonProcess("bp_portal", "bluepilot.backend.bp_portal", portal_enabled),
   PythonProcess("bp_route_preprocessor", "bluepilot.backend.routes.preprocessor", route_preprocessor_enabled),
-  # Amap split-screen map: CPU stitch in lowest-priority process (2Hz)
+  # Amap split-screen map: north-up CPU stitch in lowest-priority process (2Hz)
   PythonProcess("amapd", "bluepilot.mapd.amapd", amapd_enabled),
   # Navigation route planner (Amap driving API)
   PythonProcess("navd", "bluepilot.mapd.navd", navd_enabled),

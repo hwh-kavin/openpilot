@@ -1,9 +1,9 @@
 """
 UI-side Amap viewer: blit shared-memory frames produced by amapd.
 
-Heavy work (tile download, stitch, rotate, crop) runs in a separate
-lowest-priority process at 2Hz. This widget only uploads/blits RGBA and
-draws the GPS marker — no OpenGL FBO stitch.
+Heavy work (tile download, stitch, crop) runs in a separate
+lowest-priority process at 2Hz. Map frames are north-up; this widget
+uploads/blits RGBA and draws a GPS arrow rotated by bearing.
 
 Top-right Destination / Home / Work shortcuts navigate using
 NavSavedDestination / NavHome / NavWork.
@@ -11,6 +11,7 @@ NavSavedDestination / NavHome / NavWork.
 
 from __future__ import annotations
 
+import math
 import time
 
 import numpy as np
@@ -343,12 +344,21 @@ class AmapView(Widget):
 
     arrow_size = 54
     half = arrow_size / 2.0
-    tip = rl.Vector2(cx, cy - arrow_size)
-    left = rl.Vector2(cx - half, cy + half)
-    right = rl.Vector2(cx + half, cy + half)
+    # Local verts: tip points north (up). Rotate clockwise by GPS bearing.
+    rad = math.radians(self._bearing)
+    cos_b, sin_b = math.cos(rad), math.sin(rad)
+
+    def _rot(dx: float, dy: float) -> rl.Vector2:
+      # y-down screen coords: clockwise from north
+      return rl.Vector2(cx + dx * cos_b - dy * sin_b, cy + dx * sin_b + dy * cos_b)
+
+    tip = _rot(0.0, -arrow_size)
+    left = _rot(-half, half)
+    right = _rot(half, half)
+    tail = _rot(0.0, half - 9)
     rl.draw_triangle(tip, left, right, rl.Color(220, 40, 40, 240))
     rl.draw_triangle_lines(tip, left, right, rl.Color(255, 255, 255, 180))
-    rl.draw_circle(int(cx), int(cy + half - 9), 12, rl.Color(220, 40, 40, 240))
+    rl.draw_circle(int(tail.x), int(tail.y), 12, rl.Color(220, 40, 40, 240))
 
     if self._road_name:
       font_size = 22
