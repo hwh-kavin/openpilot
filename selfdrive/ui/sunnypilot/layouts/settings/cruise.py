@@ -102,8 +102,8 @@ class CruiseLayout(Widget):
 
     self.acm_toggle = toggle_item_sp(
       title=tr("启用自适应滑行模式(ACM)"),
-      description=tr("在合适条件下允许车辆在巡航速度附近自然滑行，提升舒适性。"
-                     "经典 ACC 与实验模式均可用；SCC 弯道降速激活时自动暂停。"),
+      description=tr("无前车时允许轻微超速滑行（设定速度～设定+附加），少刹车、降油门以节油。"
+                     "低于设定速度时恢复正常加速。经典 ACC 与实验模式均可用；SCC 弯道降速激活时自动暂停。"),
       param="dp_acm_enabled",
     )
 

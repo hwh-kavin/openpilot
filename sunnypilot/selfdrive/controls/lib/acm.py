@@ -38,7 +38,9 @@ EMERGENCY_RELATIVE_SPEED = 10.0
 EMERGENCY_DECEL_THRESHOLD = -1.5
 
 LEAD_COOLDOWN_TIME = 0.5
-CRUISE_SPEED_ENTRY_TOLERANCE = 3.0  # m/s below v_cruise still allows cruise coast entry (~10km/h)
+# Coast is for overshoot only (set → set+offset). Tiny hysteresis avoids chatter at set speed;
+# must stay far smaller than the old ~10 km/h band that let speed sag below cruise.
+CRUISE_SPEED_ENTRY_TOLERANCE = 0.3  # m/s (~1 km/h) below v_cruise
 FOLLOW_COAST_COOLDOWN_TIME = 0.5
 FOLLOW_COAST_SPEED_MAX = 5.5
 FOLLOW_COAST_MARGIN_BASE = 0.8
