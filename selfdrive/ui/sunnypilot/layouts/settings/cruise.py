@@ -52,6 +52,14 @@ class CruiseLayout(Widget):
       description="",
       param="IntelligentCruiseButtonManagement")
 
+    self.ford_stock_acc_fusion_toggle = toggle_item_sp(
+      title=tr("Ford Stock ACC Fusion"),
+      description=tr("Fuse stock ACC with openpilot longitudinal: stock needs ~20 mph to first enable, then can "
+                     "follow down to a stop; during stop-go, follow stock pullaway when AccPrpl requests go "
+                     "(and send resume); if stock will not go, OP vision pulls away. OP also handles SCC / "
+                     "earlier braking. Requires openpilot longitudinal."),
+      param="FordStockAccFusion")
+
     self.scc_v_toggle = toggle_item_sp(
       title=tr("Smart Cruise Control - Vision"),
       description=tr("Use vision path predictions to estimate the appropriate speed to drive through turns ahead."),
@@ -94,7 +102,8 @@ class CruiseLayout(Widget):
 
     self.acm_toggle = toggle_item_sp(
       title=tr("启用自适应滑行模式(ACM)"),
-      description=tr("在合适条件下允许车辆在巡航速度附近自然滑行，提升舒适性。"),
+      description=tr("在合适条件下允许车辆在巡航速度附近自然滑行，提升舒适性。"
+                     "经典 ACC 与实验模式均可用；SCC 弯道降速激活时自动暂停。"),
       param="dp_acm_enabled",
     )
 
@@ -102,6 +111,7 @@ class CruiseLayout(Widget):
       self.icbm_toggle,
       self.dec_toggle,
       self.acm_toggle,
+      self.ford_stock_acc_fusion_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
       self.custom_acc_toggle,
@@ -143,11 +153,12 @@ class CruiseLayout(Widget):
         ui_state.CP_SP.intelligentCruiseButtonManagementAvailable,
         ui_state.CP.alphaLongitudinalAvailable,
         ui_state.CP.pcmCruise,
+        ui_state.CP.brand,
         ui_state.is_offroad(),
       )
     else:
       has_icbm = has_long = False
-      capability_key = (False, False, False, False, False, ui_state.is_offroad())
+      capability_key = (False, False, False, False, False, None, ui_state.is_offroad())
 
     if capability_key != self._capability_key:
       self._capability_key = capability_key
@@ -186,19 +197,26 @@ class CruiseLayout(Widget):
           self.icbm_toggle.set_description(new_desc)
           self.icbm_toggle.show_description(True)
 
+      is_ford = ui_state.CP.brand == "ford"
+      self.ford_stock_acc_fusion_toggle.set_visible(is_ford)
+
       if has_long or has_icbm:
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.dec_toggle.action_item.set_enabled(has_long)
+        self.ford_stock_acc_fusion_toggle.action_item.set_enabled(has_long and is_ford)
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(True)
       else:
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_toggle.action_item.set_enabled(False)
+        self.ford_stock_acc_fusion_toggle.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)
     else:
       self.icbm_toggle.action_item.set_enabled(False)
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
+      self.ford_stock_acc_fusion_toggle.set_visible(False)
+      self.ford_stock_acc_fusion_toggle.action_item.set_enabled(False)
 
   def _apply_custom_acc_description(self, has_long: bool, has_icbm: bool):
     show_custom_acc_desc = False

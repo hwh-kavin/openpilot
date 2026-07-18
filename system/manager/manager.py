@@ -12,7 +12,7 @@ import openpilot.system.sentry as sentry
 from openpilot.common.utils import atomic_write
 from openpilot.common.params import Params, ParamKeyFlag
 from openpilot.common.text_window import TextWindow
-from openpilot.system.hardware import HARDWARE
+from openpilot.system.hardware import HARDWARE, PC, TICI
 from openpilot.system.manager.helpers import unblock_stdout, write_onroad_params, save_bootlog
 from openpilot.system.manager.process import ensure_running
 from openpilot.system.manager.process_config import managed_processes
@@ -20,7 +20,6 @@ from openpilot.system.athena.registration import register, UNREGISTERED_DONGLE_I
 from openpilot.common.swaglog import cloudlog, add_file_handler
 from openpilot.system.version import get_build_metadata
 from openpilot.system.hardware.hw import Paths
-from openpilot.system.hardware import PC
 
 from openpilot.sunnypilot.system.params_migration import run_migration
 
@@ -121,6 +120,24 @@ def manager_init() -> None:
                        commit=build_metadata.openpilot.git_commit,
                        dirty=build_metadata.openpilot.is_dirty,
                        device=HARDWARE.get_device_type())
+
+  prepare_only = os.getenv("PREPAREONLY") is not None
+
+  # C3: keep LTE USB unconfigured until panda is stable on the shared hub
+  if not prepare_only and TICI:
+    try:
+      HARDWARE.defer_modem_usb()
+      cloudlog.info("deferred modem USB until panda is stable")
+    except Exception:
+      cloudlog.exception("failed to defer modem USB")
+
+  # Start pandad before preimporting every module so panda USB connect overlaps imports
+  if not prepare_only and os.getenv("NOBOARD") is None:
+    pandad = managed_processes.get("pandad")
+    if pandad is not None and pandad.enabled:
+      cloudlog.info("early-starting pandad")
+      pandad.prepare()
+      pandad.start()
 
   # preimport all processes
   for p in managed_processes.values():

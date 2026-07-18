@@ -211,6 +211,14 @@ class HardwareBase(ABC):
   def recover_internal_panda(self):
     pass
 
+  def defer_modem_usb(self):
+    """Keep LTE powered but block USB enumeration until panda is stable."""
+    pass
+
+  def allow_modem_usb(self):
+    """Allow LTE USB enumeration after panda is connected."""
+    pass
+
   def get_modem_data_usage(self):
     return -1, -1
 

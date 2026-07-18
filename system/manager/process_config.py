@@ -42,10 +42,12 @@ def ublox_available() -> bool:
   return os.path.exists('/dev/ttyHS0') and not os.path.exists('/persist/comma/use-quectel-gps')
 
 def ublox(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Start GNSS as soon as the system is up (not gated on onroad/ignition),
+  # so TTFF begins at boot instead of waiting for started.
   use_ublox = ublox_available()
   if use_ublox != params.get_bool("UbloxAvailable"):
     params.put_bool("UbloxAvailable", use_ublox, block=True)
-  return started and use_ublox
+  return use_ublox
 
 def joystick(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and params.get_bool("JoystickDebugMode")
@@ -63,7 +65,9 @@ def not_long_maneuver(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started and not params.get_bool("LongitudinalManeuverMode")
 
 def qcomgps(started: bool, params: Params, CP: car.CarParams) -> bool:
-  return started and not ublox_available()
+  # Same early-start policy as ublox: acquire GPS offroad after boot.
+  # Modem AT port may still be deferred until panda is ready; qcomgpsd waits.
+  return not ublox_available()
 
 def always_run(started: bool, params: Params, CP: car.CarParams) -> bool:
   return True
@@ -73,6 +77,11 @@ def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
 
 def only_offroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return not started
+
+def modem_usb_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
+  """LTE USB is deferred until panda is stable on the shared C3 hub."""
+  from openpilot.system.hardware.tici.modem_usb import modem_usb_allowed
+  return modem_usb_allowed()
 
 def use_github_runner(started, params, CP: car.CarParams) -> bool:
   return not PC and params.get_bool("EnableGithubRunner") and (
@@ -186,7 +195,7 @@ procs = [
   PythonProcess("lateral_maneuversd", "tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "selfdrive.controls.radard", only_onroad),
   PythonProcess("hardwared", "system.hardware.hardwared", always_run),
-  PythonProcess("modem", "system.hardware.tici.modem", always_run, enabled=TICI),
+  PythonProcess("modem", "system.hardware.tici.modem", and_(always_run, modem_usb_ready), enabled=TICI),
   PythonProcess("tombstoned", "system.tombstoned", always_run, enabled=not PC),
   PythonProcess("updated", "system.updated.updated", only_offroad, enabled=not PC),
   PythonProcess("uploader", "system.loggerd.uploader", uploader_ready),

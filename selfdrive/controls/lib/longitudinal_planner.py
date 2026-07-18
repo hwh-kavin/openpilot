@@ -153,14 +153,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     mode = 'e2e' if self.is_e2e(sm) else 'acc'
     user_ctrl_lon = sm['carState'].gasPressed
+    scc_active = self.scc.vision.is_active or self.scc.map.is_active
+    personality_t_follow = get_T_FOLLOW(personality)
+    lead = sm['radarState'].leadOne if sm['radarState'].leadOne.status else None
+
     self.acm.enabled = acm_enabled
     self.acm.update_states(
       sm['carControl'], sm['radarState'], user_ctrl_lon, v_ego, v_cruise,
       mode=mode, personality=personality, dtsc_is_active=self.dec.active(),
-      scc_active=self.scc.vision.is_active, road_pitch=road_pitch)
-    lead = sm['radarState'].leadOne if sm['radarState'].leadOne.status else None
+      scc_active=scc_active, road_pitch=road_pitch)
+    # ACM on MPC trajectory (ACC and Experimental); SCC active still bypasses inside ACM
     self.a_desired_trajectory = self.acm.update_a_desired_trajectory(
-      self.a_desired_trajectory, v_ego, lead, get_T_FOLLOW(personality),
+      self.a_desired_trajectory, v_ego, lead, personality_t_follow,
       road_pitch=road_pitch)
     self.v_desired_trajectory = self.acm.update_v_desired_trajectory(self.v_desired_trajectory, v_ego)
     self.acm_comfort_state = self.acm.comfort_state_capnp
@@ -189,6 +193,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     else:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+
+    # Post-blend ACM: raise coast floor after min(e2e, mpc) so Experimental mode can coast
+    output_a_target = self.acm.apply_to_accel(
+      output_a_target, v_ego, lead, personality_t_follow, road_pitch=road_pitch)
 
     for idx in range(2):
       slew = get_accel_slew_rate(personality)

@@ -74,6 +74,8 @@ function launch {
   if [ -f /AGNOS ]; then
     agnos_init
     "$DIR/tools/stage_acados.sh"
+    # C3 shared USB hub: keep LTE USB unconfigured until panda is stable
+    python3 -c "from openpilot.system.hardware.tici.modem_usb import defer_modem_usb; defer_modem_usb()" || true
   fi
 
   # write tmux scrollback to a file

@@ -29,7 +29,11 @@
   },
   "NavDestination": {
     "title": "Navigation Destination",
-    "description": "Current navigation destination (latitude, longitude, place name)"
+    "description": "Active navigation session destination; set only by onroad Destination/Home/Work buttons; cleared on boot and onroad transition"
+  },
+  "NavSavedDestination": {
+    "title": "Saved Destination",
+    "description": "Durable destination shortcut for the onroad Destination button (portal Set Destination)"
   },
   "NavHome": {
     "title": "Home Address",

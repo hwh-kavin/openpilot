@@ -1,7 +1,6 @@
 import pyray as rl
 from enum import IntEnum
 import cereal.messaging as messaging
-from cereal import log
 from openpilot.common.params import UnknownKeyName
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
@@ -143,9 +142,12 @@ class MainLayout(Widget):
       self._split_screen = False
       self._sidebar.set_visible(True)
     elif not self._sidebar.is_visible:
-      # Sidebar hidden → enter split-screen when map is ready, otherwise show sidebar
+      # Sidebar hidden → enter split-screen as soon as credentials exist.
+      # Map may still be loading (GPS/tiles); AmapView shows a placeholder.
       if self._can_enter_split_screen():
         self._split_screen = True
+        self._ensure_amap_view()
+        self._amap_view.prepare()
       else:
         self._sidebar.set_visible(True)
     else:
@@ -153,16 +155,13 @@ class MainLayout(Widget):
       self._sidebar.set_visible(False)
 
   def _has_amap_prerequisites(self) -> bool:
-    """Check WiFi and JS API 2.0 credentials — map feature available but may still be loading."""
-    sm = ui_state.sm
-    is_wifi = (sm.valid.get('deviceState') and
-               sm['deviceState'].networkType == log.DeviceState.NetworkType.wifi)
+    """JS API 2.0 credentials configured. Network/GPS/tiles may still be warming up."""
     try:
       has_key = bool(ui_state.params.get("AmapApiKey"))
       has_security = bool(ui_state.params.get("AmapSecurityJsCode"))
     except UnknownKeyName:
       return False
-    return is_wifi and has_key and has_security
+    return has_key and has_security
 
   def _ensure_amap_view(self) -> None:
     if self._amap_view is None:
@@ -174,12 +173,13 @@ class MainLayout(Widget):
       if self._amap_view is not None:
         self._amap_view.set_enabled(False)
       return
+    # Warm tiles as soon as onroad + credentials, even before the user opens split-screen.
     self._ensure_amap_view()
     self._amap_view.prepare()
 
   def _can_enter_split_screen(self) -> bool:
-    """Map must be fully prepared (amapd shared frame ready) before split-screen."""
-    return self._has_amap_prerequisites() and self._amap_view is not None and self._amap_view.is_ready()
+    """Enter immediately when map is configured — do not wait for first tile/GPS frame."""
+    return self._has_amap_prerequisites()
 
   def _on_body_changed(self):
     self._layouts[MainState.HOME] = self._home_body_layout if ui_state.is_body else self._home_layout
@@ -258,9 +258,14 @@ class MainLayout(Widget):
     self._road_view.set_draw_border(False)
     self._road_view.render(left_rect)
 
-    # Right: Amap map view
-    self._ensure_amap_view()
-    self._amap_view.render(right_rect)
+    # Right: Amap map view (isolate failures so UI stays up)
+    try:
+      self._ensure_amap_view()
+      self._amap_view.render(right_rect)
+    except Exception:
+      rl.draw_rectangle(int(right_rect.x), int(right_rect.y),
+                        int(right_rect.width), int(right_rect.height),
+                        rl.Color(30, 30, 30, 255))
 
     # Divider between driving view and map
     divider_x = int(inner_x + half_w)

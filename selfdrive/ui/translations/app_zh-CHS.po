@@ -820,12 +820,20 @@ msgid "Enable Alert Logging"
 msgstr "日志使能"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/developer.py
-msgid "When enabled, onroad warnings and errors are appended to the error log while driving."
-msgstr "开启后，行驶过程中的报警与错误会写入错误日志，可在错误日志中查看。"
+msgid "When enabled, onroad warnings/errors and Ford stock ACC fusion diagnostics are appended to the error log while driving."
+msgstr "开启后，行驶过程中的报警、错误以及原车 ACC 融合诊断会写入错误日志，可在错误日志中查看。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/developer.py
-msgid "View the error log for sunnypilot crashes and onroad alerts."
-msgstr "查看崩溃与行车报警错误日志。"
+msgid "Ford Stock ACC Fusion"
+msgstr "Ford 原车 ACC 融合"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/developer.py
+msgid "Fuse stock ACC with openpilot longitudinal: stock needs ~20 mph to first enable, then can follow down to a stop; within ~2s after stop, follow stock auto-resume (and send resume); after that OP vision pulls away if stock will not. OP also handles SCC / earlier braking. Requires openpilot longitudinal."
+msgstr "融合原车 ACC 与 openpilot 纵向：原车约需 20 mph 首次启用，启用后可跟到停车；停车后约 2 秒内前车起步则跟随原车自动起步（并发送 resume）；超时则由 OP 视觉起步。OP 另负责视觉预减速与 SCC 弯道。需开启 openpilot 纵向控制。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/developer.py
+msgid "View the error log for sunnypilot crashes, onroad alerts, and ACC fusion diagnostics."
+msgstr "查看崩溃、行车报警与 ACC 融合诊断错误日志。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Error: Invalid download. Retry."
@@ -2389,8 +2397,8 @@ msgid "启用自适应滑行模式(ACM)"
 msgstr "启用自适应滑行模式 (ACM)"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
-msgid "在合适条件下允许车辆在巡航速度附近自然滑行，提升舒适性。"
-msgstr "自适应滑行模式 (ACM) 在适当情况下减少制动，实现更平顺的滑行。"
+msgid "在合适条件下允许车辆在巡航速度附近自然滑行，提升舒适性。经典 ACC 与实验模式均可用；SCC 弯道降速激活时自动暂停。"
+msgstr "在合适条件下允许车辆在巡航速度附近自然滑行，提升舒适性。经典 ACC 与实验模式均可用；SCC 弯道降速激活时自动暂停。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
 msgid "检测到人工大幅度转弯时暂停横向控制，转弯结束后恢复。"

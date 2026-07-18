@@ -20,6 +20,7 @@ import os
 import random
 import time
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from io import BytesIO
 
 import cereal.messaging as messaging
@@ -43,42 +44,30 @@ STITCH_SIZE = TILE_SIZE * GRID  # 512
 DEFAULT_ZOOM = 17
 UPDATE_HZ = 2.0
 MAX_CACHED_TILES = 16
-HTTP_TIMEOUT = 5
-REGEO_TIMEOUT = 3
+HTTP_TIMEOUT = 3            # keep first-paint snappy; retries happen next cycle
+REGEO_TIMEOUT = 2
 REGEO_MIN_INTERVAL_S = 3.0
 REGEO_MIN_MOVE_M = 40.0
 TILE_CACHE_DIR = "/tmp/amap_tiles"
+TILE_FETCH_WORKERS = 4
 BG = (30, 30, 30, 255)
 ROUTE_COLOR = (30, 144, 255, 230)
 DEST_COLOR = (220, 40, 40, 240)
 
 
 def _lower_priority() -> None:
-  """Run at the lowest practical priority so autonomy stays unperturbed."""
+  """Stay below autonomy processes, but avoid SCHED_IDLE so first tiles arrive sooner."""
   try:
-    os.nice(19)
+    os.nice(10)
   except Exception:
     pass
   try:
     with open(f"/proc/{os.getpid()}/oom_score_adj", "w") as f:
-      f.write("1000")
-  except Exception:
-    pass
-  # Best-effort SCHED_IDLE (Linux) — never raise into FIFO/RR
-  try:
-    import ctypes
-    import ctypes.util
-    libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-
-    class SchedParam(ctypes.Structure):
-      _fields_ = [("sched_priority", ctypes.c_int)]
-
-    SCHED_IDLE = 5
-    libc.sched_setscheduler(0, SCHED_IDLE, ctypes.byref(SchedParam(0)))
+      f.write("500")
   except Exception:
     pass
   try:
-    os.system(f"ionice -c 3 -p {os.getpid()} >/dev/null 2>&1")
+    os.system(f"ionice -c 2 -n 7 -p {os.getpid()} >/dev/null 2>&1")
   except Exception:
     pass
 
@@ -175,6 +164,8 @@ class AmapWorker:
     self._road_name_lat = 0.0
     self._road_name_lon = 0.0
     self._road_name_ts = 0.0
+    self._tiles_ready_once = False
+    self._fetch_pool = ThreadPoolExecutor(max_workers=TILE_FETCH_WORKERS)
     os.makedirs(TILE_CACHE_DIR, exist_ok=True)
 
   def _wifi_ok(self) -> bool:
@@ -184,11 +175,38 @@ class AmapWorker:
     return self.sm["deviceState"].networkType == log.DeviceState.NetworkType.wifi
 
   def _network_ok(self) -> bool:
-    """Any online network (wifi/cell/ethernet) — regeo is tiny vs tile downloads."""
+    """Any online network (wifi/cell/ethernet)."""
     if not self.sm.valid.get("deviceState"):
       return False
     from cereal import log
     return self.sm["deviceState"].networkType != log.DeviceState.NetworkType.none
+
+  def _gps_from_last_param(self) -> tuple[float, float] | None:
+    """Boot-time fallback so tiles can start before live GPS has a fix."""
+    for key in ("LastGPSPositionLLK", "LastGPSPosition"):
+      raw = self.params.get(key)
+      if not raw:
+        continue
+      try:
+        import json
+        if isinstance(raw, (bytes, bytearray)):
+          raw = raw.decode("utf-8", errors="ignore")
+        if isinstance(raw, str):
+          data = json.loads(raw)
+        elif isinstance(raw, dict):
+          data = raw
+        else:
+          continue
+        lat = float(data["latitude"])
+        lon = float(data["longitude"])
+        if abs(lat) < 1e-7 and abs(lon) < 1e-7:
+          continue
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+          continue
+        return lat, lon
+      except Exception:
+        continue
+    return None
 
   @staticmethod
   def _bearing_from_vned(g) -> float | None:
@@ -252,6 +270,12 @@ class AmapWorker:
       if abs(lat) < 1e-7 and abs(lon) < 1e-7:
         continue
       return lat, lon, self._resolve_bearing(g), True
+    # Cold start: use last known fix so tile warm-up can begin immediately.
+    last = self._gps_from_last_param()
+    if last is not None:
+      lat, lon = last
+      bearing = self._last_bearing if self._have_bearing else 0.0
+      return lat, lon, bearing, True
     return 0.0, 0.0, self._last_bearing if self._have_bearing else 0.0, False
 
   def _fetch_road_name(self, lat: float, lon: float) -> str:
@@ -293,23 +317,17 @@ class AmapWorker:
       cloudlog.exception("amapd regeo request failed")
       return self._road_name
 
-  def _load_tile(self, x: int, y: int, zoom: int) -> Image.Image | None:
-    key = (x, y, zoom)
-    if key in self._tile_images:
-      self._tile_images.move_to_end(key)
-      return self._tile_images[key]
-
+  def _fetch_tile_bytes(self, x: int, y: int, zoom: int) -> Image.Image | None:
+    """Disk cache + network fetch. Safe to call from worker threads."""
     cache_path = os.path.join(TILE_CACHE_DIR, f"{zoom}_{x}_{y}.png")
     try:
       if os.path.exists(cache_path) and os.path.getsize(cache_path) >= 8:
         with open(cache_path, "rb") as f:
           if f.read(4) == b"\x89PNG":
-            img = Image.open(cache_path).convert("RGBA")
-            self._remember_tile(key, img)
-            return img
+            return Image.open(cache_path).convert("RGBA")
         os.remove(cache_path)
 
-      if not self._wifi_ok():
+      if not self._network_ok():
         return None
 
       subdomain = random.randint(1, 4)
@@ -322,11 +340,19 @@ class AmapWorker:
       with open(tmp, "wb") as f:
         f.write(resp.content)
       os.replace(tmp, cache_path)
-      img = Image.open(BytesIO(resp.content)).convert("RGBA")
-      self._remember_tile(key, img)
-      return img
+      return Image.open(BytesIO(resp.content)).convert("RGBA")
     except Exception:
       return None
+
+  def _load_tile(self, x: int, y: int, zoom: int) -> Image.Image | None:
+    key = (x, y, zoom)
+    if key in self._tile_images:
+      self._tile_images.move_to_end(key)
+      return self._tile_images[key]
+    img = self._fetch_tile_bytes(x, y, zoom)
+    if img is not None:
+      self._remember_tile(key, img)
+    return img
 
   def _remember_tile(self, key: tuple[int, int, int], img: Image.Image) -> None:
     self._tile_images[key] = img
@@ -347,16 +373,21 @@ class AmapWorker:
     gps_py = (fy - ty0) * TILE_SIZE
     return tx0, ty0, gps_px, gps_py
 
-  def _load_block(self, tx0: int, ty0: int) -> tuple[list[tuple[int, int]], int]:
-    """Load the 4 tiles of the 2x2 block. Returns (keys, loaded_count)."""
-    keys = []
-    loaded = 0
-    for dy in range(GRID):
-      for dx in range(GRID):
-        key = (tx0 + dx, ty0 + dy, self.zoom)
-        keys.append(key)
-        if self._load_tile(*key) is not None:
-          loaded += 1
+  def _load_block(self, tx0: int, ty0: int) -> tuple[list[tuple[int, int, int]], int]:
+    """Load the 4 tiles of the 2x2 block in parallel. Returns (keys, loaded_count)."""
+    keys = [(tx0 + dx, ty0 + dy, self.zoom) for dy in range(GRID) for dx in range(GRID)]
+    missing = [k for k in keys if k not in self._tile_images]
+    if missing:
+      futures = {self._fetch_pool.submit(self._fetch_tile_bytes, *k): k for k in missing}
+      for fut in as_completed(futures):
+        key = futures[fut]
+        try:
+          img = fut.result()
+        except Exception:
+          img = None
+        if img is not None:
+          self._remember_tile(key, img)
+    loaded = sum(1 for k in keys if k in self._tile_images)
     return keys, loaded
 
   def _has_block(self, tx0: int, ty0: int) -> bool:
@@ -365,6 +396,14 @@ class AmapWorker:
         if (tx0 + dx, ty0 + dy, self.zoom) not in self._tile_images:
           return False
     return True
+
+  def _block_loaded_count(self, tx0: int, ty0: int) -> int:
+    n = 0
+    for dy in range(GRID):
+      for dx in range(GRID):
+        if (tx0 + dx, ty0 + dy, self.zoom) in self._tile_images:
+          n += 1
+    return n
 
   @staticmethod
   def _crop_aspect(img: Image.Image, gps_x: float, gps_y: float, aspect: float) -> Image.Image:
@@ -422,8 +461,11 @@ class AmapWorker:
     cx, cy, frac_x, frac_y = _latlon_to_tile_fractional(gcj_lat, gcj_lon, self.zoom)
     tx0, ty0, gps_px, gps_py = self._tile_block_origin(cx, cy, frac_x, frac_y)
 
-    self._load_block(tx0, ty0)
-    ready = self._has_block(tx0, ty0)
+    _, loaded = self._load_block(tx0, ty0)
+    # First paint as soon as any tile arrives; remaining tiles fill in next cycles.
+    ready = loaded >= 1
+    if ready:
+      self._tiles_ready_once = True
 
     # 1) Stitch 2x2 at native tile resolution (512x512), north-up
     canvas = Image.new("RGBA", (STITCH_SIZE, STITCH_SIZE), BG)
@@ -480,10 +522,17 @@ class AmapWorker:
       )
       return
 
-    road_name = self._fetch_road_name(lat, lon)
+    # Tiles first — never block first paint on reverse-geocode HTTP.
     rgba, ready = self._render_viewport(view_w, view_h, lat, lon)
     if rgba is None:
       return
+
+    road_name = self._road_name
+    if self._tiles_ready_once:
+      try:
+        road_name = self._fetch_road_name(lat, lon)
+      except Exception:
+        pass
 
     self.shm.publish_frame(
       rgba, view_w, view_h,
@@ -494,7 +543,7 @@ class AmapWorker:
 
 def main() -> None:
   _lower_priority()
-  cloudlog.info("amapd starting (nice=19, %.1f Hz)" % UPDATE_HZ)
+  cloudlog.info("amapd starting (nice=10, %.1f Hz, parallel tiles)" % UPDATE_HZ)
 
   worker = AmapWorker()
   rk = Ratekeeper(UPDATE_HZ, print_delay_threshold=None)

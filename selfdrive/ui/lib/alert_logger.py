@@ -1,14 +1,10 @@
 from __future__ import annotations
 
-import html
-import os
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Any
 
-from openpilot.common.params import Params
+from openpilot.common.error_log import append_error_log
 from openpilot.common.swaglog import cloudlog
-from openpilot.system.hardware.hw import Paths
 
 
 _ALERT_STATUS = {
@@ -23,9 +19,6 @@ _ALERT_SIZE = {
   2: "mid",
   3: "full",
 }
-
-# Cap error.log growth when alert file logging is enabled.
-_ERROR_LOG_MAX_BYTES = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -45,40 +38,6 @@ class UiAlertLogger:
     self._offroad_visible: dict[str, str] = {}
     self._circular_key: tuple[str, str] | None = None
     self._update_available = False
-    self._params = Params()
-
-  def _alert_file_logging_enabled(self) -> bool:
-    try:
-      return bool(self._params.get_bool("UiAlertLogEnable"))
-    except Exception:
-      return False
-
-  def _append_error_log(self, line: str) -> None:
-    """Append alert/error text for the Developer → Error Log viewer."""
-    if not self._alert_file_logging_enabled():
-      return
-
-    try:
-      log_dir = Paths.crash_log_root()
-      os.makedirs(log_dir, exist_ok=True)
-      path = os.path.join(log_dir, "error.log")
-      ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-      entry = f"[{ts}] {html.escape(line)}<br>\n"
-
-      with open(path, "a", encoding="utf-8") as f:
-        f.write(entry)
-
-      # Keep file bounded: drop oldest half if oversized.
-      try:
-        if os.path.getsize(path) > _ERROR_LOG_MAX_BYTES:
-          with open(path, encoding="utf-8") as f:
-            data = f.read()
-          with open(path, "w", encoding="utf-8") as f:
-            f.write(data[len(data) // 2:])
-      except OSError:
-        pass
-    except Exception:
-      cloudlog.exception("failed to append UI alert to error.log")
 
   def log_onroad(self, alert: Any | None) -> None:
     if alert is None:
@@ -114,7 +73,7 @@ class UiAlertLogger:
     if key.status >= 1:
       cloudlog.warning(msg)
       # userPrompt / critical — persist when 日志使能 is on
-      self._append_error_log(msg)
+      append_error_log(msg)
     else:
       cloudlog.info(msg)
 

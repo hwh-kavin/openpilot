@@ -23,6 +23,13 @@ class CarState(CarStateBase, MadsCarState):
     self.distance_button = 0
     self.lc_button = 0
 
+    # Stock ACCDATA (camera bus) for OP/stock longitudinal fusion
+    self.stock_acc_prpl = CarControllerParams.INACTIVE_GAS
+    self.stock_acc_brk = 0.0
+    self.stock_acc_prpl_pred = CarControllerParams.INACTIVE_GAS
+    self.stock_acc_v_trg = 0.0
+    self.stock_acc_enbl = False
+
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
     cp_cam = can_parsers[Bus.cam]
@@ -110,6 +117,14 @@ class CarState(CarStateBase, MadsCarState):
     # Stock values from IPMA so that we can retain some stock functionality
     self.acc_tja_status_stock_values = cp_cam.vl["ACCDATA_3"]
     self.lkas_status_stock_values = cp_cam.vl["IPMA_Data"]
+
+    # Stock ACC longitudinal request (still published on camera bus while OP TXes ACCDATA)
+    accdata = cp_cam.vl["ACCDATA"]
+    self.stock_acc_prpl = float(accdata["AccPrpl_A_Rq"])
+    self.stock_acc_brk = float(accdata["AccBrkTot_A_Rq"])
+    self.stock_acc_prpl_pred = float(accdata["AccPrpl_A_Pred"])
+    self.stock_acc_v_trg = float(accdata["AccVeh_V_Trg"])
+    self.stock_acc_enbl = bool(accdata["Cmbb_B_Enbl"])
 
     MadsCarState.update_mads(self, ret, can_parsers)
 

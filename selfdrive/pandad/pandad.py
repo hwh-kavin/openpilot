@@ -12,6 +12,50 @@ from openpilot.common.params import Params
 from openpilot.system.hardware import HARDWARE
 from openpilot.common.swaglog import cloudlog
 
+# C3/DOS internal panda is USB-only (often behind a hub). Prefer connecting immediately
+# when serial is already readable; only GPIO-reset + settle when list() is empty.
+NO_PANDA_RESET_SETTLE_S = 1.0
+NO_PANDA_POLL_S = 0.2
+NO_PANDA_RESET_EVERY_S = 5.0
+PANDA_STABLE_BEFORE_MODEM_S = 2.0
+
+# Avoid immediate GPIO reset on first empty list(); wait one reset interval.
+_last_panda_reset_at = time.monotonic()
+
+
+def reset_and_wait_for_usb() -> None:
+  """GPIO-reset internal panda, then wait for USB re-enumeration before list/serial."""
+  global _last_panda_reset_at
+  if not HARDWARE.has_internal_panda():
+    return
+  cloudlog.event("pandad.reset_internal")
+  HARDWARE.reset_internal_panda()
+  _last_panda_reset_at = time.monotonic()
+  time.sleep(NO_PANDA_RESET_SETTLE_S)
+
+
+def list_pandas_for_connect() -> list[str]:
+  """List pandas; if USB not ready yet, poll, and only reset every few seconds."""
+  serials = Panda.list()
+  if serials:
+    return serials
+  now = time.monotonic()
+  if now - _last_panda_reset_at >= NO_PANDA_RESET_EVERY_S:
+    reset_and_wait_for_usb()
+  else:
+    time.sleep(NO_PANDA_POLL_S)
+  return Panda.list()
+
+
+def enable_modem_usb_after_panda() -> None:
+  """Panda is up — allow LTE USB enumeration on the shared hub."""
+  try:
+    time.sleep(PANDA_STABLE_BEFORE_MODEM_S)
+    HARDWARE.allow_modem_usb()
+    cloudlog.event("pandad.modem_usb_enabled")
+  except Exception:
+    cloudlog.exception("pandad.modem_usb_enable_failed")
+
 
 def get_expected_signature(panda: Panda) -> bytes:
   hw_type = panda.get_type()
@@ -90,32 +134,34 @@ def main() -> None:
   do_exit = False
   signal.signal(signal.SIGINT, signal_handler)
 
-  # check health for lost heartbeat
-  try:
-    for s in Panda.list():
-      with Panda(s) as p:
-        try:
-          health = p.health()
-        except RuntimeError:
-          continue
-        if p.is_internal() and health["heartbeat_lost"]:
-          Params().put_bool("PandaHeartbeatLost", True, block=True)
-          cloudlog.event("heartbeat lost", deviceState=health)
-  except Exception:
-    cloudlog.exception("pandad.uncaught_exception")
-
   count = 0
+  heartbeat_checked = False
   while not do_exit:
     try:
       cloudlog.event("pandad.flash_and_connect", count=count)
       count += 1
 
-      panda_serials = Panda.list()
+      # Fast path: connect if USB/serial already ready; else reset → wait 1s → list
+      panda_serials = list_pandas_for_connect()
       if not panda_serials:
-        if count % 5 == 0:
-          HARDWARE.reset_internal_panda()
-        time.sleep(1)
+        cloudlog.event("pandad.no_panda_after_reset", count=count)
         continue
+
+      # check health for lost heartbeat (once, on a clean USB connection)
+      if not heartbeat_checked:
+        heartbeat_checked = True
+        try:
+          for s in panda_serials:
+            with Panda(s) as p:
+              try:
+                health = p.health()
+              except RuntimeError:
+                continue
+              if p.is_internal() and health["heartbeat_lost"]:
+                Params().put_bool("PandaHeartbeatLost", True, block=True)
+                cloudlog.event("heartbeat lost", deviceState=health)
+        except Exception:
+          cloudlog.exception("pandad.uncaught_exception")
 
       # Flash all Pandas in DFU mode
       for serial in PandaDFU.list():
@@ -135,6 +181,8 @@ def main() -> None:
         # run real pandad
         os.environ['MANAGER_DAEMON'] = 'pandad'
         process = subprocess.Popen(["./pandad"], cwd=os.path.join(BASEDIR, "selfdrive/pandad"))
+        # After panda is connected, allow LTE USB enum (deferred to protect shared hub)
+        enable_modem_usb_after_panda()
         process.wait()
     # TODO: wrap all panda exceptions in a base panda exception
     except (usb1.USBErrorNoDevice, usb1.USBErrorPipe):

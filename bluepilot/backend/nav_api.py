@@ -31,7 +31,9 @@ def _masked_secret(value: str | None) -> str | None:
 def build_nav_status(params: Params | None = None) -> dict[str, Any]:
   params = params or Params()
   settings = np.get_nav_settings(params)
+  # Active session vs durable onroad「目」shortcut (NavSavedDestination).
   destination = np.get_place(params, "NavDestination")
+  saved_destination = np.get_place(params, "NavSavedDestination")
   home = np.get_place(params, "NavHome")
   work = np.get_place(params, "NavWork")
   route = np.get_route_geometry(params)
@@ -42,6 +44,7 @@ def build_nav_status(params: Params | None = None) -> dict[str, Any]:
     "success": True,
     "settings": settings,
     "destination": destination,
+    "saved_destination": saved_destination,
     "home": home,
     "work": work,
     "route": {
@@ -190,21 +193,26 @@ def handle_put_place(slot: str, data: dict[str, Any] | None) -> tuple[dict[str, 
   try:
     params = Params()
     if data is None or data == {}:
-      np.set_place(params, key, None)
       if slot == "destination":
-        # Also clear the onroad "目的地" shortcut target.
+        # Clear the onroad "目的地" shortcut only — do not touch an active session
+        # unless the caller uses /api/nav/clear.
         np.set_place(params, "NavSavedDestination", None)
-        np.clear_navigation(params, clear_destination=True)
-      place = None
+        place = None
+      else:
+        np.set_place(params, key, None)
+        place = None
     else:
-      place = np.set_place(params, key, data)
-      if place is None:
-        return {"success": False, "error": "Invalid place (need latitude/longitude)"}, 400
+      # Portal "destination" configures the onroad shortcut (NavSavedDestination).
+      # Active navigation (NavDestination) starts only from onroad 目/家/公 buttons
+      # or an explicit /api/nav/navigate call — never auto-start on save.
       if slot == "destination":
-        # Keep a durable copy for the onroad shortcut (survives home/work / clear).
-        np.set_place(params, "NavSavedDestination", place)
-        # New destination invalidates previous geometry until navd recomputes.
-        np.set_route_geometry(params, None)
+        place = np.set_place(params, "NavSavedDestination", data)
+        if place is None:
+          return {"success": False, "error": "Invalid place (need latitude/longitude)"}, 400
+      else:
+        place = np.set_place(params, key, data)
+        if place is None:
+          return {"success": False, "error": "Invalid place (need latitude/longitude)"}, 400
     return {"success": True, "slot": slot, "place": place}, 200
   except Exception as e:
     cloudlog.exception("nav place save failed")

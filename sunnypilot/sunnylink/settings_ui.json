@@ -1005,6 +1005,26 @@
           ],
           "items": [
             {
+              "key": "FordStockAccFusion",
+              "widget": "toggle",
+              "title": "Ford Stock ACC Fusion",
+              "description": "Fuse stock ACC with openpilot longitudinal: stock needs ~20 mph to first enable, then can follow down to a stop; within ~2s after stop, follow stock auto-resume (and send resume); after that OP vision pulls away if stock will not. OP also handles SCC / earlier braking. Requires openpilot longitudinal.",
+              "visibility": [
+                {
+                  "type": "capability",
+                  "field": "brand",
+                  "equals": "ford"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            },
+            {
               "key": "SmartCruiseControlVision",
               "widget": "toggle",
               "title": "Vision",
@@ -1944,7 +1964,7 @@
               "key": "UiAlertLogEnable",
               "widget": "toggle",
               "title": "Enable Alert Logging",
-              "description": "When enabled, onroad warnings and errors are appended to the error log while driving.",
+              "description": "When enabled, onroad warnings/errors and Ford stock ACC fusion diagnostics are appended to the error log while driving.",
               "visibility": [
                 {
                   "type": "not",

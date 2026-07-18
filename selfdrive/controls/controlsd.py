@@ -21,6 +21,13 @@ from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+from openpilot.sunnypilot.selfdrive.controls.lib.curvature_lead import apply_curvature_lead
+from opendbc.car.ford.values import CarControllerParams as FordCarControllerParams
+from opendbc.car.lateral import AVERAGE_ROAD_ROLL, ISO_LATERAL_ACCEL
+from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
+
+# Match Ford carcontroller CAN-FD lat-accel ceiling (~2.4 m/s^2)
+_FORD_MAX_LATERAL_ACCEL = ISO_LATERAL_ACCEL - (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_ROAD_ROLL)
 
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
@@ -140,12 +147,20 @@ class Controls(ControlsExt):
 
     # Steering PID loop and lateral MPC
     # Reset desired curvature to current to avoid violating the limits on engage
+    lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
     if self.sm.valid['lateralManeuverPlan']:
       new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
     else:
       new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
+      # Ford: advance plan sampling when a sharp curve is predicted (no toggle).
+      # Larger predicted |κ| → larger lead so curvature climbs earlier into the turn.
+      if CC.latActive and self.CP.brand == "ford":
+        new_desired_curvature = apply_curvature_lead(
+          model_v2, CS.vEgo, new_desired_curvature, lat_delay,
+          max_lat_accel=_FORD_MAX_LATERAL_ACCEL,
+          max_curvature=FordCarControllerParams.ANGLE_LIMITS.STEER_ANGLE_MAX,
+        )
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
-    lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,

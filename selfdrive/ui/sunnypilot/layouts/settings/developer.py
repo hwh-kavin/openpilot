@@ -47,11 +47,11 @@ class DeveloperLayoutSP(DeveloperLayout):
 
     self.alert_log_toggle = toggle_item_sp(
       tr("Enable Alert Logging"),
-      tr("When enabled, onroad warnings and errors are appended to the error log while driving."),
+      tr("When enabled, onroad warnings/errors and Ford stock ACC fusion diagnostics are appended to the error log while driving."),
       param="UiAlertLogEnable",
     )
 
-    self.error_log_btn = button_item(tr("Error Log"), tr("VIEW"), tr("View the error log for sunnypilot crashes and onroad alerts."), callback=self._on_error_log_clicked)
+    self.error_log_btn = button_item(tr("Error Log"), tr("VIEW"), tr("View the error log for sunnypilot crashes, onroad alerts, and ACC fusion diagnostics."), callback=self._on_error_log_clicked)
 
     self.items: list = [
       self.show_advanced_controls,

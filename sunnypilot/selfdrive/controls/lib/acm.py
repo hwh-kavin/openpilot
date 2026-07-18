@@ -463,7 +463,7 @@ class ACM:
     self.personality = log.LongitudinalPersonality.standard
     self._dtsc_is_active = False
     self._scc_is_active = False
-    self._is_normal_mode = True
+    self._mode = 'acc'
 
     self.coasting = CoastingLogic()
     self.follow_coast = FollowCoastLogic()
@@ -477,12 +477,16 @@ class ACM:
   def comfort_state_capnp(self):
     return COMFORT_STATE_TO_CAPNP.get(self.comfort_state, AcmComfortState.off)
 
+  def _blocked(self) -> bool:
+    # SCC curve slowing always wins; ACM works in both classic ACC and Experimental/E2E.
+    return (not self.enabled) or self._scc_is_active
+
   def update_states(self, cc, rs, user_ctrl_lon, v_ego, v_cruise, mode='acc', personality=log.LongitudinalPersonality.standard,
                     dtsc_is_active=False, scc_active=False, road_pitch: float | None = None):
     self.personality = personality
     self._dtsc_is_active = dtsc_is_active
     self._scc_is_active = scc_active
-    self._is_normal_mode = (mode == 'acc')
+    self._mode = mode
 
     if not self.enabled or road_pitch is None or scc_active:
       self.comfort_state = ComfortState.OFF
@@ -524,7 +528,7 @@ class ACM:
 
   def update_a_desired_trajectory(self, a_desired_trajectory, v_ego=0.0, lead=None, t_follow=None,
                                     road_pitch: float | None = None):
-    if self._dtsc_is_active or self._scc_is_active or not self._is_normal_mode or not self.enabled:
+    if self._blocked():
       return a_desired_trajectory
 
     if t_follow is None:
@@ -541,10 +545,38 @@ class ACM:
     return self.soft_hold.process_trajectory(a_desired_trajectory, v_ego, lead, pitch, t_follow)
 
   def update_v_desired_trajectory(self, v_desired_trajectory, v_ego=0.0):
-    if self._dtsc_is_active or self._scc_is_active or not self._is_normal_mode or not self.enabled:
+    if self._blocked():
       return v_desired_trajectory
 
     if self.comfort_state == ComfortState.CRUISE_COAST:
       return self.coasting.process_v_trajectory(v_desired_trajectory, v_ego)
 
     return v_desired_trajectory
+
+  def apply_to_accel(self, a_target: float, v_ego: float = 0.0, lead=None, t_follow: float | None = None,
+                     road_pitch: float | None = None) -> float:
+    """
+    Post-blend ACM: apply coast / soft-hold to the final accel command.
+
+    Needed for Experimental/E2E where output is min(e2e, mpc) — modifying only the MPC
+    trajectory is not enough when the model accel wins the min().
+    """
+    if self._blocked() or self.comfort_state == ComfortState.OFF:
+      return float(a_target)
+
+    if t_follow is None:
+      t_follow = get_T_FOLLOW(self.personality)
+
+    pitch = road_pitch if road_pitch is not None else self.current_pitch
+    a_target = float(a_target)
+
+    # Never fight a hard brake
+    if a_target < EMERGENCY_DECEL_THRESHOLD:
+      return a_target
+
+    if self.comfort_state in (ComfortState.CRUISE_COAST, ComfortState.FOLLOW_COAST):
+      return float(max(a_target, get_coast_accel(pitch)))
+
+    # Soft hold / MPC follow comfort on a single-sample trajectory
+    traj = self.soft_hold.process_trajectory(np.array([a_target], dtype=float), v_ego, lead, pitch, t_follow)
+    return float(traj[0])

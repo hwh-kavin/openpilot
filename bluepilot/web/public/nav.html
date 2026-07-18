@@ -382,7 +382,8 @@
     function renderSaved(status) {
       const home = status.home;
       const work = status.work;
-      const dest = status.destination;
+      // Prefer durable shortcut; fall back to active session for display.
+      const dest = status.saved_destination || status.destination;
       const homeInfo = document.getElementById('homeInfo');
       const workInfo = document.getElementById('workInfo');
       const destInfo = document.getElementById('destInfo');
@@ -502,8 +503,9 @@
       document.getElementById('btnNav').onclick = async () => {
         if (!selected) return;
         try {
+          // Save onroad「目」shortcut only — navigation starts from car split-screen buttons.
           await savePlace('/api/nav/destination', selected);
-          setStatus('已设为目的地，车机将开始规划');
+          setStatus('已保存目的地，请在分屏点击「目」开始导航');
         } catch (e) { setStatus(e.message, true); }
       };
       document.getElementById('btnHome').onclick = async () => {

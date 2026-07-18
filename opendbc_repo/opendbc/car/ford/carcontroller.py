@@ -1,7 +1,10 @@
 import math
+import time
 import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, apply_hysteresis, structs
+from opendbc.car.carlog import carlog
+from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.lateral import AVERAGE_ROAD_ROLL, ISO_LATERAL_ACCEL, apply_std_steer_angle_limits
 from opendbc.car.ford import fordcan
 from opendbc.car.ford.values import CarControllerParams, FordFlags, CAR
@@ -13,6 +16,88 @@ VisualAlert = structs.CarControl.HUDControl.VisualAlert
 # CAN FD limits:
 # Limit to average banked road since safety doesn't have the roll, higher actual roll lowers lateral acceleration
 MAX_LATERAL_ACCEL = ISO_LATERAL_ACCEL - (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_ROAD_ROLL)  # ~2.4 m/s^2
+
+# Soften stock/OP positive accel a bit when fusion is active (m/s^2)
+FUSION_ACCEL_SOFT_MAX = 1.2
+# Ford stock ACC typically cannot *initially* set/enable below ~20 mph
+FUSION_STOCK_MIN_V = 20.0 * CV.MPH_TO_MS  # ~8.94 m/s
+# After a follow-stop, hand back from OP pullaway once moving (session already active)
+FUSION_STOP_GO_RELEASE_V = 3.0  # m/s
+FUSION_STOCK_GO_THRESH = 0.05  # m/s^2 — treat stock AccPrpl as "wants go"
+PARAMS_UPDATE_FRAMES = 100  # ~1s at 100Hz
+LOG_EVERY_FRAMES = 100
+
+
+def _parse_stock_acc_accel(CS) -> float | None:
+  """Raw stock ACC accel from camera ACCDATA, or None if signals look inactive."""
+  if not getattr(CS, "stock_acc_enbl", False):
+    return None
+
+  pred = float(getattr(CS, "stock_acc_prpl_pred", CarControllerParams.INACTIVE_GAS))
+  prpl = float(getattr(CS, "stock_acc_prpl", CarControllerParams.INACTIVE_GAS))
+  brk = float(getattr(CS, "stock_acc_brk", 0.0))
+
+  # AccPrpl_A_Pred is the raw request during stock operation when live
+  if pred > CarControllerParams.INACTIVE_GAS + 0.05:
+    return pred
+  if prpl >= CarControllerParams.MIN_GAS:
+    return prpl
+  if brk < -0.05:
+    return brk
+  if prpl > CarControllerParams.INACTIVE_GAS + 0.05:
+    return prpl
+  return None
+
+
+def get_stock_acc_accel(CS, *, session_active: bool = False, v_ego: float = 0.0) -> float | None:
+  """
+  Stock ACC accel for fusion.
+
+  Min speed only gates *first enable*. Once the stock ACC session is active, requests
+  remain valid down to a stop (stop-and-go). Before the session is latched, ignore stock
+  below FUSION_STOCK_MIN_V so OP vision handles low-speed enable/pullaway.
+  """
+  if (not session_active) and v_ego < FUSION_STOCK_MIN_V:
+    return None
+  return _parse_stock_acc_accel(CS)
+
+
+def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool = False,
+                        stock_auto_resume: bool = False) -> tuple[float, str]:
+  """
+  Fuse stock ACC with OP (vision follow / SCC curve / planner / stop-go).
+
+  Before stock session: below ~20 mph → stock_a None → OP only.
+  After stock session: stock usable down to stop; OP still wins on earlier brake/curve.
+  Stop-go pullaway: if stock AccPrpl requests go, follow stock (stock_go) / induce resume.
+  Do not let OP stopping-hold brake override stock go — that deadlocks AccStopMde.
+  If stock will not pull away, prefer OP vision/start (op_go).
+  """
+  op_a = float(op_a)
+  if stock_a is None:
+    return op_a, "op_only"
+
+  stock_a = float(stock_a)
+
+  # Stop-go: stock requests pullaway — follow stock even if OP is still in stopping hold.
+  if stock_auto_resume and stock_a > FUSION_STOCK_GO_THRESH:
+    return float(min(stock_a, FUSION_ACCEL_SOFT_MAX)), "stock_go"
+
+  # Stock not pulling away: do not let a stuck stock hold/zero block OP pullaway
+  if stop_go_op and op_a > stock_a + 1e-3:
+    fused = min(op_a, FUSION_ACCEL_SOFT_MAX)
+    return float(fused), "op_go"
+
+  fused = min(op_a, stock_a, FUSION_ACCEL_SOFT_MAX)
+  if fused < op_a - 1e-3 and fused < stock_a - 1e-3:
+    mode = "soft_max"
+  elif fused < stock_a - 1e-3:
+    mode = "op_more_brake"  # OP vision/SCC more conservative
+  elif fused < op_a - 1e-3:
+    mode = "stock_more_brake"  # stock follow more conservative / softens OP accel
+  else:
+    mode = "match"
+  return float(fused), mode
 
 
 def anti_overshoot(apply_curvature, apply_curvature_last, v_ego):
@@ -74,6 +159,44 @@ class CarController(CarControllerBase):
     self.lead_distance_bars_last = None
     self.distance_bar_frame = 0
 
+    self._params = None
+    self._fusion_enabled = False
+    self._fusion_log = False
+    self._last_fusion_mode = "off"
+    self._fusion_stop_go = False
+    # Latched once stock ACC has successfully been active above min engage speed
+    self._stock_acc_session = False
+    self._standstill_since: float | None = None
+
+  def _update_fusion_params(self):
+    if (self.frame % PARAMS_UPDATE_FRAMES) != 0 and self._params is not None:
+      return
+    try:
+      if self._params is None:
+        from openpilot.common.params import Params
+        self._params = Params()
+      self._fusion_enabled = self._params.get_bool("FordStockAccFusion")
+      # Gated by Developer → 日志使能 (UiAlertLogEnable); writes to error.log
+      self._fusion_log = self._params.get_bool("UiAlertLogEnable")
+    except Exception:
+      # Keep last known values if params unavailable
+      pass
+
+  def _log_fusion(self, msg: str):
+    if not self._fusion_log:
+      return
+    carlog.info(msg)
+    try:
+      from openpilot.common.swaglog import cloudlog
+      cloudlog.info(msg)
+    except Exception:
+      pass
+    try:
+      from openpilot.common.error_log import append_error_log
+      append_error_log(msg, check_enable=False)
+    except Exception:
+      pass
+
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
 
@@ -84,11 +207,31 @@ class CarController(CarControllerBase):
     steer_alert = hud_control.visualAlert in (VisualAlert.steerRequired, VisualAlert.ldw)
     fcw_alert = hud_control.visualAlert == VisualAlert.fcw
 
+    self._update_fusion_params()
+
+    # Standstill hold timing (logged; stop-go latch for stock pullaway / resume)
+    at_stop = CS.out.standstill or CS.out.cruiseState.standstill
+    if at_stop:
+      if self._standstill_since is None:
+        self._standstill_since = time.monotonic()
+      self._fusion_stop_go = True
+    elif CS.out.vEgo >= FUSION_STOP_GO_RELEASE_V:
+      self._fusion_stop_go = False
+      self._standstill_since = None
+
+    standstill_hold_s = (time.monotonic() - self._standstill_since) if self._standstill_since is not None else 0.0
+    stock_raw = _parse_stock_acc_accel(CS)
+    stock_wants_go = stock_raw is not None and stock_raw > FUSION_STOCK_GO_THRESH
+    # Resume while stop-go and stock wants go (not limited to the first ~2s window)
+    induce_stock_resume = (
+      self._fusion_enabled and self._stock_acc_session and self._fusion_stop_go and stock_wants_go
+    )
+
     ### acc buttons ###
     if CC.cruiseControl.cancel:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, cancel=True))
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, cancel=True))
-    elif CC.cruiseControl.resume and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
+    elif (CC.cruiseControl.resume or induce_stock_resume) and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, resume=True))
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, resume=True))
     # if stock lane centering isn't off, send a button press to toggle it off
@@ -133,8 +276,56 @@ class CarController(CarControllerBase):
     ### longitudinal control ###
     # send acc msg at 50Hz
     if self.CP.openpilotLongitudinalControl and (self.frame % CarControllerParams.ACC_CONTROL_STEP) == 0:
-      accel = actuators.accel
+      op_accel = float(actuators.accel)
+      accel = op_accel
       gas = accel
+      fusion_mode = "off"
+      stock_a = None
+      long_state = CC.actuators.longControlState
+
+      # Latch once cruise/long has been engaged above min set speed (~20 mph).
+      # After latch, stock ACC long can follow down to a stop; clear when cruise/long drops.
+      if not CC.longActive or not CS.out.cruiseState.enabled:
+        self._stock_acc_session = False
+      elif CS.out.vEgo >= FUSION_STOCK_MIN_V:
+        self._stock_acc_session = True
+
+      # Also mark stop-go while longitudinal is in stopping state
+      if long_state == LongCtrlState.stopping:
+        self._fusion_stop_go = True
+        if self._standstill_since is None:
+          self._standstill_since = time.monotonic()
+
+      standstill_hold_s = (time.monotonic() - self._standstill_since) if self._standstill_since is not None else 0.0
+
+      # Stock ACC + OP fusion
+      stock_pullaway = False
+      if self._fusion_enabled and CC.longActive:
+        below_stock_min = CS.out.vEgo < FUSION_STOCK_MIN_V
+        stock_a = get_stock_acc_accel(
+          CS, session_active=self._stock_acc_session, v_ego=CS.out.vEgo
+        )
+        stock_wants_go = stock_a is not None and stock_a > FUSION_STOCK_GO_THRESH
+        # Prefer stock pullaway anytime during stop-go if stock requests go (avoids OP hold deadlock)
+        stock_pullaway = self._fusion_stop_go and stock_wants_go
+        # If stock is not pulling away, OP may force go once it wants positive accel / starting
+        stop_go_op = (
+          self._fusion_stop_go and
+          (not stock_pullaway) and
+          (long_state == LongCtrlState.starting or op_accel > 0.05)
+        )
+        accel, fusion_mode = fuse_stock_op_accel(
+          op_accel, stock_a,
+          stop_go_op=stop_go_op,
+          stock_auto_resume=stock_pullaway,
+        )
+        # Clarify log mode: OP used because session not yet latched below min speed
+        if (not self._stock_acc_session) and below_stock_min and fusion_mode == "op_only":
+          fusion_mode = "op_below_stock_min"
+        gas = accel
+      else:
+        self._stock_acc_session = False
+      self._last_fusion_mode = fusion_mode
 
       if CC.longActive:
         # Compensate for engine creep at low speed.
@@ -164,9 +355,52 @@ class CarController(CarControllerBase):
       elif accel_pitch_compensated < 0.0:
         self.brake_request = True
 
-      stopping = CC.actuators.longControlState == LongCtrlState.stopping
-      # TODO: look into using the actuators packet to send the desired speed
-      can_sends.append(fordcan.create_acc_msg(self.packer, self.CAN, CC.longActive, gas, accel, stopping, self.brake_request, v_ego_kph=V_CRUISE_MAX))
+      stopping = long_state == LongCtrlState.stopping
+      # Stock auto-resume / OP pullaway: clear stop request so PCM can move
+      if fusion_mode in ("stock_go", "op_go"):
+        stopping = False
+
+      # With fusion: send real cruise / stock target speed (helps TCM upshift). Else keep legacy max.
+      if self._fusion_enabled and CC.longActive:
+        v_cruise_kph = float(CS.out.cruiseState.speed) * CV.MS_TO_KPH
+        stock_v_trg = float(getattr(CS, "stock_acc_v_trg", 0.0))
+        v_trg_kph = stock_v_trg if stock_v_trg > 1.0 else v_cruise_kph
+        v_trg_kph = float(np.clip(v_trg_kph, 0.0, V_CRUISE_MAX))
+      else:
+        # TODO: look into using the actuators packet to send the desired speed
+        v_trg_kph = V_CRUISE_MAX
+
+      if self._fusion_log and (self.frame % LOG_EVERY_FRAMES) == 0:
+        self._log_fusion(
+          "FordStockAccFusion: mode=%s longActive=%s enbl=%s session=%s stop_go=%s "
+          "below_min=%s hold_s=%.2f auto_resume=%s longState=%s op=%.2f stock=%s "
+          "fused_gas=%.2f fused_brk=%.2f prpl=%.2f brk=%.2f pred=%.2f "
+          "v_trg=%.1f v_ego=%.1f cruise=%.1f stock_min_mph=%.0f" % (
+            fusion_mode,
+            CC.longActive,
+            getattr(CS, "stock_acc_enbl", False),
+            self._stock_acc_session,
+            self._fusion_stop_go,
+            CS.out.vEgo < FUSION_STOCK_MIN_V,
+            standstill_hold_s,
+            stock_pullaway,
+            str(long_state),
+            op_accel,
+            ("%.2f" % stock_a) if stock_a is not None else "None",
+            gas,
+            accel,
+            getattr(CS, "stock_acc_prpl", 0.0),
+            getattr(CS, "stock_acc_brk", 0.0),
+            getattr(CS, "stock_acc_prpl_pred", 0.0),
+            v_trg_kph,
+            CS.out.vEgo * CV.MS_TO_KPH,
+            CS.out.cruiseState.speed * CV.MS_TO_KPH,
+            FUSION_STOCK_MIN_V * CV.MS_TO_MPH,
+          )
+        )
+
+      can_sends.append(fordcan.create_acc_msg(self.packer, self.CAN, CC.longActive, gas, accel, stopping,
+                                              self.brake_request, v_ego_kph=v_trg_kph))
 
       self.accel = accel
       self.gas = gas

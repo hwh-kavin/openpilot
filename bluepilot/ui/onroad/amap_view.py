@@ -5,8 +5,9 @@ Heavy work (tile download, stitch, crop) runs in a separate
 lowest-priority process at 2Hz. Map frames are north-up; this widget
 uploads/blits RGBA and draws a GPS arrow rotated by bearing.
 
-Top-right Destination / Home / Work shortcuts navigate using
-NavSavedDestination / NavHome / NavWork.
+Top-right Destination / Home / Work shortcuts are the only way to
+start onroad navigation (copy into NavDestination). Active sessions
+are cleared on boot / onroad transition so the map never auto-navigates.
 """
 
 from __future__ import annotations
@@ -198,6 +199,18 @@ class AmapView(Widget):
     super()._handle_mouse_release(mouse_pos)
 
   def _render(self, rect: rl.Rectangle):
+    # Never let map drawing take down the whole UI process.
+    try:
+      self._render_inner(rect)
+    except Exception:
+      try:
+        rl.end_scissor_mode()
+      except Exception:
+        pass
+      rl.draw_rectangle(int(rect.x), int(rect.y), int(rect.width), int(rect.height), rl.Color(30, 30, 30, 255))
+      self._draw_placeholder(rect, "Map render error")
+
+  def _render_inner(self, rect: rl.Rectangle):
     view_w = max(64, min(int(rect.width), MAX_W))
     view_h = max(64, min(int(rect.height), MAX_H))
     self._enable = True
@@ -211,7 +224,7 @@ class AmapView(Widget):
     self._poll_header()
 
     if not self._gps_valid:
-      self._draw_placeholder(rect, "No GPS")
+      self._draw_placeholder(rect, "定位中...")
       self._draw_guidance(rect)
       self._draw_shortcuts(rect)
       self._poll_route_error()
@@ -224,7 +237,7 @@ class AmapView(Widget):
       dst = rl.Rectangle(rect.x, rect.y, rect.width, rect.height)
       rl.draw_texture_pro(self._texture, src, dst, rl.Vector2(0, 0), 0.0, rl.WHITE)
     else:
-      self._draw_placeholder(rect, "Loading map...")
+      self._draw_placeholder(rect, "地图加载中...")
 
     self._draw_gps_marker(rect)
     self._draw_guidance(rect)
@@ -262,7 +275,7 @@ class AmapView(Widget):
     if g.get("off_route"):
       bg = rl.Color(80, 40, 0, 220)
     rl.draw_rectangle_rounded(banner, 0.2, 8, bg)
-    rl.draw_rectangle_rounded_lines(banner, 0.2, 8, 2, rl.Color(255, 255, 255, 100))
+    rl.draw_rectangle_rounded_lines_ex(banner, 0.2, 8, 2, rl.Color(255, 255, 255, 100))
 
     # Icon circle
     cx = banner.x + 48

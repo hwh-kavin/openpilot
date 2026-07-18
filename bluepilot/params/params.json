@@ -71,6 +71,15 @@
       "enabled": true
     },
     {
+      "name": "FordStockAccFusion",
+      "default": false,
+      "type": "bool",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "ccProp": "stock_acc_fusion",
+      "create_default": true,
+      "enabled": true
+    },
+    {
       "name": "FordPrefSupportsHybridDrive",
       "default": false,
       "type": "bool",
