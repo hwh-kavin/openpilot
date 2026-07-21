@@ -44,5 +44,9 @@ def manage_sunnylinkd():
     params.remove(SUNNYLINKD_PID_PARAM)
 
 
-if __name__ == '__main__':
+def main():
   manage_sunnylinkd()
+
+
+if __name__ == '__main__':
+  main()

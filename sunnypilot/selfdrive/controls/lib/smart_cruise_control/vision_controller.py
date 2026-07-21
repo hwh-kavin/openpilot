@@ -143,8 +143,26 @@ class SmartCruiseControlVision:
     near_pred = predicted_lat_accels[near_mask] if np.any(near_mask) else predicted_lat_accels
     far_pred = predicted_lat_accels[far_mask] if np.any(far_mask) else predicted_lat_accels
 
+    # Adaptive percentile: use model uncertainty (yaw_rate std) to boost percentile.
+    # Higher relative uncertainty → higher percentile → more conservative deceleration.
+    z_std = np.asarray(sm['modelV2'].orientationRate.zStd, dtype=float)
     raw_near_pred = float(np.percentile(near_pred, _ENTER_PRED_PERCENTILE))
     raw_far_pred = float(np.percentile(far_pred, _FAR_PRED_PERCENTILE))
+    if len(z_std) > 0:
+      near_std = z_std[near_mask[:len(z_std)]] if np.any(near_mask) else z_std
+      far_std = z_std[far_mask[:len(z_std)]] if np.any(far_mask) else z_std
+      # Coefficient of variation: cv = σ / |μ|.  Cap at zero yaw to avoid division issues.
+      near_mean = float(np.mean(np.abs(rate_plan[near_mask]))) if np.any(near_mask) else 0.0
+      far_mean = float(np.mean(np.abs(rate_plan[far_mask]))) if np.any(far_mask) else 0.0
+      near_cv = float(np.mean(near_std)) / max(near_mean, 1e-6)
+      far_cv = float(np.mean(far_std)) / max(far_mean, 1e-6)
+      # Map cv to percentile boost: cv=0 → 0, cv≥1 → +5pp
+      near_boost = float(np.clip(near_cv * 5.0, 0.0, 5.0))
+      far_boost = float(np.clip(far_cv * 5.0, 0.0, 5.0))
+      near_pct = int(np.clip(_ENTER_PRED_PERCENTILE + near_boost, 90, 99))
+      far_pct = int(np.clip(_FAR_PRED_PERCENTILE + far_boost, 90, 99))
+      raw_near_pred = float(np.percentile(near_pred, near_pct))
+      raw_far_pred = float(np.percentile(far_pred, far_pct))
     if not self._pred_enter_filter.initialized:
       self._pred_enter_filter.update(raw_near_pred)
     if not self._pred_far_filter.initialized:

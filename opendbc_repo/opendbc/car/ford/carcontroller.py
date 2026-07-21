@@ -234,6 +234,12 @@ class CarController(CarControllerBase):
     elif (CC.cruiseControl.resume or induce_stock_resume) and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, resume=True))
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, resume=True))
+    # Persistent 1Hz resume while ACC enabled and at standstill — lets stock ACC pull
+    # away as soon as the lead moves, without waiting for shouldStop → False.
+    # Only active when FordStockAccFusion is enabled; otherwise relies on OP vision start.
+    elif self._fusion_enabled and CC.enabled and CS.out.cruiseState.standstill and (self.frame % 100) == 0:
+      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, resume=True))
+      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, resume=True))
     # if stock lane centering isn't off, send a button press to toggle it off
     # the stock system checks for steering pressed, and eventually disengages cruise control
     elif CS.acc_tja_status_stock_values["Tja_D_Stat"] != 0 and (self.frame % CarControllerParams.ACC_UI_STEP) == 0:

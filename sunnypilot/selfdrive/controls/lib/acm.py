@@ -3,7 +3,6 @@ import numpy as np
 from cereal import log, custom
 
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
-  PITCH_STOP_DISTANCE_MAX,
   get_coast_accel,
   get_safe_obstacle_distance,
   get_stopped_equivalence_factor,
@@ -91,26 +90,26 @@ def compute_lead_ttc(lead, v_ego: float) -> float | None:
   return lead.dRel / _lead_closing_speed(v_ego, lead.vLead)
 
 
-def compute_safe_distance_A(v_ego: float, t_follow: float, pitch: float | None = None) -> float:
-  return get_safe_obstacle_distance(v_ego, t_follow, pitch)
+def compute_safe_distance_A(v_ego: float, t_follow: float) -> float:
+  return get_safe_obstacle_distance(v_ego, t_follow)
 
 
-def compute_lead_ratio(lead, v_ego: float, t_follow: float, pitch: float | None = None) -> float | None:
+def compute_lead_ratio(lead, v_ego: float, t_follow: float) -> float | None:
   if not lead or not lead.status:
     return None
-  desired_dist = compute_safe_distance_A(v_ego, t_follow, pitch)
+  desired_dist = compute_safe_distance_A(v_ego, t_follow)
   lead_obstacle_dist = lead.dRel + get_stopped_equivalence_factor(lead.vLead)
   if desired_dist < 0.1:
     return 10.0
   return lead_obstacle_dist / desired_dist
 
 
-def compute_coast_strength(lead, v_ego: float, t_follow: float, pitch: float | None = None) -> float:
+def compute_coast_strength(lead, v_ego: float, t_follow: float) -> float:
   if not lead or not lead.status:
     return 1.0
 
   ttc = compute_lead_ttc(lead, v_ego)
-  ratio = compute_lead_ratio(lead, v_ego, t_follow, pitch)
+  ratio = compute_lead_ratio(lead, v_ego, t_follow)
   if ttc is None or ratio is None:
     return 1.0
 
@@ -125,8 +124,7 @@ def compute_coast_strength(lead, v_ego: float, t_follow: float, pitch: float | N
 
 def compute_follow_margin(strength: float, pitch: float) -> float:
   base = FOLLOW_COAST_MARGIN_BASE + strength * FOLLOW_COAST_MARGIN_STRENGTH
-  pitch_bonus = float(np.clip(abs(pitch) / PITCH_STOP_DISTANCE_MAX, 0.0, 1.0)) * FOLLOW_COAST_MARGIN_PITCH
-  return base + pitch_bonus
+  return base
 
 
 # =========================================================
@@ -167,7 +165,7 @@ class CoastingLogic:
       return
 
     has_lead = lead is not None and lead.status
-    self.coast_strength = compute_coast_strength(lead, v_ego, t_follow, pitch) if has_lead else 1.0
+    self.coast_strength = compute_coast_strength(lead, v_ego, t_follow) if has_lead else 1.0
 
     if current_pitch < PITCH_DOWNHILL_THRESHOLD:
       self.current_max_offset = SPEED_OFFSET_MAX_DOWNHILL_KPH
@@ -228,7 +226,7 @@ class FollowCoastLogic:
       self.active = False
       return
 
-    safe_a = compute_safe_distance_A(v_ego, t_follow, pitch)
+    safe_a = compute_safe_distance_A(v_ego, t_follow)
     margin = compute_follow_margin(strength, pitch)
     lead_obstacle = lead.dRel + get_stopped_equivalence_factor(lead.vLead)
     ttc = compute_lead_ttc(lead, v_ego)
@@ -376,7 +374,7 @@ class SoftHoldLogic:
         is_lead_braking_strict = lead.aLeadK < -1.25 or is_lead_stopped
 
       current_ttc = compute_lead_ttc(lead, v_ego)
-      ratio = compute_lead_ratio(lead, v_ego, t_follow, current_pitch)
+      ratio = compute_lead_ratio(lead, v_ego, t_follow)
 
       if not should_cancel_soft_hold:
         if ratio > RATIO_ENTER_THRESHOLD:
@@ -504,7 +502,7 @@ class ACM:
     lead = rs.leadOne
     has_lead = lead is not None and lead.status
     t_follow = get_T_FOLLOW(personality)
-    strength = compute_coast_strength(lead, v_ego, t_follow, road_pitch) if has_lead else 1.0
+    strength = compute_coast_strength(lead, v_ego, t_follow) if has_lead else 1.0
 
     if self.coasting.check_emergency(lead, v_ego, current_time):
       self.comfort_state = ComfortState.MPC_FOLLOW

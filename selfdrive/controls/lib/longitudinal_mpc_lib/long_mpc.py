@@ -56,9 +56,6 @@ T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0  # legacy default; flat stop gap uses STOP_DISTANCE_FLAT
 STOP_DISTANCE_FLAT = 4.0
-STOP_DISTANCE_SLOPE_MAX = 6.0
-PITCH_STOP_DISTANCE_MAX = 0.080  # |pitch| (rad) at which stop distance reaches STOP_DISTANCE_SLOPE_MAX
-PITCH_STOP_DISTANCE_DEADZONE = 0.025  # ~1.4 deg; ignore mounting bias on flat roads
 STANDSTILL_HEADWAY_SPEED = 0.3  # below this, use stop buffer only (no time-headway inflation)
 PITCH_SMOOTH_ALPHA_UP = 0.30
 PITCH_SMOOTH_ALPHA_DOWN = 0.05
@@ -264,14 +261,8 @@ def get_stopped_equivalence_factor(v_lead):
 
 
 def get_stop_distance_for_pitch(pitch: float) -> float:
-  """Map road pitch to stop distance: 4 m on flat, up to 6 m on steep up/downhill."""
-  pitch_abs = abs(pitch)
-  if pitch_abs <= PITCH_STOP_DISTANCE_DEADZONE:
-    return STOP_DISTANCE_FLAT
-  effective_pitch = pitch_abs - PITCH_STOP_DISTANCE_DEADZONE
-  effective_max = PITCH_STOP_DISTANCE_MAX - PITCH_STOP_DISTANCE_DEADZONE
-  slope_factor = float(np.clip(effective_pitch / max(effective_max, 1e-6), 0.0, 1.0))
-  return STOP_DISTANCE_FLAT + slope_factor * (STOP_DISTANCE_SLOPE_MAX - STOP_DISTANCE_FLAT)
+  """Return fixed stop distance regardless of pitch."""
+  return STOP_DISTANCE_FLAT
 
 
 class RoadPitchFilter:
@@ -300,8 +291,8 @@ def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
 
-def get_safe_obstacle_distance(v_ego, t_follow, pitch: float | None = None):
-  stop_dist = get_stop_distance_for_pitch(0.0 if pitch is None else pitch)
+def get_safe_obstacle_distance(v_ego, t_follow):
+  stop_dist = STOP_DISTANCE_FLAT
   kinetic = (v_ego**2) / (2 * COMFORT_BRAKE)
   headway = t_follow * v_ego
   moving_dist = kinetic + headway + stop_dist
@@ -468,14 +459,10 @@ class LongitudinalMpc:
       self.solver.set(i, 'x', np.zeros(X_DIM))
 
     self.last_cloudlog_t = 0
-    self.status = False
     self.crash_cnt = 0.0
     self.solution_status = 0
     # timers
     self.solve_time = 0.0
-    self.time_qp_solution = 0.0
-    self.time_linearization = 0.0
-    self.time_integrator = 0.0
     self.x0 = np.zeros(X_DIM)
     self.set_weights()
 
@@ -548,7 +535,6 @@ class LongitudinalMpc:
              pitch: float | None = None):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
-    self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)
@@ -567,7 +553,7 @@ class LongitudinalMpc:
     v_upper = v_ego + (T_IDXS * cruise_max * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(
-      v_cruise_clipped, t_follow, pitch)
+      v_cruise_clipped, t_follow)
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
@@ -604,9 +590,6 @@ class LongitudinalMpc:
 
     self.solution_status = self.solver.solve()
     self.solve_time = float(self.solver.get_stats('time_tot')[0])
-    self.time_qp_solution = float(self.solver.get_stats('time_qp')[0])
-    self.time_linearization = float(self.solver.get_stats('time_lin')[0])
-    self.time_integrator = float(self.solver.get_stats('time_sim')[0])
 
     for i in range(N+1):
       self.x_sol[i] = self.solver.get(i, 'x')
