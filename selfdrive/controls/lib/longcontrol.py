@@ -16,6 +16,12 @@ def long_control_state_trans(CP, CP_SP, active, long_control_state, v_ego,
   # Gas Interceptor
   cruise_standstill = cruise_standstill and not CP_SP.enableGasInterceptor
 
+  # Once the planner wants to go, do not stay locked in stopping solely because the
+  # PCM still reports cruise standstill. controlsd sends resume; holding stopAccel
+  # deadlocks some PCMs (Ford AccStopMde with stock ACC fusion).
+  if CP.autoResumeSng and not should_stop:
+    cruise_standstill = False
+
   starting_condition = (not should_stop and
                         not cruise_standstill and
                         not brake_pressed)

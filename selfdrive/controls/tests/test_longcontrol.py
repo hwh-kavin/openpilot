@@ -23,6 +23,11 @@ class TestLongControlStateTransition:
     next_state = long_control_state_trans(CP, CP_SP, active, current_state, v_ego=1.0,
                              should_stop=False, brake_pressed=False, cruise_standstill=False)
     assert next_state == LongCtrlState.pid
+    # autoResumeSng: planner go must not stay blocked by PCM standstill latch
+    CP.autoResumeSng = True
+    next_state = long_control_state_trans(CP, CP_SP, active, current_state, v_ego=0.1,
+                             should_stop=False, brake_pressed=False, cruise_standstill=True)
+    assert next_state == LongCtrlState.pid
     active = False
     next_state = long_control_state_trans(CP, CP_SP, active, current_state, v_ego=1.0,
                              should_stop=False, brake_pressed=False, cruise_standstill=False)

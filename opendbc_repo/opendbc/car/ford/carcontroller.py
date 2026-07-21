@@ -24,6 +24,8 @@ FUSION_STOCK_MIN_V = 20.0 * CV.MPH_TO_MS  # ~8.94 m/s
 # After a follow-stop, hand back from OP pullaway once moving (session already active)
 FUSION_STOP_GO_RELEASE_V = 3.0  # m/s
 FUSION_STOCK_GO_THRESH = 0.05  # m/s^2 — treat stock AccPrpl as "wants go"
+# Floor accel when planner wants go but LongControl is still in stopping hold (-2 m/s^2)
+FUSION_OP_PULLAWAY_ACCEL = 0.4  # m/s^2
 PARAMS_UPDATE_FRAMES = 100  # ~1s at 100Hz
 LOG_EVERY_FRAMES = 100
 
@@ -75,6 +77,8 @@ def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool 
   """
   op_a = float(op_a)
   if stock_a is None:
+    if stop_go_op:
+      return float(min(max(op_a, FUSION_OP_PULLAWAY_ACCEL), FUSION_ACCEL_SOFT_MAX)), "op_go"
     return op_a, "op_only"
 
   stock_a = float(stock_a)
@@ -83,9 +87,10 @@ def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool 
   if stock_auto_resume and stock_a > FUSION_STOCK_GO_THRESH:
     return float(min(stock_a, FUSION_ACCEL_SOFT_MAX)), "stock_go"
 
-  # Stock not pulling away: do not let a stuck stock hold/zero block OP pullaway
+  # Stock not pulling away: do not let a stuck stock hold/zero block OP pullaway.
+  # op_a may already be floored by the caller when LongControl is still stopping.
   if stop_go_op and op_a > stock_a + 1e-3:
-    fused = min(op_a, FUSION_ACCEL_SOFT_MAX)
+    fused = min(max(op_a, FUSION_OP_PULLAWAY_ACCEL), FUSION_ACCEL_SOFT_MAX)
     return float(fused), "op_go"
 
   fused = min(op_a, stock_a, FUSION_ACCEL_SOFT_MAX)
@@ -314,14 +319,19 @@ class CarController(CarControllerBase):
         stock_wants_go = stock_a is not None and stock_a > FUSION_STOCK_GO_THRESH
         # Prefer stock pullaway anytime during stop-go if stock requests go (avoids OP hold deadlock)
         stock_pullaway = self._fusion_stop_go and stock_wants_go
-        # If stock is not pulling away, OP may force go once it wants positive accel / starting
+        # Planner cleared shouldStop → controlsd sets resume. LongControl may still output
+        # stopping hold (-2) while cruiseState.standstill is latched — floor a pullaway accel.
+        planner_wants_go = bool(CC.cruiseControl.resume)
         stop_go_op = (
           self._fusion_stop_go and
           (not stock_pullaway) and
-          (long_state == LongCtrlState.starting or op_accel > 0.05)
+          (long_state == LongCtrlState.starting or op_accel > 0.05 or planner_wants_go)
         )
+        op_for_fuse = op_accel
+        if stop_go_op and op_for_fuse < FUSION_OP_PULLAWAY_ACCEL:
+          op_for_fuse = FUSION_OP_PULLAWAY_ACCEL
         accel, fusion_mode = fuse_stock_op_accel(
-          op_accel, stock_a,
+          op_for_fuse, stock_a,
           stop_go_op=stop_go_op,
           stock_auto_resume=stock_pullaway,
         )
@@ -333,15 +343,23 @@ class CarController(CarControllerBase):
         self._stock_acc_session = False
       self._last_fusion_mode = fusion_mode
 
+      pulling_away = fusion_mode in ("stock_go", "op_go")
+
       if CC.longActive:
         # Compensate for engine creep at low speed.
         # Either the ABS does not account for engine creep, or the correction is very slow
         # TODO: verify this applies to EV/hybrid
-        accel = apply_creep_compensation(accel, CS.out.vEgo)
+        # Skip during stop-go pullaway: creep at standstill subtracts up to 0.6 m/s^2 and
+        # turns mild stock_go (0.06–0.2) into braking, which deadlocks AccStopMde.
+        if not pulling_away:
+          accel = apply_creep_compensation(accel, CS.out.vEgo)
 
         # The stock system has been seen rate limiting the brake accel to 5 m/s^3,
         # however even 3.5 m/s^3 causes some overshoot with a step response.
         accel = max(accel, self.accel - (3.5 * CarControllerParams.ACC_CONTROL_STEP * DT_CTRL))
+        if pulling_away:
+          # Keep gas/brake channels aligned so creep-skip cannot leave gas>0 with brake_request
+          gas = accel
 
       accel = float(np.clip(accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
       gas = float(np.clip(gas, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
@@ -356,14 +374,14 @@ class CarController(CarControllerBase):
         accel_due_to_pitch = math.sin(CC.orientationNED[1]) * ACCELERATION_DUE_TO_GRAVITY
 
       accel_pitch_compensated = accel + accel_due_to_pitch
-      if accel_pitch_compensated > 0.3 or not CC.longActive:
+      if pulling_away or accel_pitch_compensated > 0.3 or not CC.longActive:
         self.brake_request = False
       elif accel_pitch_compensated < 0.0:
         self.brake_request = True
 
       stopping = long_state == LongCtrlState.stopping
       # Stock auto-resume / OP pullaway: clear stop request so PCM can move
-      if fusion_mode in ("stock_go", "op_go"):
+      if pulling_away:
         stopping = False
 
       # With fusion: send real cruise / stock target speed (helps TCM upshift). Else keep legacy max.

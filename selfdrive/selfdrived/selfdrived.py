@@ -105,6 +105,11 @@ class SelfdriveD(CruiseHelper):
     # Driver monitoring disabled: driver camera is not started
     if self.params.get_bool("DriverModelEnable"):
       ignore += ['driverCameraState']
+    # plannerd publishes these only after modelV2 is flowing — ignore until first valid
+    # set so early ACC engage does not trip "Communication Issue Between Processes".
+    self.planner_packets = ['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP']
+    self.planner_ready = False
+    ignore += self.planner_packets
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'liveCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
@@ -132,6 +137,7 @@ class SelfdriveD(CruiseHelper):
     self.events = Events()
 
     self.initialized = False
+    self.initialized_frame = 0
     self.enabled = False
     self.active = False
     self.mismatch_counter = 0
@@ -424,6 +430,14 @@ class SelfdriveD(CruiseHelper):
       if logs != self.logged_comm_issue:
         cloudlog.event("commIssue", error=True, **logs)
         self.logged_comm_issue = logs
+        try:
+          from openpilot.common.error_log import append_error_log
+          append_error_log(
+            "commIssue invalid=%s not_alive=%s not_freq_ok=%s" % (
+              logs['invalid'], logs['not_alive'], logs['not_freq_ok']),
+          )
+        except Exception:
+          pass
     else:
       self.logged_comm_issue = None
 
@@ -507,6 +521,19 @@ class SelfdriveD(CruiseHelper):
 
     self.sm.update(0)
 
+    # Enable plannerd health checks once plans are valid, or after a post-init grace.
+    # Avoids NO_ENTRY "Communication Issue ... longitudinalPlan, driverAssistance, longitudinalPlanSP"
+    # when ACC is engaged before modeld/plannerd have published.
+    if not self.planner_ready:
+      plans_ok = all(self.sm.alive.get(p, False) and self.sm.valid.get(p, False) for p in self.planner_packets)
+      grace_done = self.initialized and (self.sm.frame - self.initialized_frame) > int(12. / DT_CTRL)
+      if plans_ok or grace_done:
+        self.planner_ready = True
+        for p in self.planner_packets:
+          for lst in (self.sm.ignore_alive, self.sm.ignore_valid, self.sm.ignore_average_freq):
+            while p in lst:
+              lst.remove(p)
+
     if not self.initialized:
       all_valid = CS.canValid and self.sm.all_checks()
       timed_out = self.sm.frame * DT_CTRL > 6.
@@ -523,6 +550,7 @@ class SelfdriveD(CruiseHelper):
           self.state_machine.state = State.enabled
 
         self.initialized = True
+        self.initialized_frame = self.sm.frame
         cloudlog.event(
           "selfdrived.initialized",
           dt=self.sm.frame*DT_CTRL,
