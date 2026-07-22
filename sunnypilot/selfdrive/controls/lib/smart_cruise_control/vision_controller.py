@@ -15,17 +15,25 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
+from opendbc.car import structs
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  apply_lat_capability_v_cap,
+  apply_model_uncertainty_v_cap,
   cap_vel_plan_for_scc,
   combine_scc_model_actual_lat_acc,
   compute_actual_lat_accel,
+  compute_curve_lat_acc_uncertainty,
   compute_scc_curve_v_target,
   compute_scc_passable_speed,
+  compute_steer_angle_lat_accel,
   get_scc_abort_enter_lat_acc_th,
   get_scc_accel_scale,
   get_scc_early_abort_lat_acc_th,
+  get_scc_early_enter_lat_acc_th,
   get_scc_enter_lat_acc_th,
   get_scc_lat_accel_max,
+  inflate_lat_acc_with_uncertainty,
+  inflate_pred_lat_accels_with_uncertainty,
 )
 
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
@@ -78,8 +86,9 @@ class SmartCruiseControlVision:
   output_v_target: float = V_CRUISE_UNSET
   output_a_target: float = 0.
 
-  def __init__(self):
+  def __init__(self, CP=None):
     self.params = Params()
+    self.CP = CP if CP is not None else structs.CarParams()
     self.frame = -1
     self.long_enabled = False
     self.long_override = False
@@ -95,11 +104,21 @@ class SmartCruiseControlVision:
     self.max_pred_lat_acc_far = 0.
     self.actual_lat_acc = 0.
     self.lat_acc_for_v = 0.
+    self.curve_lat_acc_unc = 0.
     self.v_passable = 0.
     self._a_target_filter = FirstOrderFilter(0.0, _A_TARGET_FILTER_RC, DT_MDL, initialized=False)
     self._v_target_filter = FirstOrderFilter(0.0, _V_TARGET_FILTER_RC, DT_MDL, initialized=False)
     self._pred_enter_filter = FirstOrderFilter(0.0, _PRED_ENTER_FILTER_RC, DT_MDL, initialized=False)
     self._pred_far_filter = FirstOrderFilter(0.0, _PRED_ENTER_FILTER_RC, DT_MDL, initialized=False)
+
+  @staticmethod
+  def _lateral_saturated(controls_state) -> bool:
+    try:
+      which = controls_state.lateralControlState.which()
+      lac = getattr(controls_state.lateralControlState, which)
+      return bool(getattr(lac, 'saturated', False))
+    except Exception:
+      return False
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
@@ -130,8 +149,18 @@ class SmartCruiseControlVision:
     vel_plan = cap_vel_plan_for_scc(np.array(sm['modelV2'].velocity.x), self.v_ego)
     pos_plan = np.array(sm['modelV2'].position.x)
 
-    self.current_lat_acc = compute_actual_lat_accel(self.v_ego, sm['controlsState'].curvature)
-    self.actual_lat_acc = self.current_lat_acc
+    cs = sm['controlsState']
+    a_path = compute_actual_lat_accel(self.v_ego, cs.curvature)
+    a_steer = compute_steer_angle_lat_accel(
+      self.v_ego,
+      sm['carState'].steeringAngleDeg,
+      sm['liveParameters'].angleOffsetDeg,
+      self.CP.steerRatio,
+      self.CP.wheelbase,
+    )
+    # Path curvature for state transitions; fuse path + steer angle for speed target.
+    self.current_lat_acc = a_path
+    self.actual_lat_acc = max(a_path, a_steer)
 
     predicted_lat_accels = rate_plan * vel_plan
     t_idxs = np.array(ModelConstants.T_IDXS[:len(predicted_lat_accels)])
@@ -148,6 +177,7 @@ class SmartCruiseControlVision:
     z_std = np.asarray(sm['modelV2'].orientationRate.zStd, dtype=float)
     raw_near_pred = float(np.percentile(near_pred, _ENTER_PRED_PERCENTILE))
     raw_far_pred = float(np.percentile(far_pred, _FAR_PRED_PERCENTILE))
+    near_unc = 0.0
     if len(z_std) > 0:
       near_std = z_std[near_mask[:len(z_std)]] if np.any(near_mask) else z_std
       far_std = z_std[far_mask[:len(z_std)]] if np.any(far_mask) else z_std
@@ -163,6 +193,8 @@ class SmartCruiseControlVision:
       far_pct = int(np.clip(_FAR_PRED_PERCENTILE + far_boost, 90, 99))
       raw_near_pred = float(np.percentile(near_pred, near_pct))
       raw_far_pred = float(np.percentile(far_pred, far_pct))
+      near_unc = compute_curve_lat_acc_uncertainty(z_std, vel_plan, near_mask)
+    self.curve_lat_acc_unc = near_unc
     if not self._pred_enter_filter.initialized:
       self._pred_enter_filter.update(raw_near_pred)
     if not self._pred_far_filter.initialized:
@@ -170,10 +202,25 @@ class SmartCruiseControlVision:
     self.max_pred_lat_acc_enter = self._update_pred_filter(self._pred_enter_filter, raw_near_pred)
     self.max_pred_lat_acc_far = self._update_pred_filter(self._pred_far_filter, raw_far_pred)
 
+    # Inflate predicted lat accel with absolute uncertainty so unclear curves slow earlier.
     model_lat_acc = max(self.max_pred_lat_acc_enter, self.max_pred_lat_acc)
+    model_lat_acc = inflate_lat_acc_with_uncertainty(model_lat_acc, near_unc)
+    predicted_for_v = inflate_pred_lat_accels_with_uncertainty(predicted_lat_accels, z_std, vel_plan)
+
     self.lat_acc_for_v = combine_scc_model_actual_lat_acc(model_lat_acc, self.actual_lat_acc, personality)
     self.v_target = compute_scc_curve_v_target(
-      self.v_ego, self.lat_acc_for_v, personality, MIN_V, pos_plan, predicted_lat_accels, vel_plan)
+      self.v_ego, self.lat_acc_for_v, personality, MIN_V, pos_plan, predicted_for_v, vel_plan)
+    self.v_target = apply_lat_capability_v_cap(
+      self.v_target, self.v_ego, cs.desiredCurvature, cs.curvature,
+      self._lateral_saturated(cs), personality, MIN_V)
+    # Extra speed cut only in curve context (avoid highway noise false decel).
+    curve_ctx = (
+      self.lat_acc_for_v > get_scc_abort_enter_lat_acc_th(personality) or
+      self.max_pred_lat_acc_enter > get_scc_early_enter_lat_acc_th(personality) or
+      self.actual_lat_acc > get_scc_abort_enter_lat_acc_th(personality)
+    )
+    if curve_ctx and near_unc > 0.0:
+      self.v_target = apply_model_uncertainty_v_cap(self.v_target, near_unc, MIN_V)
     self.v_passable = self.v_target
 
   def _update_state_machine(self, personality) -> tuple[bool, bool]:

@@ -32,7 +32,11 @@ class CarControllerParams:
     ([5, 25], [0.00045, 0.0001]),
     ([5, 25], [0.00045, 0.00015])
   )
+  # Faster |κ| reduction after apex; still within Ford EPS down-rate capability
+  UNWIND_ANGLE_RATE_LIMIT_DOWN = ([5, 25], [0.00045, 0.00018])
   CURVATURE_ERROR = 0.002  # ~6 degrees at 10 m/s, ~10 degrees at 35 m/s
+  # Looser bound vs yaw κ when |κ| is decreasing (exit); tight side stays at CURVATURE_ERROR
+  CURVATURE_ERROR_UNWIND = 0.004
 
   ACCEL_MAX = 2.0               # m/s^2 max acceleration
   ACCEL_MIN = -3.5              # m/s^2 max deceleration

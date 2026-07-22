@@ -200,8 +200,26 @@ bool steer_angle_cmd_checks(int desired_angle, bool steer_control_enabled, const
       const int delta_angle_down_relaxed = (safety_interpolate(limits.angle_rate_down_lookup, fudged_speed_error) * limits.angle_deg_to_can) - 1.;
 
       // the minimum and maximum angle allowed based on the measured angle
-      const int lowest_desired_angle_error = angle_meas.min - limits.max_angle_error - 1;
-      const int highest_desired_angle_error = angle_meas.max + limits.max_angle_error + 1;
+      int error_lo = limits.max_angle_error;
+      int error_hi = limits.max_angle_error;
+      // Ford curvature: allow a looser band on the unwind side when |cmd| is decreasing
+      const bool meaningful_cmd = SAFETY_ABS(desired_angle_last) > (limits.max_angle_error + (limits.max_angle_error / 2));
+      if (limits.enforce_angle_error && meaningful_cmd &&
+          ((desired_angle_last > 0 && desired_angle > 0 && desired_angle < desired_angle_last) ||
+           (desired_angle_last < 0 && desired_angle < 0 && desired_angle > desired_angle_last) ||
+           (desired_angle_last > 0 && desired_angle <= 0) ||
+           (desired_angle_last < 0 && desired_angle >= 0))) {
+        if (desired_angle_last > 0) {
+          error_lo = limits.max_angle_error * 2;
+        } else if (desired_angle_last < 0) {
+          error_hi = limits.max_angle_error * 2;
+        } else {
+          error_lo = limits.max_angle_error * 2;
+          error_hi = limits.max_angle_error * 2;
+        }
+      }
+      const int lowest_desired_angle_error = angle_meas.min - error_lo - 1;
+      const int highest_desired_angle_error = angle_meas.max + error_hi + 1;
 
       // the MAX is to allow the desired angle to hit the edge of the bounds and not require going under it
       if (desired_angle_last > highest_desired_angle_error) {

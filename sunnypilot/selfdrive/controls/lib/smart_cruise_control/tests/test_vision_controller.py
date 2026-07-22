@@ -95,6 +95,7 @@ def generate_carState():
   car_state.carState.vEgo = float(speed)
   car_state.carState.standstill = False
   car_state.carState.vCruise = float(v_cruise * 3.6)
+  car_state.carState.steeringAngleDeg = 0.0
 
   return car_state
 
@@ -102,8 +103,15 @@ def generate_carState():
 def generate_controlsState():
   controls_state = messaging.new_message('controlsState')
   controls_state.controlsState.curvature = 0.05
+  controls_state.controlsState.desiredCurvature = 0.05
 
   return controls_state
+
+
+def generate_liveParameters():
+  lp = messaging.new_message('liveParameters')
+  lp.liveParameters.angleOffsetDeg = 0.0
+  return lp
 
 
 def generate_selfdriveState():
@@ -112,22 +120,32 @@ def generate_selfdriveState():
   return ss
 
 
+def _ford_like_cp():
+  from opendbc.car import structs
+  CP = structs.CarParams()
+  CP.steerRatio = 14.8
+  CP.wheelbase = 2.7
+  return CP
+
+
 class TestSmartCruiseControlVision:
 
   def setup_method(self):
     self.params = Params()
     self.reset_params()
-    self.scc_v = SmartCruiseControlVision()
+    self.scc_v = SmartCruiseControlVision(_ford_like_cp())
 
     mdl = generate_modelV2()
     cs = generate_carState()
     controls_state = generate_controlsState()
     ss = generate_selfdriveState()
+    lp = generate_liveParameters()
     self.sm = {
       'modelV2': mdl.modelV2,
       'carState': cs.carState,
       'controlsState': controls_state.controlsState,
       'selfdriveState': ss.selfdriveState,
+      'liveParameters': lp.liveParameters,
     }
 
   def reset_params(self):
@@ -245,3 +263,61 @@ class TestSmartCruiseControlVision:
     assert self.scc_v.actual_lat_acc > get_scc_enter_lat_acc_th(log.LongitudinalPersonality.standard)
     assert self.scc_v.v_ego > self.scc_v.v_passable
     assert self.scc_v.state == VisionState.entering
+
+  def test_v_target_never_below_min_v(self):
+    n = len(ModelConstants.T_IDXS)
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [8.0 for _ in range(n)]
+    self.sm["modelV2"] = mdl.modelV2
+    self.sm["controlsState"].curvature = 0.2
+    self.sm["controlsState"].desiredCurvature = 0.2
+
+    v_ego = 27.8
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.v_target >= MIN_V
+    assert self.scc_v.v_passable >= MIN_V
+    if self.scc_v.is_active:
+      assert self.scc_v.output_v_target >= MIN_V
+
+  def test_steer_angle_raises_actual_lat_acc(self):
+    n = len(ModelConstants.T_IDXS)
+    mdl = generate_modelV2()
+    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [0.5 for _ in range(n)]
+    self.sm["modelV2"] = mdl.modelV2
+    self.sm["controlsState"].curvature = 0.0
+    self.sm["carState"].steeringAngleDeg = 120.0
+
+    v_ego = 20.0
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    assert self.scc_v.actual_lat_acc > 0.5
+
+  def test_high_yaw_uncertainty_lowers_v_passable_in_curve(self):
+    n = len(ModelConstants.T_IDXS)
+    mdl = generate_modelV2()
+    # Mild curve mean; higher yaw-rate std inflates effective lat accel → lower v.
+    mdl.modelV2.velocity.x = [25.0 for _ in range(n)]
+    mdl.modelV2.orientationRate.z = [0.06 for _ in range(n)]  # a ≈ 1.5
+    mdl.modelV2.orientationRate.zStd = [0.0 for _ in range(n)]
+    self.sm["modelV2"] = mdl.modelV2
+    self.sm["controlsState"].curvature = 0.0024
+    self.sm["controlsState"].desiredCurvature = 0.0024
+
+    v_ego = 25.0
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    v_certain = self.scc_v.v_passable
+
+    mdl.modelV2.orientationRate.zStd = [0.04 for _ in range(n)]  # σ_a ≈ 1.0
+    self.sm["modelV2"] = mdl.modelV2
+    self.scc_v = SmartCruiseControlVision(_ford_like_cp())
+    self.scc_v.enabled = True
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    v_uncertain = self.scc_v.v_passable
+
+    assert self.scc_v.curve_lat_acc_unc > 0.5
+    assert v_certain > MIN_V
+    assert v_uncertain < v_certain
+    assert v_uncertain >= MIN_V

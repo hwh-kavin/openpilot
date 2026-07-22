@@ -86,6 +86,66 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     raise NotImplementedError("Longitudinal personality not supported")
 
 
+# Ford + FordStockAccFusion: speed-based follow time gap (no gap-button / personality distance)
+_FORD_AUTO_T_FOLLOW_V_KPH = [0., 20., 40., 60., 80., 100.]
+_FORD_AUTO_T_FOLLOW = [1.20, 1.30, 1.40, 1.50, 1.60, 1.70]
+_FORD_FOLLOW_BARS_HOLD_S = 1.0
+
+
+def is_ford_auto_follow_gap(params, CP) -> bool:
+  """True when Ford stock fusion should use speed-based t_follow instead of personality."""
+  if not getattr(CP, 'openpilotLongitudinalControl', False):
+    return False
+  if 'FORD' not in CP.carFingerprint:
+    return False
+  try:
+    return bool(params.get_bool("FordStockAccFusion"))
+  except Exception:
+    return False
+
+
+def get_t_follow_auto(v_ego: float, standstill: bool = False) -> float:
+  """Continuous t_follow from speed (m/s). Standstill uses minimum gap."""
+  from opendbc.car.common.conversions import Conversions as CV
+  if standstill:
+    return float(_FORD_AUTO_T_FOLLOW[0])
+  v_kph = max(0.0, v_ego * CV.MS_TO_KPH)
+  return float(np.interp(v_kph, _FORD_AUTO_T_FOLLOW_V_KPH, _FORD_AUTO_T_FOLLOW))
+
+
+def resolve_t_follow(v_ego: float, standstill: bool, personality, params, CP) -> float:
+  if is_ford_auto_follow_gap(params, CP):
+    return get_t_follow_auto(v_ego, standstill)
+  return get_T_FOLLOW(personality)
+
+
+def _t_follow_to_bars_target(t_follow: float) -> int:
+  if t_follow <= 1.28:
+    return 1
+  if t_follow <= 1.42:
+    return 2
+  if t_follow <= 1.58:
+    return 3
+  return 4
+
+
+class FordFollowBarsDisplay:
+  """Smooth Ford IPC 1–4 bar display for auto t_follow."""
+
+  def __init__(self):
+    self.bars = 3
+    self._last_change = 0.0
+
+  def update(self, t_follow: float, standstill: bool) -> int:
+    target = 1 if standstill else _t_follow_to_bars_target(t_follow)
+    now = time.monotonic()
+    if target != self.bars:
+      if (now - self._last_change) >= _FORD_FOLLOW_BARS_HOLD_S or abs(target - self.bars) > 1:
+        self.bars = target
+        self._last_change = now
+    return self.bars
+
+
 def _personality_max_accel_vals(personality=log.LongitudinalPersonality.standard):
   if personality == log.LongitudinalPersonality.relaxed:
     return [1.0, 0.85, 0.65, 0.50]
@@ -197,6 +257,93 @@ def compute_actual_lat_accel(v_ego: float, curvature: float) -> float:
   """Lateral acceleration from measured path curvature (steering / yaw). a = v²κ."""
   v_ego = max(float(v_ego), 0.1)
   return v_ego ** 2 * abs(float(curvature))
+
+
+def compute_steer_angle_lat_accel(v_ego: float, steer_angle_deg: float, angle_offset_deg: float,
+                                  steer_ratio: float, wheelbase: float) -> float:
+  """Lateral accel from bicycle-model steering angle. Same form as limit_accel_in_turns."""
+  from openpilot.common.constants import CV
+  v_ego = max(float(v_ego), 0.1)
+  steer_ratio = max(float(steer_ratio), 1e-3)
+  wheelbase = max(float(wheelbase), 1e-3)
+  angle_rad = (float(steer_angle_deg) - float(angle_offset_deg)) * CV.DEG_TO_RAD
+  return abs(v_ego ** 2 * angle_rad / (steer_ratio * wheelbase))
+
+
+_LAT_CAPABILITY_TRACKING_FACTOR = 0.95
+_LAT_CAPABILITY_KAPPA_EPS = 1e-4
+
+# Model curve uncertainty (orientationRate.zStd → lat-accel σ ≈ zStd * v).
+_CURVE_UNCERTAINTY_GAIN = 1.0          # add 1σ to effective predicted lat accel
+_CURVE_UNCERTAINTY_V_SCALE_MAX = 0.18  # up to 18% extra speed cut
+_CURVE_UNCERTAINTY_REF = 1.0          # m/s² σ that maps to full scale-down
+
+
+def compute_curve_lat_acc_uncertainty(z_std, vel_plan, mask=None) -> float:
+  """Mean predicted lateral-accel std from yaw-rate std and planned speed."""
+  z_std = np.asarray(z_std, dtype=np.float64).reshape(-1)
+  vel = np.asarray(vel_plan, dtype=np.float64).reshape(-1)
+  n = min(len(z_std), len(vel))
+  if n == 0:
+    return 0.0
+  z_std = np.abs(z_std[:n])
+  vel = np.abs(vel[:n])
+  if mask is not None:
+    m = np.asarray(mask, dtype=bool).reshape(-1)[:n]
+    if np.any(m):
+      z_std = z_std[m]
+      vel = vel[m]
+    else:
+      return 0.0
+  return float(np.mean(z_std * vel))
+
+
+def inflate_lat_acc_with_uncertainty(lat_acc: float, lat_acc_unc: float,
+                                     gain: float = _CURVE_UNCERTAINTY_GAIN) -> float:
+  """Raise effective lat accel by a multiple of prediction uncertainty (safer v_corner)."""
+  return max(0.0, float(lat_acc)) + float(gain) * max(0.0, float(lat_acc_unc))
+
+
+def inflate_pred_lat_accels_with_uncertainty(predicted_lat_accels: np.ndarray, z_std, vel_plan,
+                                             gain: float = _CURVE_UNCERTAINTY_GAIN) -> np.ndarray:
+  """Per-horizon: a_eff = a_pred + gain * zStd * v."""
+  pred = np.asarray(predicted_lat_accels, dtype=np.float64).copy()
+  z_std = np.asarray(z_std, dtype=np.float64).reshape(-1)
+  vel = np.asarray(vel_plan, dtype=np.float64).reshape(-1)
+  n = min(len(pred), len(z_std), len(vel))
+  if n == 0:
+    return pred
+  pred[:n] = pred[:n] + float(gain) * np.abs(z_std[:n]) * np.abs(vel[:n])
+  return pred
+
+
+def apply_model_uncertainty_v_cap(v_target: float, lat_acc_unc: float, min_v: float = 0.,
+                                  ref_unc: float = _CURVE_UNCERTAINTY_REF,
+                                  max_scale: float = _CURVE_UNCERTAINTY_V_SCALE_MAX) -> float:
+  """Scale down curve speed as lat-accel prediction uncertainty rises."""
+  u = float(np.clip(float(lat_acc_unc) / max(float(ref_unc), 1e-3), 0.0, 1.0))
+  factor = 1.0 - float(max_scale) * u
+  return max(float(min_v), float(v_target) * factor)
+
+
+def apply_lat_capability_v_cap(v_target: float, v_ego: float, desired_curvature: float, curvature: float,
+                               saturated: bool, personality=log.LongitudinalPersonality.standard,
+                               min_v: float = 0.) -> float:
+  """Lower curve speed when lateral demand exceeds OP capability / comfort a_lat_max."""
+  v_target = max(float(v_target), 0.0)
+  v_ego = max(float(v_ego), 0.1)
+  a_lat_max = get_scc_lat_accel_max(personality)
+  kappa_des = abs(float(desired_curvature))
+  kappa_act = abs(float(curvature))
+  a_des = v_ego ** 2 * kappa_des
+
+  v_cap = v_target
+  if saturated or a_des > a_lat_max:
+    v_cap = float(np.sqrt(a_lat_max / max(kappa_des, _LAT_CAPABILITY_KAPPA_EPS)))
+    if kappa_des > kappa_act * 1.15 and kappa_des > _LAT_CAPABILITY_KAPPA_EPS:
+      v_cap *= _LAT_CAPABILITY_TRACKING_FACTOR
+
+  return max(float(min_v), min(v_target, v_cap))
 
 
 def combine_scc_model_actual_lat_acc(model_lat_acc: float, actual_lat_acc: float,
@@ -532,8 +679,9 @@ class LongitudinalMpc:
     return lead_xv
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
-             pitch: float | None = None):
-    t_follow = get_T_FOLLOW(personality)
+             pitch: float | None = None, t_follow: float | None = None):
+    if t_follow is None:
+      t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)

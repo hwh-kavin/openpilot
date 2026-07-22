@@ -21,7 +21,10 @@ from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
-from openpilot.sunnypilot.selfdrive.controls.lib.curvature_lead import apply_curvature_lead
+from openpilot.sunnypilot.selfdrive.controls.lib.curvature_lead import apply_curvature_lead, apply_curvature_exit_lead
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  FordFollowBarsDisplay, get_t_follow_auto, is_ford_auto_follow_gap,
+)
 
 State = log.SelfdriveState.OpenpilotState
 LaneChangeState = log.LaneChangeState
@@ -66,6 +69,7 @@ class Controls(ControlsExt):
       self.LaC = LatControlTorque(self.CP, self.CP_SP, self.CI, DT_CTRL)
 
     self.LaC = ControlsExt.initialize_lateral_control(self, self.LaC, self.CI, DT_CTRL)
+    self._ford_follow_bars = FordFollowBarsDisplay()
 
   def update(self):
     self.sm.update(15)
@@ -152,6 +156,9 @@ class Controls(ControlsExt):
         new_desired_curvature = apply_curvature_lead(
           model_v2, CS.vEgo, new_desired_curvature, lat_delay,
         )
+        new_desired_curvature = apply_curvature_exit_lead(
+          model_v2, CS.vEgo, new_desired_curvature, lat_delay,
+        )
     self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
 
     actuators.curvature = self.desired_curvature
@@ -191,7 +198,12 @@ class Controls(ControlsExt):
     hudControl.speedVisible = CC.enabled
     hudControl.lanesVisible = CC.enabled
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
-    hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
+    if is_ford_auto_follow_gap(self.params, self.CP):
+      at_standstill = CS.standstill or CS.cruiseState.standstill
+      t_follow = get_t_follow_auto(CS.vEgo, at_standstill)
+      hudControl.leadDistanceBars = self._ford_follow_bars.update(t_follow, at_standstill)
+    else:
+      hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
     hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual
 
     hudControl.rightLaneVisible = True

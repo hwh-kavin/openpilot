@@ -5,7 +5,7 @@ from opendbc.can import CANPacker
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, apply_hysteresis, structs
 from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.lateral import AVERAGE_ROAD_ROLL, ISO_LATERAL_ACCEL, apply_std_steer_angle_limits
+from opendbc.car.lateral import AVERAGE_ROAD_ROLL, ISO_LATERAL_ACCEL
 from opendbc.car.ford import fordcan
 from opendbc.car.ford.values import CarControllerParams, FordFlags, CAR
 from opendbc.car.interfaces import CarControllerBase, V_CRUISE_MAX
@@ -23,11 +23,34 @@ FUSION_ACCEL_SOFT_MAX = 1.2
 FUSION_STOCK_MIN_V = 20.0 * CV.MPH_TO_MS  # ~8.94 m/s
 # After a follow-stop, hand back from OP pullaway once moving (session already active)
 FUSION_STOP_GO_RELEASE_V = 3.0  # m/s
-FUSION_STOCK_GO_THRESH = 0.05  # m/s^2 — treat stock AccPrpl as "wants go"
+# Min stock accel to count as pullaway (filters resume noise below ~0.12 m/s^2)
+FUSION_STOCK_PULLAWAY_THRESH = 0.12  # m/s^2
+# Consecutive frames stock must request go while context allows (~0.15s at 100Hz)
+FUSION_STOCK_GO_DEBOUNCE_CYCLES = 15
+# stock v_trg below cruise by this margin => lead moving, not spurious resume
+FUSION_LEAD_MOVING_V_TRG_MARGIN_KPH = 5.0
 # Floor accel when planner wants go but LongControl is still in stopping hold (-2 m/s^2)
 FUSION_OP_PULLAWAY_ACCEL = 0.4  # m/s^2
 PARAMS_UPDATE_FRAMES = 100  # ~1s at 100Hz
 LOG_EVERY_FRAMES = 100
+
+
+def _stock_lead_moving(CS, cruise_kph: float) -> bool:
+  """True when stock ACC target speed dropped — lead actually moving, not cruise default."""
+  stock_v_trg = float(getattr(CS, "stock_acc_v_trg", 0.0))
+  if stock_v_trg <= 1.0:
+    return False
+  return stock_v_trg < (cruise_kph - FUSION_LEAD_MOVING_V_TRG_MARGIN_KPH)
+
+
+def _stock_pullaway_context(CC, CS, long_state, op_accel: float) -> bool:
+  """Allow stock pullaway only when OP or lead confirms go — blocks resume-button false starts."""
+  if CC.cruiseControl.resume:
+    return True
+  if long_state == LongCtrlState.starting:
+    return True
+  cruise_kph = float(CS.out.cruiseState.speed) * CV.MS_TO_KPH
+  return _stock_lead_moving(CS, cruise_kph)
 
 
 def _parse_stock_acc_accel(CS) -> float | None:
@@ -84,7 +107,7 @@ def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool 
   stock_a = float(stock_a)
 
   # Stop-go: stock requests pullaway — follow stock even if OP is still in stopping hold.
-  if stock_auto_resume and stock_a > FUSION_STOCK_GO_THRESH:
+  if stock_auto_resume and stock_a > FUSION_STOCK_PULLAWAY_THRESH:
     return float(min(stock_a, FUSION_ACCEL_SOFT_MAX)), "stock_go"
 
   # Stock not pulling away: do not let a stuck stock hold/zero block OP pullaway.
@@ -121,14 +144,59 @@ def anti_overshoot(apply_curvature, apply_curvature_last, v_ego):
   return float(np.interp(v_ego, [5, 10], [apply_curvature, output_curvature]))
 
 
+def _is_curvature_unwind(apply_curvature: float, apply_curvature_last: float) -> bool:
+  """True when commanded |κ| is decreasing (post-apex unwind)."""
+  if apply_curvature_last * apply_curvature < 0.:
+    return True
+  return abs(apply_curvature) + 1e-6 < abs(apply_curvature_last)
+
+
+def _apply_ford_curvature_error_clip(apply_curvature: float, current_curvature: float, unwind: bool) -> float:
+  tight = CarControllerParams.CURVATURE_ERROR
+  loose = CarControllerParams.CURVATURE_ERROR_UNWIND
+  if not unwind:
+    return float(np.clip(apply_curvature, current_curvature - tight, current_curvature + tight))
+
+  # Allow faster unwind away from measured yaw curvature; keep the "more turn" side tight.
+  if current_curvature >= 0.:
+    lo = current_curvature - loose
+    hi = current_curvature + tight
+  else:
+    lo = current_curvature - tight
+    hi = current_curvature + loose
+  return float(np.clip(apply_curvature, lo, hi))
+
+
+def _apply_ford_curvature_rate_limits(apply_curvature: float, apply_curvature_last: float, v_ego_raw: float,
+                                    steering_angle: float, lat_active: bool, unwind: bool) -> float:
+  steer_up = apply_curvature_last * apply_curvature >= 0. and abs(apply_curvature) > abs(apply_curvature_last)
+  if steer_up:
+    rate_limits = CarControllerParams.ANGLE_LIMITS.ANGLE_RATE_LIMIT_UP
+  elif unwind:
+    rate_limits = CarControllerParams.UNWIND_ANGLE_RATE_LIMIT_DOWN
+  else:
+    rate_limits = CarControllerParams.ANGLE_LIMITS.ANGLE_RATE_LIMIT_DOWN
+
+  angle_rate_lim = np.interp(v_ego_raw, rate_limits[0], rate_limits[1])
+  new_apply_curvature = np.clip(apply_curvature, apply_curvature_last - angle_rate_lim, apply_curvature_last + angle_rate_lim)
+
+  if not lat_active:
+    new_apply_curvature = steering_angle
+
+  max_curv = CarControllerParams.ANGLE_LIMITS.STEER_ANGLE_MAX
+  return float(np.clip(new_apply_curvature, -max_curv, max_curv))
+
+
 def apply_ford_curvature_limits(apply_curvature, apply_curvature_last, current_curvature, v_ego_raw, steering_angle, lat_active, CP):
+  unwind = _is_curvature_unwind(apply_curvature, apply_curvature_last)
+
   # No blending at low speed due to lack of torque wind-up and inaccurate current curvature
   if v_ego_raw > 9:
-    apply_curvature = np.clip(apply_curvature, current_curvature - CarControllerParams.CURVATURE_ERROR,
-                              current_curvature + CarControllerParams.CURVATURE_ERROR)
+    apply_curvature = _apply_ford_curvature_error_clip(apply_curvature, current_curvature, unwind)
 
   # Curvature rate limit after driver torque limit
-  apply_curvature = apply_std_steer_angle_limits(apply_curvature, apply_curvature_last, v_ego_raw, steering_angle, lat_active, CarControllerParams.ANGLE_LIMITS)
+  apply_curvature = _apply_ford_curvature_rate_limits(apply_curvature, apply_curvature_last, v_ego_raw,
+                                                      steering_angle, lat_active, unwind)
 
   # Ford Q4/CAN FD has more torque available compared to Q3/CAN so we limit it based on lateral acceleration.
   # Safety is not aware of the road roll so we subtract a conservative amount at all times
@@ -172,6 +240,19 @@ class CarController(CarControllerBase):
     # Latched once stock ACC has successfully been active above min engage speed
     self._stock_acc_session = False
     self._standstill_since: float | None = None
+    self._stock_go_confirm = 0
+
+  def _update_stock_go_confirm(self, stock_a: float | None, allowed: bool) -> None:
+    if allowed and stock_a is not None and stock_a > FUSION_STOCK_PULLAWAY_THRESH:
+      self._stock_go_confirm = min(self._stock_go_confirm + 1, FUSION_STOCK_GO_DEBOUNCE_CYCLES + 1)
+    else:
+      self._stock_go_confirm = 0
+
+  def _stock_pullaway_ready(self, stock_a: float | None, allowed: bool) -> bool:
+    return (
+      allowed and stock_a is not None and stock_a > FUSION_STOCK_PULLAWAY_THRESH and
+      self._stock_go_confirm >= FUSION_STOCK_GO_DEBOUNCE_CYCLES
+    )
 
   def _update_fusion_params(self):
     if (self.frame % PARAMS_UPDATE_FRAMES) != 0 and self._params is not None:
@@ -225,11 +306,22 @@ class CarController(CarControllerBase):
       self._standstill_since = None
 
     standstill_hold_s = (time.monotonic() - self._standstill_since) if self._standstill_since is not None else 0.0
-    stock_raw = _parse_stock_acc_accel(CS)
-    stock_wants_go = stock_raw is not None and stock_raw > FUSION_STOCK_GO_THRESH
-    # Resume while stop-go and stock wants go (not limited to the first ~2s window)
+
+    long_state = actuators.longControlState
+    op_accel = float(actuators.accel)
+    pullaway_ctx = (
+      self._fusion_enabled and self._fusion_stop_go and
+      _stock_pullaway_context(CC, CS, long_state, op_accel)
+    )
+    stock_a_fusion = get_stock_acc_accel(
+      CS, session_active=self._stock_acc_session, v_ego=CS.out.vEgo,
+    ) if self._fusion_enabled else None
+    self._update_stock_go_confirm(stock_a_fusion, pullaway_ctx)
+    stock_pullaway_ready = self._stock_pullaway_ready(stock_a_fusion, pullaway_ctx)
+
+    # Resume only when pullaway is debounced and context-valid (planner go / lead moving / starting)
     induce_stock_resume = (
-      self._fusion_enabled and self._stock_acc_session and self._fusion_stop_go and stock_wants_go
+      self._fusion_enabled and self._stock_acc_session and stock_pullaway_ready
     )
 
     ### acc buttons ###
@@ -237,12 +329,6 @@ class CarController(CarControllerBase):
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, cancel=True))
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, cancel=True))
     elif (CC.cruiseControl.resume or induce_stock_resume) and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
-      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, resume=True))
-      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, resume=True))
-    # Persistent 1Hz resume while ACC enabled and at standstill — lets stock ACC pull
-    # away as soon as the lead moves, without waiting for shouldStop → False.
-    # Only active when FordStockAccFusion is enabled; otherwise relies on OP vision start.
-    elif self._fusion_enabled and CC.enabled and CS.out.cruiseState.standstill and (self.frame % 100) == 0:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, resume=True))
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, resume=True))
     # if stock lane centering isn't off, send a button press to toggle it off
@@ -292,7 +378,6 @@ class CarController(CarControllerBase):
       gas = accel
       fusion_mode = "off"
       stock_a = None
-      long_state = CC.actuators.longControlState
 
       # Latch once cruise/long has been engaged above min set speed (~20 mph).
       # After latch, stock ACC long can follow down to a stop; clear when cruise/long drops.
@@ -313,12 +398,9 @@ class CarController(CarControllerBase):
       stock_pullaway = False
       if self._fusion_enabled and CC.longActive:
         below_stock_min = CS.out.vEgo < FUSION_STOCK_MIN_V
-        stock_a = get_stock_acc_accel(
-          CS, session_active=self._stock_acc_session, v_ego=CS.out.vEgo
-        )
-        stock_wants_go = stock_a is not None and stock_a > FUSION_STOCK_GO_THRESH
-        # Prefer stock pullaway anytime during stop-go if stock requests go (avoids OP hold deadlock)
-        stock_pullaway = self._fusion_stop_go and stock_wants_go
+        stock_a = stock_a_fusion
+        # Debounced stock pullaway — avoids resume-noise stock_go ↔ op_more_brake jerk at standstill
+        stock_pullaway = stock_pullaway_ready
         # Planner cleared shouldStop → controlsd sets resume. LongControl may still output
         # stopping hold (-2) while cruiseState.standstill is latched — floor a pullaway accel.
         planner_wants_go = bool(CC.cruiseControl.resume)
@@ -395,11 +477,26 @@ class CarController(CarControllerBase):
         v_trg_kph = V_CRUISE_MAX
 
       if self._fusion_log and (self.frame % LOG_EVERY_FRAMES) == 0:
+        auto_follow_extra = ""
+        if self._params is not None:
+          try:
+            from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+              get_t_follow_auto, is_ford_auto_follow_gap,
+            )
+            if is_ford_auto_follow_gap(self._params, self.CP):
+              at_stop = CS.out.standstill or CS.out.cruiseState.standstill
+              t_af = get_t_follow_auto(CS.out.vEgo, at_stop)
+              auto_follow_extra = " t_follow_auto=%.2f bars=%d" % (
+                t_af, hud_control.leadDistanceBars,
+              )
+          except Exception:
+            pass
         self._log_fusion(
           "FordStockAccFusion: mode=%s longActive=%s enbl=%s session=%s stop_go=%s "
-          "below_min=%s hold_s=%.2f auto_resume=%s longState=%s op=%.2f stock=%s "
+          "below_min=%s hold_s=%.2f auto_resume=%s pullaway_ctx=%s go_confirm=%d/%d "
+          "longState=%s op=%.2f stock=%s "
           "fused_gas=%.2f fused_brk=%.2f prpl=%.2f brk=%.2f pred=%.2f "
-          "v_trg=%.1f v_ego=%.1f cruise=%.1f stock_min_mph=%.0f" % (
+          "v_trg=%.1f v_ego=%.1f cruise=%.1f stock_min_mph=%.0f%s" % (
             fusion_mode,
             CC.longActive,
             getattr(CS, "stock_acc_enbl", False),
@@ -408,6 +505,9 @@ class CarController(CarControllerBase):
             CS.out.vEgo < FUSION_STOCK_MIN_V,
             standstill_hold_s,
             stock_pullaway,
+            pullaway_ctx,
+            self._stock_go_confirm,
+            FUSION_STOCK_GO_DEBOUNCE_CYCLES,
             str(long_state),
             op_accel,
             ("%.2f" % stock_a) if stock_a is not None else "None",
@@ -420,6 +520,7 @@ class CarController(CarControllerBase):
             CS.out.vEgo * CV.MS_TO_KPH,
             CS.out.cruiseState.speed * CV.MS_TO_KPH,
             FUSION_STOCK_MIN_V * CV.MS_TO_MPH,
+            auto_follow_extra,
           )
         )
 

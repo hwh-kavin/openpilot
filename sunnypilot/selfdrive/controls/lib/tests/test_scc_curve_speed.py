@@ -2,14 +2,22 @@ import numpy as np
 import pytest
 
 from cereal import log
+from openpilot.common.constants import CV
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  apply_lat_capability_v_cap,
+  apply_model_uncertainty_v_cap,
   combine_scc_model_actual_lat_acc,
   compute_actual_lat_accel,
+  compute_curve_lat_acc_uncertainty,
   compute_scc_curve_v_target,
   compute_scc_passable_speed,
+  compute_steer_angle_lat_accel,
   get_scc_abort_enter_lat_acc_th,
   get_scc_enter_lat_acc_th,
   get_scc_lat_accel_max,
+  inflate_lat_acc_with_uncertainty,
+  inflate_pred_lat_accels_with_uncertainty,
 )
 
 
@@ -93,3 +101,99 @@ def test_actual_steering_can_trigger_decel_when_model_lags():
 
   assert v_model_only == pytest.approx(v_ego)
   assert v_combined < v_ego
+
+
+def test_min_v_floor_on_sharp_curve():
+  v_ego = 27.8
+  max_pred = 20.0  # extremely sharp predicted lat accel
+  v_out = compute_scc_curve_v_target(v_ego, max_pred, log.LongitudinalPersonality.standard, min_v=MIN_V)
+  assert v_out >= MIN_V
+  assert MIN_V == pytest.approx(30.0 * CV.KPH_TO_MS)
+
+
+def test_steer_angle_lat_accel_exceeds_path_when_steering_deeper():
+  v_ego = 20.0
+  steer_ratio = 14.8
+  wheelbase = 2.7
+  a_path = compute_actual_lat_accel(v_ego, 0.01)
+  a_steer = compute_steer_angle_lat_accel(v_ego, 90.0, 0.0, steer_ratio, wheelbase)
+  assert a_steer > a_path
+  fused = max(a_path, a_steer)
+  assert fused == pytest.approx(a_steer)
+
+
+def test_lat_capability_cap_when_saturated():
+  personality = log.LongitudinalPersonality.standard
+  v_ego = 27.8
+  v_target = 25.0
+  desired_kappa = 0.05
+  v_capped = apply_lat_capability_v_cap(
+    v_target, v_ego, desired_kappa, 0.02, saturated=True, personality=personality, min_v=MIN_V)
+  a_lat = get_scc_lat_accel_max(personality)
+  expected = max(MIN_V, min(v_target, (a_lat / desired_kappa) ** 0.5 * 0.95))
+  assert v_capped == pytest.approx(expected)
+  assert v_capped < v_target
+  assert v_capped >= MIN_V
+
+
+def test_lat_capability_cap_when_desired_exceeds_a_lat_max():
+  personality = log.LongitudinalPersonality.standard
+  v_ego = 27.8
+  a_lat = get_scc_lat_accel_max(personality)
+  desired_kappa = (a_lat * 1.5) / (v_ego ** 2)
+  v_target = v_ego
+  v_capped = apply_lat_capability_v_cap(
+    v_target, v_ego, desired_kappa, desired_kappa, saturated=False, personality=personality, min_v=MIN_V)
+  expected = max(MIN_V, min(v_target, (a_lat / desired_kappa) ** 0.5))
+  assert v_capped == pytest.approx(expected)
+  assert v_capped < v_target
+
+
+def test_lat_capability_no_cap_when_within_limits():
+  personality = log.LongitudinalPersonality.standard
+  v_ego = 20.0
+  v_target = 18.0
+  desired_kappa = 0.002
+  v_capped = apply_lat_capability_v_cap(
+    v_target, v_ego, desired_kappa, desired_kappa, saturated=False, personality=personality, min_v=MIN_V)
+  assert v_capped == pytest.approx(v_target)
+
+def test_curve_lat_acc_uncertainty_from_yaw_std():
+  z_std = np.array([0.05, 0.05, 0.10])
+  vel = np.array([20.0, 20.0, 20.0])
+  unc = compute_curve_lat_acc_uncertainty(z_std, vel)
+  assert unc == pytest.approx(np.mean([1.0, 1.0, 2.0]))
+
+
+def test_inflate_lat_acc_with_uncertainty_raises_effective_pred():
+  assert inflate_lat_acc_with_uncertainty(1.5, 0.5) == pytest.approx(2.0)
+
+
+def test_inflate_pred_lat_accels_with_uncertainty():
+  pred = np.array([1.0, 1.0, 1.0])
+  z_std = np.array([0.1, 0.0, 0.2])
+  vel = np.array([10.0, 10.0, 10.0])
+  out = inflate_pred_lat_accels_with_uncertainty(pred, z_std, vel)
+  assert out[0] == pytest.approx(2.0)
+  assert out[1] == pytest.approx(1.0)
+  assert out[2] == pytest.approx(3.0)
+
+
+def test_model_uncertainty_lowers_v_target():
+  v_target = 25.0
+  v_low_unc = apply_model_uncertainty_v_cap(v_target, 0.0, min_v=MIN_V)
+  v_high_unc = apply_model_uncertainty_v_cap(v_target, 1.0, min_v=MIN_V)
+  assert v_low_unc == pytest.approx(v_target)
+  assert v_high_unc == pytest.approx(v_target * 0.82)
+  assert v_high_unc >= MIN_V
+
+
+def test_higher_uncertainty_yields_lower_curve_speed():
+  v_ego = 27.8
+  personality = log.LongitudinalPersonality.standard
+  base_pred = 2.0
+  v_certain = compute_scc_curve_v_target(v_ego, base_pred, personality, min_v=MIN_V)
+  v_uncertain = compute_scc_curve_v_target(
+    v_ego, inflate_lat_acc_with_uncertainty(base_pred, 0.8), personality, min_v=MIN_V)
+  assert v_uncertain < v_certain
+  assert v_uncertain >= MIN_V

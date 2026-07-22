@@ -83,7 +83,7 @@ class TestFordSafetyBase(common.CarSafetyTest):
 
   ANGLE_RATE_BP = [5., 25., 25.]
   ANGLE_RATE_UP = [0.00045, 0.0001, 0.0001]  # windup limit
-  ANGLE_RATE_DOWN = [0.00045, 0.00015, 0.00015]  # unwind limit
+  ANGLE_RATE_DOWN = [0.00045, 0.00018, 0.00018]  # unwind limit
 
   cnt_speed = 0
   cnt_speed_2 = 0

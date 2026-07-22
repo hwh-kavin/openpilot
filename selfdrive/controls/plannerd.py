@@ -26,8 +26,12 @@ def main():
   ldw = LaneDepartureWarning()
   longitudinal_planner = LongitudinalPlanner(CP, CP_SP)
   pm = messaging.PubMaster(['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP'])
+  # Map/GPS are optional (speed-limit assist). Until gpsOK, liveMapDataSP stays invalid and
+  # must not make longitudinalPlan*/driverAssistance invalid → "Communication Issue Between Processes".
+  ignore = ['liveMapDataSP', gps_location_service]
   sm = messaging.SubMaster(['carControl', 'carState', 'controlsState', 'liveParameters', 'radarState', 'modelV2', 'selfdriveState',
                             'liveMapDataSP', 'carStateSP', gps_location_service],
+                           ignore_alive=ignore, ignore_avg_freq=ignore, ignore_valid=ignore,
                            poll='carState')
 
   while True:

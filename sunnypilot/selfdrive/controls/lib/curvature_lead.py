@@ -30,7 +30,15 @@ _RATIO_LEAD_BP = [0.70, 1.00, 1.40]  # κ_peak / κ_lim
 _RATIO_LEAD_V = [0.0, 0.15, 0.35]    # s
 
 _MAX_LEAD_T = 0.40  # s hard cap
+_MAX_EXIT_LEAD_T = 0.32  # s hard cap for post-apex unwind
 _MIN_SPEED = 1.0    # m/s
+
+# Detect plan κ falling after an early peak (past apex)
+_EXIT_T_PEAK_MAX = 0.55   # s — peak must be this early to count as exiting
+_EXIT_KAPPA_MIN = 0.0015    # 1/m — ignore very mild bends
+_EXIT_KAPPA_DROP_MIN = 0.0008  # 1/m — plan must show meaningful κ reduction ahead
+_EXIT_LEAD_BP = [0.0025, 0.0050, 0.0090]  # peak |κ| (1/m)
+_EXIT_LEAD_T_V = [0.08, 0.15, 0.28]       # s extra sample lead
 
 
 def _plan_peak_curvature(orientation_rate_z, velocity_x, v_ego: float) -> float:
@@ -101,3 +109,65 @@ def apply_curvature_lead(model_v2, v_ego: float, base_curvature: float, lat_dela
     v_ego,
     action_t,
   ))
+
+
+def apply_curvature_exit_lead(model_v2, v_ego: float, base_curvature: float, lat_delay: float,
+                              max_lat_accel: float = 2.4, max_curvature: float = 0.02) -> float:
+  """After apex, sample plan further ahead where |κ| is smaller to unwind earlier."""
+  yaw_rates = np.asarray(model_v2.orientationRate.z, dtype=float)
+  if len(yaw_rates) < 2:
+    return float(base_curvature)
+
+  n = min(len(yaw_rates), len(ModelConstants.T_IDXS))
+  t = np.asarray(ModelConstants.T_IDXS[:n], dtype=float)
+  yaw_rate = yaw_rates[:n]
+  if len(model_v2.velocity.x) >= n:
+    speed = np.maximum(np.asarray(model_v2.velocity.x, dtype=float)[:n], _MIN_SPEED)
+  else:
+    speed = np.full(n, max(v_ego, _MIN_SPEED), dtype=float)
+
+  kappa = np.abs(yaw_rate) / speed
+  mask = (t >= _LOOKAHEAD_T_MIN) & (t <= _LOOKAHEAD_T_MAX)
+  if not np.any(mask):
+    return float(base_curvature)
+
+  kappa_w = kappa[mask]
+  t_w = t[mask]
+  kappa_peak = float(np.max(kappa_w))
+  if kappa_peak < _EXIT_KAPPA_MIN:
+    return float(base_curvature)
+
+  t_peak = float(t_w[int(np.argmax(kappa_w))])
+  if t_peak > _EXIT_T_PEAK_MAX:
+    return float(base_curvature)
+
+  i_now = int(np.argmin(np.abs(t - 0.12)))
+  kappa_now = float(kappa[i_now])
+  t_future = min(t_peak + 0.35, float(t[n - 1]))
+  i_future = int(np.argmin(np.abs(t - t_future)))
+  if kappa_now - float(kappa[i_future]) < _EXIT_KAPPA_DROP_MIN:
+    return float(base_curvature)
+
+  exit_lead_t = float(np.interp(kappa_peak, _EXIT_LEAD_BP, _EXIT_LEAD_T_V))
+  exit_lead_t = min(exit_lead_t, _MAX_EXIT_LEAD_T)
+  if exit_lead_t <= 1e-4:
+    return float(base_curvature)
+
+  yaws = np.asarray(model_v2.orientation.z, dtype=float)
+  if len(yaws) < 2:
+    return float(base_curvature)
+
+  action_t = max(lat_delay + _MODEL_ACTION_EXTRA + exit_lead_t, 1e-3)
+  n = min(len(yaws), len(yaw_rates), len(ModelConstants.T_IDXS))
+  led_curvature = float(get_curvature_from_plan(
+    yaws[:n],
+    yaw_rates[:n],
+    ModelConstants.T_IDXS[:n],
+    v_ego,
+    action_t,
+  ))
+
+  # Only apply when exit lead reduces |κ| vs the entry-adjusted command
+  if abs(led_curvature) + 1e-6 < abs(base_curvature):
+    return led_curvature
+  return float(base_curvature)

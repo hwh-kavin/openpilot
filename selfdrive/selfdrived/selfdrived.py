@@ -31,6 +31,7 @@ from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import is_ford_auto_follow_gap
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -504,8 +505,8 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
 
-    # decrement personality on distance button press
-    if self.CP.openpilotLongitudinalControl:
+    # decrement personality on distance button press (disabled for Ford auto follow gap)
+    if self.CP.openpilotLongitudinalControl and not self._ford_auto_follow_gap():
       if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
         if not self.experimental_mode_switched:
           self.personality = (self.personality - 1) % 3
@@ -575,6 +576,9 @@ class SelfdriveD(CruiseHelper):
       self.mismatch_counter += 1
 
     return CS
+
+  def _ford_auto_follow_gap(self) -> bool:
+    return is_ford_auto_follow_gap(self.params, self.CP)
 
   def update_alerts(self, CS):
     clear_event_types = set()

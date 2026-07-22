@@ -97,7 +97,7 @@ static bool ford_get_quality_flag_valid(const CANPacket_t *msg) {
   },                                                                                            \
   .angle_rate_down_lookup = {                                                                   \
     {5., 25., 25.},                                                                             \
-    {0.00045, 0.00015, 0.00015}                                                                 \
+    {0.00045, 0.00018, 0.00018}                                                                 \
   },                                                                                            \
                                                                                                 \
   /* no blending at low speed due to lack of torque wind-up and inaccurate current curvature */ \

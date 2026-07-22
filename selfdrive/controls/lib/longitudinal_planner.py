@@ -11,7 +11,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import RoadPitchFilter, get_T_FOLLOW, get_coast_accel
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import RoadPitchFilter, get_coast_accel, resolve_t_follow
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_max_accel, get_accel_slew_rate
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
@@ -144,8 +144,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     road_pitch = self._road_pitch_filter.update(sm['carControl'].orientationNED)
     if road_pitch is None:
       road_pitch = 0.0
-    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
-                    pitch=road_pitch)
+    at_standstill = sm['carState'].standstill or sm['carState'].cruiseState.standstill
+    t_follow = resolve_t_follow(v_ego, at_standstill, personality, self.params, self.CP)
+    self.mpc.update(sm['radarState'], v_cruise, personality=personality,
+                    pitch=road_pitch, t_follow=t_follow)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -154,7 +156,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     mode = 'e2e' if self.is_e2e(sm) else 'acc'
     user_ctrl_lon = sm['carState'].gasPressed
     scc_active = self.scc.vision.is_active or self.scc.map.is_active
-    personality_t_follow = get_T_FOLLOW(personality)
+    personality_t_follow = t_follow
     lead = sm['radarState'].leadOne if sm['radarState'].leadOne.status else None
 
     self.acm.enabled = acm_enabled
