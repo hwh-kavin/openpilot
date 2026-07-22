@@ -203,14 +203,14 @@ def get_scc_accel_scale(personality=log.LongitudinalPersonality.standard):
 # Home SUV curve speed limits (m/s²). v_corner = sqrt(a_lat / curvature).
 def get_scc_lat_accel_max(personality=log.LongitudinalPersonality.standard) -> float:
   if personality == log.LongitudinalPersonality.relaxed:
-    return 1.42
+    return 1.35
   if personality == log.LongitudinalPersonality.aggressive:
-    return 2.18
-  return 1.75
+    return 2.05
+  return 1.65
 
 
-# Slightly raise curve passable speed vs pure physics (reduces depth of SCC decel).
-_SCC_PASSABLE_SPEED_FACTOR = 1.035
+# Passable speed vs pure physics ( <1 = slightly deeper curve decel ).
+_SCC_PASSABLE_SPEED_FACTOR = 1.00
 
 
 def get_scc_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:

@@ -22,9 +22,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 
 
 @pytest.mark.parametrize("personality, a_lat, enter_th", [
-  (log.LongitudinalPersonality.relaxed, 1.42, 1.05),
-  (log.LongitudinalPersonality.standard, 1.75, 1.25),
-  (log.LongitudinalPersonality.aggressive, 2.18, 1.40),
+  (log.LongitudinalPersonality.relaxed, 1.35, 1.05),
+  (log.LongitudinalPersonality.standard, 1.65, 1.25),
+  (log.LongitudinalPersonality.aggressive, 2.05, 1.40),
 ])
 def test_scc_personality_limits(personality, a_lat, enter_th):
   assert get_scc_lat_accel_max(personality) == pytest.approx(a_lat)
@@ -55,7 +55,7 @@ def test_scc_curve_v_target_sharp_turn():
 
   assert v_relaxed < v_standard < v_aggressive < v_ego
   v_pass = compute_scc_passable_speed(v_ego, max_pred, log.LongitudinalPersonality.standard)
-  assert v_standard == pytest.approx(min(v_ego, v_pass * 1.035), rel=1e-3)
+  assert v_standard == pytest.approx(min(v_ego, v_pass * 1.00), rel=1e-3)
 
 
 def test_scc_path_scan_limits_for_upcoming_curve():
@@ -74,7 +74,7 @@ def test_scc_path_scan_limits_for_upcoming_curve():
 
   assert v_now == pytest.approx(v_ego)
   assert v_path < v_ego
-  assert v_path == pytest.approx(min(v_ego, v_ego * (1.75 / 2.8) ** 0.5 * 1.035), rel=1e-3)
+  assert v_path == pytest.approx(min(v_ego, v_ego * (1.65 / 2.8) ** 0.5 * 1.00), rel=1e-3)
 
 
 def test_combine_lat_acc_uses_steering_in_turn():
