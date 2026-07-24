@@ -214,6 +214,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"dp_htd_turn_angle_threshold", {PERSISTENT | BACKUP, FLOAT, "45.0"}},
     {"dp_htd_resume_angle_diff", {PERSISTENT | BACKUP, FLOAT, "10.0"}},
     {"dp_htd_resume_delay_ms", {PERSISTENT | BACKUP, FLOAT, "300.0"}},
+    // Curve-exit: release lat when |actual−model| is large after a curve (self-center)
+    {"dp_htd_curve_exit_enabled", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"dp_htd_curve_exit_model_angle", {PERSISTENT | BACKUP, FLOAT, "6.0"}},
+    {"dp_htd_curve_latch_angle", {PERSISTENT | BACKUP, FLOAT, "12.0"}},
+    {"dp_htd_curve_exit_error", {PERSISTENT | BACKUP, FLOAT, "10.0"}},
+    {"dp_htd_curve_exit_resume_error", {PERSISTENT | BACKUP, FLOAT, "5.0"}},
+    {"dp_htd_curve_exit_resume_delay_ms", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
     {"dp_acm_enabled", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // sunnylink params

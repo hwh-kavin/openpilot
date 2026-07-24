@@ -2246,19 +2246,83 @@ msgstr "✓ 已訂閱"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
 msgid "启用人工转弯检测HTD"
-msgstr ""
+msgstr "啟用人工轉彎檢測(HTD)"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
 msgid "启用自适应滑行模式(ACM)"
-msgstr ""
+msgstr "啟用自適應滑行模式 (ACM)"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
 msgid "在合适条件下允许车辆在巡航速度附近自然滑行，提升舒适性。"
-msgstr ""
+msgstr "在合適條件下允許車輛在巡航速度附近自然滑行，提升舒適性。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
-msgid "检测到人工大幅度转弯时暂停横向控制，转弯结束后恢复。"
-msgstr ""
+msgid "人工大幅度转弯，或出弯后期望角已小但与实际角差值仍大时，暂停横向以借助车身回正，对齐后恢复。"
+msgstr "人工大幅度轉彎，或出彎後期望角已小但與實際角差值仍大時，暫停橫向以借助車身回正，對齊後恢復。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "HTD触发转角门限"
+msgstr "HTD觸發轉角門限"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "手握方向盘时，超过该转角将触发人工转弯检测。"
+msgstr "手握方向盤時，超過該轉角將觸發人工轉彎檢測。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "HTD恢复角度差"
+msgstr "HTD恢復角度差"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "人工转弯：模型期望角与实际角差值低于该值可恢复横向控制。"
+msgstr "人工轉彎：模型期望角與實際角差值低於該值可恢復橫向控制。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "HTD恢复延迟"
+msgstr "HTD恢復延遲"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "人工转弯满足恢复条件后，延迟该时间再恢复横向控制。"
+msgstr "人工轉彎滿足恢復條件後，延遲該時間再恢復橫向控制。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "出弯自动释放横向"
+msgstr "出彎自動釋放橫向"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "出弯后模型已近直行且实际角与期望角差值偏大时释放横向，车身回正至接近期望后立即接回。"
+msgstr "出彎後模型已近直行且實際角與期望角差值偏大時釋放橫向，車身回正至接近期望後立即接回。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "出弯释放角度差"
+msgstr "出彎釋放角度差"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "实际转角与模型期望的差值不低于该值时触发出弯释放（推荐约10度）。"
+msgstr "實際轉角與模型期望的差值不低於該值時觸發出彎釋放（推薦約10度）。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "出弯接回角度差"
+msgstr "出彎接回角度差"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "实际角与期望角差值低于该值时立即接回横向（推荐约5度，应小于释放角度差）。"
+msgstr "實際角與期望角差值低於該值時立即接回橫向（推薦約5度，應小於釋放角度差）。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "出弯释放模型转角门限"
+msgstr "出彎釋放模型轉角門限"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "模型期望转角不高于该值（视为已近直行）才触发出弯释放（推荐约6度）。"
+msgstr "模型期望轉角不高於該值（視為已近直行）才觸發出彎釋放（推薦約6度）。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "出弯释放弯道确认转角"
+msgstr "出彎釋放彎道確認轉角"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "此前模型期望转角曾达到该值以上才确认刚经过弯道（Q3推荐约12度）。"
+msgstr "此前模型期望轉角曾達到該值以上才確認剛經過彎道（Q3推薦約12度）。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/widgets/setup.py
 msgid "🔥 Firehose Mode 🔥"

@@ -21,6 +21,8 @@ MAX_LATERAL_ACCEL = ISO_LATERAL_ACCEL - (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_R
 FUSION_ACCEL_SOFT_MAX = 1.2
 # Ford stock ACC typically cannot *initially* set/enable below ~20 mph
 FUSION_STOCK_MIN_V = 20.0 * CV.MPH_TO_MS  # ~8.94 m/s
+# Above this speed, ignore stock braking — OP owns decel (stock false brakes off-highway)
+FUSION_OP_BRAKE_ONLY_V = 40.0 * CV.KPH_TO_MS  # ~11.11 m/s
 # After a follow-stop, hand back from OP pullaway once moving (session already active)
 FUSION_STOP_GO_RELEASE_V = 3.0  # m/s
 # Min stock accel to count as pullaway (filters resume noise below ~0.12 m/s^2)
@@ -88,12 +90,14 @@ def get_stock_acc_accel(CS, *, session_active: bool = False, v_ego: float = 0.0)
 
 
 def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool = False,
-                        stock_auto_resume: bool = False) -> tuple[float, str]:
+                        stock_auto_resume: bool = False, v_ego: float = 0.0) -> tuple[float, str]:
   """
   Fuse stock ACC with OP (vision follow / SCC curve / planner / stop-go).
 
   Before stock session: below ~20 mph → stock_a None → OP only.
   After stock session: stock usable down to stop; OP still wins on earlier brake/curve.
+  Above FUSION_OP_BRAKE_ONLY_V (~40 km/h): stock braking is ignored — OP owns decel
+  (avoids stock false brakes on non-highways); stock may still soften positive accel.
   Stop-go pullaway: if stock AccPrpl requests go, follow stock (stock_go) / induce resume.
   Do not let OP stopping-hold brake override stock go — that deadlocks AccStopMde.
   If stock will not pull away, prefer OP vision/start (op_go).
@@ -105,6 +109,13 @@ def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool 
     return op_a, "op_only"
 
   stock_a = float(stock_a)
+
+  # Above 40 km/h: discard stock brake requests entirely (OP owns longitudinal braking).
+  # Do not clamp to 0 — that would incorrectly zero OP accel when stock was falsely braking.
+  if v_ego > FUSION_OP_BRAKE_ONLY_V and stock_a < -0.05:
+    if stop_go_op:
+      return float(min(max(op_a, FUSION_OP_PULLAWAY_ACCEL), FUSION_ACCEL_SOFT_MAX)), "op_go"
+    return op_a, "op_brake_only"
 
   # Stop-go: stock requests pullaway — follow stock even if OP is still in stopping hold.
   if stock_auto_resume and stock_a > FUSION_STOCK_PULLAWAY_THRESH:
@@ -416,6 +427,7 @@ class CarController(CarControllerBase):
           op_for_fuse, stock_a,
           stop_go_op=stop_go_op,
           stock_auto_resume=stock_pullaway,
+          v_ego=CS.out.vEgo,
         )
         # Clarify log mode: OP used because session not yet latched below min speed
         if (not self._stock_acc_session) and below_stock_min and fusion_mode == "op_only":

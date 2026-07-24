@@ -262,12 +262,122 @@ def compute_actual_lat_accel(v_ego: float, curvature: float) -> float:
 def compute_steer_angle_lat_accel(v_ego: float, steer_angle_deg: float, angle_offset_deg: float,
                                   steer_ratio: float, wheelbase: float) -> float:
   """Lateral accel from bicycle-model steering angle. Same form as limit_accel_in_turns."""
-  from openpilot.common.constants import CV
   v_ego = max(float(v_ego), 0.1)
+  return v_ego ** 2 * kappa_from_steer_angle(steer_angle_deg, angle_offset_deg, steer_ratio, wheelbase)
+
+
+_SCC_KAPPA_VEL_MIN = 1.0  # m/s, floor when converting yaw-rate → κ
+_SCC_KAPPA_EPS = 1e-4
+_SCC_CURVE_TARGET_ACCEL = -1.2  # m/s² comfort brake (scaled by personality)
+_SCC_CURVE_DIST_OFFSET_S = 1.0  # s * v_corner extra distance margin
+_SCC_CURVE_A_MIN = -1.2
+_SCC_CURVE_A_MAX = 0.6
+_SCC_CURVE_LOOKAHEAD_T = 10.0  # s, full model plan horizon
+
+
+def kappa_from_steer_angle(steer_angle_deg: float, angle_offset_deg: float,
+                           steer_ratio: float, wheelbase: float) -> float:
+  """Bicycle-model curvature from measured steering wheel angle. κ = |δ| / (SR · WB)."""
+  from openpilot.common.constants import CV
   steer_ratio = max(float(steer_ratio), 1e-3)
   wheelbase = max(float(wheelbase), 1e-3)
   angle_rad = (float(steer_angle_deg) - float(angle_offset_deg)) * CV.DEG_TO_RAD
-  return abs(v_ego ** 2 * angle_rad / (steer_ratio * wheelbase))
+  return abs(angle_rad) / (steer_ratio * wheelbase)
+
+
+def build_plan_kappa_traj(yaw_rate_z, vel_plan, min_v: float = _SCC_KAPPA_VEL_MIN) -> np.ndarray:
+  """Plan curvature trajectory. κ[i] = |yaw_rate[i]| / max(v[i], min_v) — same as curvature_lead."""
+  yaw = np.abs(np.asarray(yaw_rate_z, dtype=np.float64).reshape(-1))
+  vel = np.asarray(vel_plan, dtype=np.float64).reshape(-1)
+  n = min(len(yaw), len(vel))
+  if n == 0:
+    return np.zeros(0, dtype=np.float64)
+  return yaw[:n] / np.maximum(np.abs(vel[:n]), float(min_v))
+
+
+def _scc_curve_brake_accel(personality=log.LongitudinalPersonality.standard) -> float:
+  return float(_SCC_CURVE_TARGET_ACCEL * get_scc_accel_scale(personality))
+
+
+def _scc_decel_reach_distance(v_ego: float, v_corner: float, a_brake: float) -> float:
+  """Distance within which comfort braking must start to hit v_corner (plus time offset)."""
+  v_ego = max(float(v_ego), 0.1)
+  v_corner = max(float(v_corner), 0.0)
+  if v_ego <= v_corner:
+    return 0.0
+  a = min(float(a_brake), -0.1)
+  return (v_ego ** 2 - v_corner ** 2) / (2.0 * abs(a)) + v_corner * _SCC_CURVE_DIST_OFFSET_S
+
+
+def plan_curve_speed_from_kappa_traj(
+    v_ego: float,
+    a_ego: float,
+    kappa_traj,
+    position_x,
+    t_idxs,
+    kappa_now: float,
+    personality=log.LongitudinalPersonality.standard,
+    min_v: float = 0.0,
+    max_lookahead_t: float = _SCC_CURVE_LOOKAHEAD_T,
+) -> tuple[float, float, float, int, bool]:
+  """Plan curve speed from current + future curvature (κ-native, no steer-angle traj).
+
+  Returns (v_target, a_target, peak_kappa, peak_idx, has_constraint).
+  """
+  a_lat = get_scc_lat_accel_max(personality)
+  a_brake = _scc_curve_brake_accel(personality)
+  a_min = float(_SCC_CURVE_A_MIN * get_scc_accel_scale(personality))
+  v_ego = max(float(v_ego), 0.1)
+  kappa_th = get_scc_early_enter_lat_acc_th(personality) / (v_ego ** 2)
+
+  kappa = np.asarray(kappa_traj, dtype=np.float64).reshape(-1)
+  pos = np.asarray(position_x, dtype=np.float64).reshape(-1)
+  t = np.asarray(t_idxs, dtype=np.float64).reshape(-1)
+  n = int(min(len(kappa), len(pos), len(t)))
+
+  v_limit = v_ego
+  peak_kappa = 0.0
+  peak_idx = 0
+  has_constraint = False
+  binding_d = 0.0
+
+  kappa_now = max(float(kappa_now), 0.0)
+  if kappa_now > kappa_th:
+    v_now = max(float(min_v), float(np.sqrt(a_lat / max(kappa_now, _SCC_KAPPA_EPS))))
+    if v_now < v_limit:
+      v_limit = v_now
+      has_constraint = True
+      binding_d = 0.0
+
+  for i in range(n):
+    if float(t[i]) > float(max_lookahead_t):
+      break
+    k = float(kappa[i])
+    if k > peak_kappa:
+      peak_kappa = k
+      peak_idx = i
+    if k <= kappa_th:
+      continue
+    v_corner = max(float(min_v), float(np.sqrt(a_lat / max(k, _SCC_KAPPA_EPS))))
+    d = max(float(pos[i]), 0.0)
+    if v_ego > v_corner and d <= _scc_decel_reach_distance(v_ego, v_corner, a_brake):
+      if v_corner < v_limit:
+        v_limit = v_corner
+        has_constraint = True
+        binding_d = d
+
+  if not has_constraint:
+    return v_ego, max(0.0, float(a_ego)), peak_kappa, peak_idx, False
+
+  v_target = max(float(min_v), min(v_ego, v_limit))
+  if v_ego <= v_target:
+    a_cmd = min(float(_SCC_CURVE_A_MAX), max(0.0, float(a_ego)))
+  elif binding_d < 1.0:
+    a_cmd = a_brake
+  else:
+    a_cmd = (v_target ** 2 - v_ego ** 2) / (2.0 * max(binding_d, 1.0))
+  a_cmd = float(np.clip(a_cmd, a_min, float(_SCC_CURVE_A_MAX)))
+  return v_target, a_cmd, peak_kappa, peak_idx, True
 
 
 _LAT_CAPABILITY_TRACKING_FACTOR = 0.95
@@ -346,19 +456,27 @@ def apply_lat_capability_v_cap(v_target: float, v_ego: float, desired_curvature:
   return max(float(min_v), min(v_target, v_cap))
 
 
+# While still mostly straight, trust most of the vision lat-accel prediction so curve
+# speed can drop before measured steering builds. Actual still blends in to reject noise.
+_SCC_MODEL_TRUST_STRAIGHT = 0.70
+
+
 def combine_scc_model_actual_lat_acc(model_lat_acc: float, actual_lat_acc: float,
                                      personality=log.LongitudinalPersonality.standard) -> float:
   """Fuse model and steering-based lateral accel for SCC passable speed.
 
   When the vehicle is turning, actual steering can exceed a lagging model estimate.
-  When the vehicle is straight, actual steering vetoes spurious model curve detections.
+  When the vehicle is still mostly straight, soft-blend model with actual (instead of a
+  hard abort-threshold cap) so upcoming curves can slow earlier without fully trusting
+  single-frame model spikes.
   """
   actual_th = get_scc_abort_enter_lat_acc_th(personality)
   model_lat_acc = max(float(model_lat_acc), 0.0)
   actual_lat_acc = max(float(actual_lat_acc), 0.0)
   if actual_lat_acc > actual_th:
     return max(model_lat_acc, actual_lat_acc)
-  return min(model_lat_acc, actual_th)
+  return (_SCC_MODEL_TRUST_STRAIGHT * model_lat_acc +
+          (1.0 - _SCC_MODEL_TRUST_STRAIGHT) * actual_lat_acc)
 
 
 def compute_scc_passable_speed(v_ego: float, max_pred_lat_acc: float,

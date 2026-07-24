@@ -71,8 +71,10 @@ class ControlsExt(ModelStateBase):
 
   def apply_htd(self, lat_active: bool, sm: messaging.SubMaster, model_angle_deg: float) -> bool:
     CS = sm['carState']
+    lane_changing = sm['modelV2'].meta.laneChangeState != log.LaneChangeState.off
     allowed, _ = self.htd.update(
-      lat_active, CS.steeringAngleDeg, CS.vEgo, CS.steeringPressed, model_angle_deg)
+      lat_active, CS.steeringAngleDeg, CS.vEgo, CS.steeringPressed, model_angle_deg,
+      lane_changing=lane_changing)
     return lat_active and allowed
 
   @staticmethod

@@ -5,7 +5,6 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import numpy as np
-import pytest
 
 import cereal.messaging as messaging
 from cereal import custom, log
@@ -15,96 +14,52 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.vision_controller import (
-  SmartCruiseControlVision, _ENTER_PRED_PERCENTILE, _NEAR_LOOKAHEAD_T_S,
+  SmartCruiseControlVision,
 )
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_scc_enter_lat_acc_th
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_scc_lat_accel_max
 
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
 
 
-def _th_above_f32(th: float) -> float:
-  """
-  Return the next representable float32 *above* `th`.
-  This avoids flaky comparisons around thresholds due to float32 rounding.
-  """
-  th32 = np.float32(th)
-  above32 = np.nextafter(th32, np.float32(np.inf), dtype=np.float32)
-  return float(above32)
-
-
-def _build_single_spike_filtered(n: int, base: float = 1.0) -> np.ndarray:
-  """
-  Create an array where max() is >= threshold but p97 is < threshold.
-  This demonstrates the behavior difference vs np.amax().
-
-  Note: We intentionally construct using float32-representable values to match
-  the data path through cereal/capnp.
-  """
-  th = float(get_scc_enter_lat_acc_th(log.LongitudinalPersonality.standard))
-  th32 = float(np.float32(th))
-
-  # numpy percentile default is linear interpolation: idx=(n-1)*p/100
-  idx = (n - 1) * 0.97
-  w = float(idx - np.floor(idx))
-
-  base32 = float(np.float32(base))
-
-  # Choose spike so that p97 = base + w*(spike-base) < th
-  # -> spike < base + (th-base)/w. Use a margin (0.9) and ensure spike >= th.
-  if w == 0.0:
-    spike = th32 + 1.0
-  else:
-    spike = base32 + (th32 - base32) / w * 0.9
-    spike = max(spike, th32 + 0.01)
-
-  arr = np.full(n, base32, dtype=np.float32)
-  arr[-1] = np.float32(spike)
-  return arr
-
-
-def generate_modelV2():
+def generate_modelV2(speed=30.0, kappa=0.001):
+  """Build modelV2 with constant plan curvature κ via yaw_rate = κ * v."""
   model = messaging.new_message('modelV2')
+  n = len(ModelConstants.T_IDXS)
+  t = np.array(ModelConstants.T_IDXS)
   position = log.XYZTData.new_message()
-  speed = 30
-  position.x = [float(x) for x in (speed + 0.5) * np.array(ModelConstants.T_IDXS)]
+  position.x = [float(x) for x in speed * t]
   model.modelV2.position = position
   orientation = log.XYZTData.new_message()
-  curvature = 0.05
-  orientation.x = [float(curvature) for _ in ModelConstants.T_IDXS]
-  orientation.y = [0.0 for _ in ModelConstants.T_IDXS]
+  orientation.x = [0.0 for _ in range(n)]
+  orientation.y = [0.0 for _ in range(n)]
   model.modelV2.orientation = orientation
   orientationRate = log.XYZTData.new_message()
-  orientationRate.z = [float(z) for z in ModelConstants.T_IDXS]
+  orientationRate.z = [float(kappa * speed) for _ in range(n)]
+  orientationRate.zStd = [0.0 for _ in range(n)]
   model.modelV2.orientationRate = orientationRate
   velocity = log.XYZTData.new_message()
-  velocity.x = [float(x) for x in (speed + 0.5) * np.ones_like(ModelConstants.T_IDXS)]
-  velocity.x[0] = float(speed)  # always start at current speed
+  velocity.x = [float(speed) for _ in range(n)]
   model.modelV2.velocity = velocity
   acceleration = log.XYZTData.new_message()
-  acceleration.x = [float(x) for x in np.zeros_like(ModelConstants.T_IDXS)]
-  acceleration.y = [float(y) for y in np.zeros_like(ModelConstants.T_IDXS)]
+  acceleration.x = [0.0 for _ in range(n)]
+  acceleration.y = [0.0 for _ in range(n)]
   model.modelV2.acceleration = acceleration
-
   return model
 
 
 def generate_carState():
   car_state = messaging.new_message('carState')
-  speed = 30
-  v_cruise = 50
-  car_state.carState.vEgo = float(speed)
+  car_state.carState.vEgo = 30.0
   car_state.carState.standstill = False
-  car_state.carState.vCruise = float(v_cruise * 3.6)
+  car_state.carState.vCruise = 50.0 * 3.6
   car_state.carState.steeringAngleDeg = 0.0
-
   return car_state
 
 
 def generate_controlsState():
   controls_state = messaging.new_message('controlsState')
-  controls_state.controlsState.curvature = 0.05
-  controls_state.controlsState.desiredCurvature = 0.05
-
+  controls_state.controlsState.curvature = 0.0
+  controls_state.controlsState.desiredCurvature = 0.0
   return controls_state
 
 
@@ -176,104 +131,51 @@ class TestSmartCruiseControlVision:
       self.scc_v.update(self.sm, True, False, 0., 0., 0.)
     assert self.scc_v.state == VisionState.enabled
 
-  @pytest.mark.parametrize(
-    "case, should_enter",
-    [
-      ("p97_just_above_threshold", True),
-      ("single_spike_filtered", False),
-      ("persistent_high_values", True),
-    ],
-    ids=[
-      "p97>threshold_enters",
-      "single_spike_max_large_but_p97_below_threshold",
-      "high_values_persist_trigger_entering",
-    ],
-  )
-  def test_max_pred_lat_acc_uses_p97_and_threshold(self, case, should_enter):
-    n = len(ModelConstants.T_IDXS)
-    th = float(get_scc_enter_lat_acc_th(log.LongitudinalPersonality.standard))
-
-    if case == "p97_just_above_threshold":
-      # Sharp enough curve that v_ego exceeds passable speed.
-      val = np.float32(2.5)
-      pred_lat_accels = np.full(n, val, dtype=np.float32)
-
-    elif case == "single_spike_filtered":
-      pred_lat_accels = _build_single_spike_filtered(n, base=0.7)
-
-    elif case == "persistent_high_values":
-      # Make enough high samples in near-term so p90 triggers entering before the apex.
-      high_count = max(2, int(np.ceil(n * 0.03)) + 1)
-      pred_lat_accels = np.full(n, np.float32(1.0), dtype=np.float32)
-      pred_lat_accels[:high_count + 10] = np.float32(2.0)
-      pred_lat_accels[-high_count:] = np.float32(2.0)
-      pred_lat_accels[-1] = np.float32(8.0)  # keep one big outlier too
-
-    else:
-      raise AssertionError(f"Unknown case: {case}")
-
-    # Override model predictions so:
-    # predicted_lat_accels = abs(orientationRate.z) * velocity.x == pred_lat_accels
-    mdl = generate_modelV2()
-    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
-    mdl.modelV2.orientationRate.z = [float(x) for x in pred_lat_accels]
-    self.sm["modelV2"] = mdl.modelV2
-
-    v_ego = 27.8 if case == "p97_just_above_threshold" else float(MIN_V + 5.0)
-    if not should_enter:
-      self.sm["controlsState"].curvature = 0.0
-
-    # 1st update: disabled -> enabled
-    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
-    # 2nd update: evaluate entering condition from enabled state
-    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
-
-    # Controller does percentile on numpy float64 arrays (values already quantized by capnp),
-    # so compute expected in float64 to match behavior and avoid interpolation/rounding deltas.
-    expected_p97 = float(np.percentile(pred_lat_accels.astype(np.float64), 97))
-
-    near_mask = np.array(ModelConstants.T_IDXS[:n]) <= _NEAR_LOOKAHEAD_T_S
-    near_pred = pred_lat_accels[near_mask] if np.any(near_mask) else pred_lat_accels
-    expected_enter = float(np.percentile(near_pred.astype(np.float64), _ENTER_PRED_PERCENTILE))
-
-    # allow tiny numeric differences due to float conversions/interpolation
-    assert np.isclose(self.scc_v.max_pred_lat_acc, expected_p97, rtol=1e-6, atol=1e-5)
-    assert np.isclose(self.scc_v.max_pred_lat_acc_enter, expected_enter, rtol=1e-6, atol=1e-5)
-
-    if should_enter:
-      assert self.scc_v.state == VisionState.entering
-      assert self.scc_v.v_ego > self.scc_v.v_passable
-
-    else:
-      assert float(np.max(pred_lat_accels)) >= th or self.scc_v.v_ego <= self.scc_v.v_passable
-      assert self.scc_v.state == VisionState.enabled
-
-  def test_entering_from_actual_steering_when_model_lags(self):
-    n = len(ModelConstants.T_IDXS)
-    mdl = generate_modelV2()
-    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
-    mdl.modelV2.orientationRate.z = [0.8 for _ in range(n)]
-    self.sm["modelV2"] = mdl.modelV2
-    self.sm["controlsState"].curvature = 0.05
-
+  def test_entering_from_future_kappa(self):
     v_ego = 27.8
+    # Sharp plan κ: v_corner = sqrt(1.65/0.008) ≈ 14.4 m/s << v_ego
+    self.sm['modelV2'] = generate_modelV2(speed=v_ego, kappa=0.008).modelV2
+    self.sm['controlsState'].curvature = 0.0
+    self.sm['controlsState'].desiredCurvature = 0.0
+
     self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
     self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
 
-    assert self.scc_v.actual_lat_acc > get_scc_enter_lat_acc_th(log.LongitudinalPersonality.standard)
+    assert self.scc_v.has_curve_constraint
     assert self.scc_v.v_ego > self.scc_v.v_passable
+    assert self.scc_v.state == VisionState.entering
+    assert self.scc_v.is_active
+    a_lat = get_scc_lat_accel_max(log.LongitudinalPersonality.standard)
+    assert self.scc_v.v_passable == pytest.approx(max(MIN_V, (a_lat / 0.008) ** 0.5), rel=0.05)
+
+  def test_mild_kappa_stays_enabled(self):
+    v_ego = 27.8
+    self.sm['modelV2'] = generate_modelV2(speed=v_ego, kappa=0.0004).modelV2
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    assert self.scc_v.state == VisionState.enabled
+    assert not self.scc_v.is_active
+
+  def test_entering_from_current_steer_kappa(self):
+    v_ego = 27.8
+    # Mild future plan; hard current desired curvature
+    self.sm['modelV2'] = generate_modelV2(speed=v_ego, kappa=0.0003).modelV2
+    self.sm['controlsState'].desiredCurvature = 0.01
+    self.sm['controlsState'].curvature = 0.01
+
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+
+    assert self.scc_v.kappa_now == pytest.approx(0.01, abs=1e-5)
+    assert self.scc_v.has_curve_constraint
     assert self.scc_v.state == VisionState.entering
 
   def test_v_target_never_below_min_v(self):
-    n = len(ModelConstants.T_IDXS)
-    mdl = generate_modelV2()
-    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
-    mdl.modelV2.orientationRate.z = [8.0 for _ in range(n)]
-    self.sm["modelV2"] = mdl.modelV2
-    self.sm["controlsState"].curvature = 0.2
-    self.sm["controlsState"].desiredCurvature = 0.2
-
     v_ego = 27.8
+    self.sm['modelV2'] = generate_modelV2(speed=v_ego, kappa=0.2).modelV2
+    self.sm['controlsState'].curvature = 0.2
+    self.sm['controlsState'].desiredCurvature = 0.2
+
     self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
     self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
 
@@ -282,42 +184,17 @@ class TestSmartCruiseControlVision:
     if self.scc_v.is_active:
       assert self.scc_v.output_v_target >= MIN_V
 
-  def test_steer_angle_raises_actual_lat_acc(self):
-    n = len(ModelConstants.T_IDXS)
-    mdl = generate_modelV2()
-    mdl.modelV2.velocity.x = [1.0 for _ in range(n)]
-    mdl.modelV2.orientationRate.z = [0.5 for _ in range(n)]
-    self.sm["modelV2"] = mdl.modelV2
-    self.sm["controlsState"].curvature = 0.0
-    self.sm["carState"].steeringAngleDeg = 120.0
-
+  def test_steer_angle_raises_kappa_now(self):
     v_ego = 20.0
+    self.sm['modelV2'] = generate_modelV2(speed=v_ego, kappa=0.0003).modelV2
+    self.sm['controlsState'].curvature = 0.0
+    self.sm['controlsState'].desiredCurvature = 0.0
+    self.sm['carState'].steeringAngleDeg = 120.0
+
     self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
+    assert self.scc_v.kappa_now > 0.01
     assert self.scc_v.actual_lat_acc > 0.5
 
-  def test_high_yaw_uncertainty_lowers_v_passable_in_curve(self):
-    n = len(ModelConstants.T_IDXS)
-    mdl = generate_modelV2()
-    # Mild curve mean; higher yaw-rate std inflates effective lat accel → lower v.
-    mdl.modelV2.velocity.x = [25.0 for _ in range(n)]
-    mdl.modelV2.orientationRate.z = [0.06 for _ in range(n)]  # a ≈ 1.5
-    mdl.modelV2.orientationRate.zStd = [0.0 for _ in range(n)]
-    self.sm["modelV2"] = mdl.modelV2
-    self.sm["controlsState"].curvature = 0.0024
-    self.sm["controlsState"].desiredCurvature = 0.0024
 
-    v_ego = 25.0
-    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
-    v_certain = self.scc_v.v_passable
-
-    mdl.modelV2.orientationRate.zStd = [0.04 for _ in range(n)]  # σ_a ≈ 1.0
-    self.sm["modelV2"] = mdl.modelV2
-    self.scc_v = SmartCruiseControlVision(_ford_like_cp())
-    self.scc_v.enabled = True
-    self.scc_v.update(self.sm, True, False, v_ego, 0.0, 0.0)
-    v_uncertain = self.scc_v.v_passable
-
-    assert self.scc_v.curve_lat_acc_unc > 0.5
-    assert v_certain > MIN_V
-    assert v_uncertain < v_certain
-    assert v_uncertain >= MIN_V
+# pytest.approx used above
+import pytest  # noqa: E402

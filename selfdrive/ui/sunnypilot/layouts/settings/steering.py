@@ -99,7 +99,7 @@ class SteeringLayout(Widget):
     self._htd_toggle = toggle_item_sp(
       param="dp_htd_enabled",
       title=lambda: tr("启用人工转弯检测HTD"),
-      description=lambda: tr("检测到人工大幅度转弯时暂停横向控制，转弯结束后恢复。"),
+      description=lambda: tr("人工大幅度转弯，或出弯后期望角已小但与实际角差值仍大时，暂停横向以借助车身回正，对齐后恢复。"),
     )
     self._htd_turn_angle_threshold = option_item_sp(
       param="dp_htd_turn_angle_threshold",
@@ -116,7 +116,7 @@ class SteeringLayout(Widget):
       min_value=1,
       max_value=30,
       value_change_step=1,
-      description=lambda: tr("手握方向盘时，模型期望角与实际角差值低于该值可恢复横向控制。"),
+      description=lambda: tr("人工转弯：模型期望角与实际角差值低于该值可恢复横向控制。"),
       label_callback=lambda diff: f"{diff}°",
     )
     self._htd_resume_delay = option_item_sp(
@@ -125,8 +125,49 @@ class SteeringLayout(Widget):
       min_value=0,
       max_value=2000,
       value_change_step=50,
-      description=lambda: tr("满足恢复条件后，延迟该时间再恢复横向控制。"),
+      description=lambda: tr("人工转弯满足恢复条件后，延迟该时间再恢复横向控制。"),
       label_callback=lambda delay: f"{delay} ms",
+    )
+    self._htd_curve_exit_toggle = toggle_item_sp(
+      param="dp_htd_curve_exit_enabled",
+      title=lambda: tr("出弯自动释放横向"),
+      description=lambda: tr("出弯后模型已近直行且实际角与期望角差值偏大时释放横向，车身回正至接近期望后立即接回。"),
+    )
+    self._htd_curve_exit_error = option_item_sp(
+      param="dp_htd_curve_exit_error",
+      title=lambda: tr("出弯释放角度差"),
+      min_value=5,
+      max_value=25,
+      value_change_step=1,
+      description=lambda: tr("实际转角与模型期望的差值不低于该值时触发出弯释放（推荐约10度）。"),
+      label_callback=lambda diff: f"{diff}°",
+    )
+    self._htd_curve_exit_resume_error = option_item_sp(
+      param="dp_htd_curve_exit_resume_error",
+      title=lambda: tr("出弯接回角度差"),
+      min_value=2,
+      max_value=15,
+      value_change_step=1,
+      description=lambda: tr("实际角与期望角差值低于该值时立即接回横向（推荐约5度，应小于释放角度差）。"),
+      label_callback=lambda diff: f"{diff}°",
+    )
+    self._htd_curve_exit_model = option_item_sp(
+      param="dp_htd_curve_exit_model_angle",
+      title=lambda: tr("出弯释放模型转角门限"),
+      min_value=2,
+      max_value=15,
+      value_change_step=1,
+      description=lambda: tr("模型期望转角不高于该值（视为已近直行）才触发出弯释放（推荐约6度）。"),
+      label_callback=lambda angle: f"{angle}°",
+    )
+    self._htd_curve_latch = option_item_sp(
+      param="dp_htd_curve_latch_angle",
+      title=lambda: tr("出弯释放弯道确认转角"),
+      min_value=8,
+      max_value=40,
+      value_change_step=1,
+      description=lambda: tr("此前模型期望转角曾达到该值以上才确认刚经过弯道（Q3推荐约12度）。"),
+      label_callback=lambda angle: f"{angle}°",
     )
 
     items = [
@@ -148,6 +189,11 @@ class SteeringLayout(Widget):
       self._htd_turn_angle_threshold,
       self._htd_resume_angle_diff,
       self._htd_resume_delay,
+      self._htd_curve_exit_toggle,
+      self._htd_curve_exit_error,
+      self._htd_curve_exit_resume_error,
+      self._htd_curve_exit_model,
+      self._htd_curve_latch,
     ]
     return items
 
@@ -179,6 +225,12 @@ class SteeringLayout(Widget):
     self._htd_turn_angle_threshold.set_visible(htd_enabled)
     self._htd_resume_angle_diff.set_visible(htd_enabled)
     self._htd_resume_delay.set_visible(htd_enabled)
+    self._htd_curve_exit_toggle.set_visible(htd_enabled)
+    curve_exit_enabled = htd_enabled and self._htd_curve_exit_toggle.action_item.get_state()
+    self._htd_curve_exit_error.set_visible(curve_exit_enabled)
+    self._htd_curve_exit_resume_error.set_visible(curve_exit_enabled)
+    self._htd_curve_exit_model.set_visible(curve_exit_enabled)
+    self._htd_curve_latch.set_visible(curve_exit_enabled)
 
   def _render(self, rect):
     if self._current_panel == PanelType.LANE_CHANGE:
