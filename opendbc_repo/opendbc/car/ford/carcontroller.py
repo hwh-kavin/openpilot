@@ -350,19 +350,28 @@ class CarController(CarControllerBase):
     ### lateral control ###
     # send steer msg at 20Hz
     if (self.frame % CarControllerParams.STEER_STEP) == 0:
-      # Bronco and some other cars consistently overshoot curv requests
-      # Apply some deadzone + smoothing convergence to avoid oscillations
-      if self.CP.carFingerprint in (CAR.FORD_BRONCO_SPORT_MK1, CAR.FORD_F_150_MK14):
-        self.anti_overshoot_curvature_last = anti_overshoot(actuators.curvature, self.anti_overshoot_curvature_last, CS.out.vEgoRaw)
-        apply_curvature = self.anti_overshoot_curvature_last
-      else:
-        apply_curvature = actuators.curvature
-
-      # apply rate limits, curvature error limit, and clip to signal range
+      # Measured path curvature (yaw). Used for limits and to hold state while lat inactive.
       current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
 
-      self.apply_curvature_last = apply_ford_curvature_limits(apply_curvature, self.apply_curvature_last, current_curvature,
-                                                              CS.out.vEgoRaw, 0., CC.latActive, self.CP)
+      if not CC.latActive:
+        # Safety requires inactive κ=0. Clear filters so re-engage does not replay a curve.
+        self.apply_curvature_last = 0.0
+        self.anti_overshoot_curvature_last = 0.0
+        apply_curvature = 0.0
+      else:
+        # Bronco and some other cars consistently overshoot curv requests
+        # Apply some deadzone + smoothing convergence to avoid oscillations
+        if self.CP.carFingerprint in (CAR.FORD_BRONCO_SPORT_MK1, CAR.FORD_F_150_MK14):
+          self.anti_overshoot_curvature_last = anti_overshoot(actuators.curvature, self.anti_overshoot_curvature_last, CS.out.vEgoRaw)
+          apply_curvature = self.anti_overshoot_curvature_last
+        else:
+          apply_curvature = actuators.curvature
+
+        # apply rate limits, curvature error limit, and clip to signal range
+        # When lat was just re-enabled, apply_curvature_last is 0 → blend up from zero
+        # toward desired (which controlsd snapped to actual wheel during the pause).
+        self.apply_curvature_last = apply_ford_curvature_limits(apply_curvature, self.apply_curvature_last, current_curvature,
+                                                                CS.out.vEgoRaw, 0., CC.latActive, self.CP)
 
       if self.CP.flags & FordFlags.CANFD:
         # TODO: extended mode

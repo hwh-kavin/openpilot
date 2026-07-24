@@ -220,7 +220,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"dp_htd_curve_latch_angle", {PERSISTENT | BACKUP, FLOAT, "12.0"}},
     {"dp_htd_curve_exit_error", {PERSISTENT | BACKUP, FLOAT, "10.0"}},
     {"dp_htd_curve_exit_resume_error", {PERSISTENT | BACKUP, FLOAT, "5.0"}},
-    {"dp_htd_curve_exit_resume_delay_ms", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    {"dp_htd_curve_exit_resume_delay_ms", {PERSISTENT | BACKUP, FLOAT, "300.0"}},
     {"dp_acm_enabled", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // sunnylink params

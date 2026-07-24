@@ -16,7 +16,9 @@ DEFAULT_CURVE_EXIT_MODEL_DEG = 6.0       # model nearly straight
 DEFAULT_CURVE_LATCH_DEG = 12.0           # confirm we were in a curve
 DEFAULT_CURVE_EXIT_ERROR_DEG = 10.0      # |actual − model| to release
 DEFAULT_CURVE_EXIT_RESUME_ERROR_DEG = 5.0  # |actual − model| to re-engage (hysteresis)
-DEFAULT_CURVE_EXIT_RESUME_DELAY_MS = 0.0   # immediate takeback when aligned
+# Same role as human HTD delay: hold pause after align so desired κ snaps to
+# current wheel before re-engage (avoids replaying the prior curve command).
+DEFAULT_CURVE_EXIT_RESUME_DELAY_MS = 300.0
 
 
 def _log(message: str) -> None:
@@ -223,10 +225,13 @@ class HumanTurnDetection:
     self._angle_error_filter.update(angle_error)
     self._last_filtered_error = self._angle_error_filter.x
 
-    # Immediate takeback when near desired (raw error); delay default 0 ms
+    # Immediate takeback when near desired; delay lets desired κ snap to wheel for blend
     if angle_error < self._curve_exit_resume_error_deg:
-      return self._recovery_delay_elapsed(
-        "curve_exit_aligned", self._curve_exit_resume_delay_sec)
+      # Prefer shared HTD resume delay when curve-exit delay unset/zero legacy
+      delay = self._curve_exit_resume_delay_sec
+      if delay <= 0.0:
+        delay = self._resume_delay_sec
+      return self._recovery_delay_elapsed("curve_exit_aligned", delay)
 
     self._recovery_condition_met_since = None
     return False

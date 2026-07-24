@@ -3,6 +3,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.human_turn_detection import (
   HumanTurnDetection,
   PauseReason,
 )
+import time
 
 
 def _htd() -> HumanTurnDetection:
@@ -58,8 +59,23 @@ def test_curve_exit_immediate_resume_when_near_desired():
   allowed, state = h.update(True, 18.0, 20.0, False, 3.0)
   assert not allowed and state == HTDState.PAUSED
 
-  # Near desired → immediate takeback (raw error < 5°, delay 0)
+  # Near desired + delay 0 → takeback (desired κ snap happens in controlsd)
   allowed, state = h.update(True, 6.0, 20.0, False, 3.0)  # error=3
+  assert allowed and state == HTDState.INACTIVE
+
+
+def test_curve_exit_resume_uses_delay_when_set():
+  h = _htd()
+  h._curve_exit_resume_delay_sec = 0.05
+  h.update(True, 15.0, 20.0, False, 14.0)
+  h.update(True, 18.0, 20.0, False, 3.0)
+
+  # Aligned but delay not elapsed
+  allowed, state = h.update(True, 6.0, 20.0, False, 3.0)
+  assert not allowed and state == HTDState.PAUSED
+
+  time.sleep(0.06)
+  allowed, state = h.update(True, 6.0, 20.0, False, 3.0)
   assert allowed and state == HTDState.INACTIVE
 
 

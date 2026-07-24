@@ -23,7 +23,7 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 from openpilot.sunnypilot.selfdrive.controls.lib.curvature_lead import apply_curvature_lead, apply_curvature_exit_lead
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
-  FordFollowBarsDisplay, get_t_follow_auto, is_ford_auto_follow_gap,
+  FordFollowBarsDisplay, is_ford_auto_follow_gap,
 )
 
 State = log.SelfdriveState.OpenpilotState
@@ -144,22 +144,27 @@ class Controls(ControlsExt):
                                              pid_accel_limits, personality=personality))
 
     # Steering PID loop and lateral MPC
-    # Reset desired curvature to current to avoid violating the limits on engage
+    # When lat inactive (incl. HTD pause): snap desired to current wheel curvature so
+    # re-engage blends from actual angle — not a rate-limited leftover curve command.
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
-    if self.sm.valid['lateralManeuverPlan']:
-      new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature if CC.latActive else self.curvature
+    if not CC.latActive:
+      self.desired_curvature = float(self.curvature)
+      curvature_limited = False
     else:
-      new_desired_curvature = model_v2.action.desiredCurvature if CC.latActive else self.curvature
-      # Advance plan sampling when a sharp curve is predicted (no toggle).
-      # Larger predicted |κ| → larger lead so curvature climbs earlier into the turn.
-      if CC.latActive:
+      if self.sm.valid['lateralManeuverPlan']:
+        new_desired_curvature = self.sm['lateralManeuverPlan'].desiredCurvature
+      else:
+        new_desired_curvature = model_v2.action.desiredCurvature
+        # Advance plan sampling when a sharp curve is predicted (no toggle).
+        # Larger predicted |κ| → larger lead so curvature climbs earlier into the turn.
         new_desired_curvature = apply_curvature_lead(
           model_v2, CS.vEgo, new_desired_curvature, lat_delay,
         )
         new_desired_curvature = apply_curvature_exit_lead(
           model_v2, CS.vEgo, new_desired_curvature, lat_delay,
         )
-    self.desired_curvature, curvature_limited = clip_curvature(CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
+      self.desired_curvature, curvature_limited = clip_curvature(
+        CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
 
     actuators.curvature = self.desired_curvature
     steer, steeringAngleDeg, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
@@ -200,8 +205,7 @@ class Controls(ControlsExt):
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
     if is_ford_auto_follow_gap(self.params, self.CP):
       at_standstill = CS.standstill or CS.cruiseState.standstill
-      t_follow = get_t_follow_auto(CS.vEgo, at_standstill)
-      hudControl.leadDistanceBars = self._ford_follow_bars.update(t_follow, at_standstill)
+      hudControl.leadDistanceBars = self._ford_follow_bars.update(CS.vEgo, at_standstill)
     else:
       hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
     hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual

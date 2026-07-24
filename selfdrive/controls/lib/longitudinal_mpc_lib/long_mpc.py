@@ -119,25 +119,30 @@ def resolve_t_follow(v_ego: float, standstill: bool, personality, params, CP) ->
   return get_T_FOLLOW(personality)
 
 
-def _t_follow_to_bars_target(t_follow: float) -> int:
-  if t_follow <= 1.28:
+def _v_kph_to_bars_target(v_kph: float) -> int:
+  """Ford IPC distance bars from ego speed (km/h).
+
+  0–30 → 1, 30–50 → 2, 50–70 → 3, 70+ → 4
+  """
+  if v_kph < 30.0:
     return 1
-  if t_follow <= 1.42:
+  if v_kph < 50.0:
     return 2
-  if t_follow <= 1.58:
+  if v_kph < 70.0:
     return 3
   return 4
 
 
 class FordFollowBarsDisplay:
-  """Smooth Ford IPC 1–4 bar display for auto t_follow."""
+  """Smooth Ford IPC 1–4 bar display for speed-based auto follow gap."""
 
   def __init__(self):
     self.bars = 3
     self._last_change = 0.0
 
-  def update(self, t_follow: float, standstill: bool) -> int:
-    target = 1 if standstill else _t_follow_to_bars_target(t_follow)
+  def update(self, v_ego: float, standstill: bool) -> int:
+    from opendbc.car.common.conversions import Conversions as CV
+    target = 1 if standstill else _v_kph_to_bars_target(max(0.0, v_ego * CV.MS_TO_KPH))
     now = time.monotonic()
     if target != self.bars:
       if (now - self._last_change) >= _FORD_FOLLOW_BARS_HOLD_S or abs(target - self.bars) > 1:
