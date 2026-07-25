@@ -64,6 +64,10 @@ RATIO_EXIT_THRESHOLD = 1.05
 TARGET_FACTOR_FILTER_ALPHA = 0.3
 SOFT_HOLD_HYSTERESIS_TIME = 1.0
 
+# Lead-aware cruise coast: enter/exit on coast_strength (TTC + safe-distance ratio)
+LEAD_COAST_STRENGTH_ENTER = 0.6
+LEAD_COAST_STRENGTH_EXIT = 0.25
+
 
 class ComfortState:
   OFF = 0
@@ -128,7 +132,7 @@ def compute_follow_margin(strength: float, pitch: float) -> float:
 
 
 # =========================================================
-# L3 comfort: cruise coast (no lead, above set speed)
+# L3 comfort: cruise coast (no lead, or lead at safe distance)
 # =========================================================
 class CoastingLogic:
   def __init__(self):
@@ -138,6 +142,7 @@ class CoastingLogic:
     self.coast_v_cruise = 0.0
     self.coast_v_upper = 0.0
     self._last_lead_time = 0.0
+    self._lead_aware = False
 
   def check_emergency(self, lead, v_ego, current_time):
     if not lead or not lead.status:
@@ -162,6 +167,7 @@ class CoastingLogic:
     if not enabled:
       self.active = False
       self.coast_strength = 0.0
+      self._lead_aware = False
       return
 
     has_lead = lead is not None and lead.status
@@ -178,13 +184,22 @@ class CoastingLogic:
     is_in_coast_window = (v_ego >= lower_bound and v_ego < self.coast_v_upper)
     in_cooldown = (current_time - self._last_lead_time) < LEAD_COOLDOWN_TIME
 
-    self.active = (not has_lead and
+    if has_lead:
+      if self.active and self._lead_aware:
+        lead_ok = self.coast_strength >= LEAD_COAST_STRENGTH_EXIT
+      else:
+        lead_ok = self.coast_strength >= LEAD_COAST_STRENGTH_ENTER
+    else:
+      lead_ok = True
+
+    self.active = (lead_ok and
                    not dtsc_is_active and
                    current_pitch <= PITCH_UPHILL_THRESHOLD and
                    not user_ctrl_lon and
                    not in_cooldown and
                    is_in_coast_window and
                    self.coast_strength > 0.0)
+    self._lead_aware = self.active and has_lead
 
   def process_trajectory(self, a_desired_trajectory, pitch):
     if not self.active or pitch is None:
@@ -193,13 +208,21 @@ class CoastingLogic:
     traj = np.copy(a_desired_trajectory)
     if np.min(traj) < EMERGENCY_DECEL_THRESHOLD:
       self.active = False
+      self._lead_aware = False
       return a_desired_trajectory
 
-    a_floor = get_coast_accel(pitch)
-    return np.maximum(traj, a_floor)
+    a_coast = get_coast_accel(pitch)
+    if self._lead_aware:
+      # Cut throttle; allow coast-level drag only (no harder brake than coast)
+      return np.clip(traj, a_coast, 0.0)
+    return np.maximum(traj, a_coast)
 
   def process_v_trajectory(self, v_desired_trajectory, v_ego):
     if not self.active:
+      return v_desired_trajectory
+
+    # With a lead, do not pin speed to cruise set — that fights follow slowing
+    if self._lead_aware:
       return v_desired_trajectory
 
     v_min_target = max(self.coast_v_cruise, v_ego)
@@ -492,6 +515,7 @@ class ACM:
       self.comfort_state = ComfortState.OFF
       self.coasting.active = False
       self.coasting.coast_strength = 0.0
+      self.coasting._lead_aware = False
       self.follow_coast.active = False
       if road_pitch is not None:
         self.current_pitch = road_pitch
@@ -508,6 +532,7 @@ class ACM:
       self.comfort_state = ComfortState.MPC_FOLLOW
       self.coasting.active = False
       self.coasting.coast_strength = 0.0
+      self.coasting._lead_aware = False
       self.follow_coast.active = False
       return
 
@@ -574,7 +599,13 @@ class ACM:
     if a_target < EMERGENCY_DECEL_THRESHOLD:
       return a_target
 
-    if self.comfort_state in (ComfortState.CRUISE_COAST, ComfortState.FOLLOW_COAST):
+    if self.comfort_state == ComfortState.CRUISE_COAST:
+      a_coast = get_coast_accel(pitch)
+      if self.coasting._lead_aware:
+        return float(min(max(a_target, a_coast), 0.0))
+      return float(max(a_target, a_coast))
+
+    if self.comfort_state == ComfortState.FOLLOW_COAST:
       return float(max(a_target, get_coast_accel(pitch)))
 
     # Soft hold / MPC follow comfort on a single-sample trajectory
