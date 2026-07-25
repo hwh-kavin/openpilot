@@ -13,7 +13,8 @@ ANGLE_ERROR_FILTER_RC = 0.25
 
 # Curve-exit defaults (Ford Q3–friendly: difference-based, not absolute steer ≥25°)
 DEFAULT_CURVE_EXIT_MODEL_DEG = 6.0       # model nearly straight
-DEFAULT_CURVE_LATCH_DEG = 12.0           # confirm we were in a curve
+DEFAULT_CURVE_LATCH_DEG = 16.0           # confirm we were in a curve
+DEFAULT_CURVE_LATCH_DISTANCE_M = 10.0    # sustained curve distance to filter model spikes
 DEFAULT_CURVE_EXIT_ERROR_DEG = 10.0      # |actual − model| to release
 DEFAULT_CURVE_EXIT_RESUME_ERROR_DEG = 5.0  # |actual − model| to re-engage (hysteresis)
 # Same role as human HTD delay: hold pause after align so desired κ snaps to
@@ -54,6 +55,7 @@ class HumanTurnDetection:
     self._curve_exit_enabled = True
     self._curve_exit_model_deg = DEFAULT_CURVE_EXIT_MODEL_DEG
     self._curve_latch_deg = DEFAULT_CURVE_LATCH_DEG
+    self._curve_latch_distance_m = DEFAULT_CURVE_LATCH_DISTANCE_M
     self._curve_exit_error_deg = DEFAULT_CURVE_EXIT_ERROR_DEG
     self._curve_exit_resume_error_deg = DEFAULT_CURVE_EXIT_RESUME_ERROR_DEG
     self._curve_exit_resume_delay_sec = DEFAULT_CURVE_EXIT_RESUME_DELAY_MS / 1000.0
@@ -61,6 +63,7 @@ class HumanTurnDetection:
     self._state: HTDState = HTDState.INACTIVE
     self._pause_reason = PauseReason.NONE
     self._curve_latched = False
+    self._curve_hold_distance_m = 0.0
     self._angle_error_filter = FirstOrderFilter(0.0, ANGLE_ERROR_FILTER_RC, 0.01)
     self._recovery_condition_met_since: float | None = None
 
@@ -88,6 +91,8 @@ class HumanTurnDetection:
       "dp_htd_curve_exit_model_angle", DEFAULT_CURVE_EXIT_MODEL_DEG)
     self._curve_latch_deg = self._get_float(
       "dp_htd_curve_latch_angle", DEFAULT_CURVE_LATCH_DEG)
+    self._curve_latch_distance_m = max(0.0, self._get_float(
+      "dp_htd_curve_latch_distance", DEFAULT_CURVE_LATCH_DISTANCE_M))
     self._curve_exit_error_deg = self._get_float(
       "dp_htd_curve_exit_error", DEFAULT_CURVE_EXIT_ERROR_DEG)
     self._curve_exit_resume_error_deg = self._get_float(
@@ -109,6 +114,7 @@ class HumanTurnDetection:
     self._recovery_condition_met_since = None
     if new_state == HTDState.INACTIVE:
       self._curve_latched = False
+      self._curve_hold_distance_m = 0.0
     elif new_state == HTDState.PAUSED and pause_reason == PauseReason.CURVE_EXIT:
       # Seed filter with current error so we don't falsely resume on first frames
       err = abs(self._last_model_angle - self._last_steer_deg)
@@ -118,7 +124,8 @@ class HumanTurnDetection:
       f"HTD {new_state.name} reason={reason} pause={self._pause_reason.name} "
       f"angle={self._last_angle:.1f} model={self._last_model_angle:.1f} "
       f"err={self._last_filtered_error:.1f} pressed={self._last_pressed} "
-      f"curve_latched={self._curve_latched} delay={self._resume_delay_sec:.2f}"
+      f"curve_latched={self._curve_latched} hold_m={self._curve_hold_distance_m:.1f} "
+      f"delay={self._resume_delay_sec:.2f}"
     )
 
   def update(
@@ -149,11 +156,11 @@ class HumanTurnDetection:
     if v_ego < MIN_SPEED_MS:
       if self._state != HTDState.INACTIVE:
         self._transition(HTDState.INACTIVE, "low_speed")
+      self._curve_hold_distance_m = 0.0
       return True, self._state
 
-    # Remember we were in a meaningful curve (model wanted large steer)
-    if abs(model_desired_angle_deg) >= self._curve_latch_deg:
-      self._curve_latched = True
+    # Sustained curve: model angle held while covering latch distance (filters spikes)
+    self._update_curve_latch(model_desired_angle_deg, v_ego, dt)
 
     if self._state == HTDState.INACTIVE:
       if lat_active and self._should_trigger_human():
@@ -189,10 +196,31 @@ class HumanTurnDetection:
   def _should_trigger_human(self) -> bool:
     return self._last_pressed and self._last_angle >= self._angle_threshold_deg
 
+  def _update_curve_latch(self, model_desired_angle_deg: float, v_ego: float, dt: float) -> None:
+    """Latch only after model steer stays high over a driven distance."""
+    if self._curve_latched:
+      return
+
+    if abs(model_desired_angle_deg) >= self._curve_latch_deg:
+      self._curve_hold_distance_m += max(v_ego, 0.0) * max(dt, 0.0)
+      if self._curve_hold_distance_m >= self._curve_latch_distance_m:
+        self._curve_latched = True
+        _log(
+          f"HTD curve_latched hold_m={self._curve_hold_distance_m:.1f} "
+          f"need_m={self._curve_latch_distance_m:.1f} model={model_desired_angle_deg:.1f}"
+        )
+    else:
+      # Brief model dip / spike end — reset sustained-distance accumulator
+      self._curve_hold_distance_m = 0.0
+
   def _should_trigger_curve_exit(self) -> bool:
     """
-    Release lat after a curve when model is nearly straight but |actual − model|
-    is still large — vehicle self-centers, then we re-engage near desired.
+    Release lat after a curve only when:
+      - model is nearly straight (exit), and
+      - |actual − model| is large, and
+      - actual is further from center than model (needs unwind / self-center).
+
+    If |actual| <= |model|, OP still needs to add turn — do not release.
     """
     if not self._curve_exit_enabled:
       return False
@@ -208,7 +236,11 @@ class HumanTurnDetection:
       return False
 
     angle_error = abs(self._last_model_angle - self._last_steer_deg)
-    return angle_error >= self._curve_exit_error_deg
+    if angle_error < self._curve_exit_error_deg:
+      return False
+
+    # Need return-to-center: wheel more cocked than desired
+    return self._last_angle > model_abs + 1e-3
 
   def _curve_exit_recovery_ready(self, steering_angle_deg: float,
                                  model_desired_angle_deg: float) -> bool:

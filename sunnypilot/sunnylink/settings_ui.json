@@ -616,9 +616,60 @@
                   ],
                   "sub_items": [
                     {
+                      "key": "dp_htd_curve_latch_angle",
+                      "widget": "option",
+                      "title": "\u5f2f\u9053\u786e\u8ba4\u8f6c\u89d2",
+                      "description": "\u6a21\u578b\u671f\u671b\u8f6c\u89d2\u6301\u7eed\u8fbe\u5230\u8be5\u503c\u4ee5\u4e0a\uff0c\u624d\u5f00\u59cb\u7d2f\u8ba1\u5f2f\u9053\u786e\u8ba4\u8ddd\u79bb\uff08\u63a8\u8350\u7ea616\u5ea6\uff09\u3002",
+                      "min": 8,
+                      "max": 40,
+                      "step": 1,
+                      "unit": "\u00b0",
+                      "enablement": [
+                        {
+                          "type": "param",
+                          "key": "dp_htd_curve_exit_enabled",
+                          "equals": true
+                        }
+                      ]
+                    },
+                    {
+                      "key": "dp_htd_curve_latch_distance",
+                      "widget": "option",
+                      "title": "\u5f2f\u9053\u786e\u8ba4\u8ddd\u79bb",
+                      "description": "\u671f\u671b\u8f6c\u89d2\u6301\u7eed\u8d85\u95e8\u9650\u5e76\u884c\u9a76\u4e0d\u5c11\u4e8e\u8be5\u8ddd\u79bb\uff0c\u624d\u786e\u8ba4\u6709\u6548\u5f2f\u9053\uff0c\u7528\u4e8e\u8fc7\u6ee4\u6a21\u578b\u77ed\u6682\u6296\u52a8\uff08\u63a8\u8350\u7ea610\u7c73\uff09\u3002",
+                      "min": 5,
+                      "max": 50,
+                      "step": 5,
+                      "unit": "m",
+                      "enablement": [
+                        {
+                          "type": "param",
+                          "key": "dp_htd_curve_exit_enabled",
+                          "equals": true
+                        }
+                      ]
+                    },
+                    {
+                      "key": "dp_htd_curve_exit_model_angle",
+                      "widget": "option",
+                      "title": "\u6a21\u578b\u76f4\u884c\u95e8\u9650",
+                      "description": "\u6a21\u578b\u671f\u671b\u8f6c\u89d2\u4e0d\u9ad8\u4e8e\u8be5\u503c\uff08\u89c6\u4e3a\u5df2\u8fd1\u76f4\u884c\uff09\u624d\u89e6\u53d1\uff08\u63a8\u8350\u7ea66\u5ea6\uff09\u3002",
+                      "min": 2,
+                      "max": 15,
+                      "step": 1,
+                      "unit": "\u00b0",
+                      "enablement": [
+                        {
+                          "type": "param",
+                          "key": "dp_htd_curve_exit_enabled",
+                          "equals": true
+                        }
+                      ]
+                    },
+                    {
                       "key": "dp_htd_curve_exit_error",
                       "widget": "option",
-                      "title": "\u51fa\u5f2f\u91ca\u653e\u89d2\u5ea6\u5dee",
+                      "title": "\u89e6\u53d1\u91ca\u653e\u89d2\u5ea6\u5dee",
                       "description": "\u5b9e\u9645\u8f6c\u89d2\u4e0e\u6a21\u578b\u671f\u671b\u7684\u5dee\u503c\u4e0d\u4f4e\u4e8e\u8be5\u503c\u65f6\u89e6\u53d1\u51fa\u5f2f\u91ca\u653e\uff08\u63a8\u8350\u7ea610\u5ea6\uff09\u3002",
                       "min": 5,
                       "max": 25,
@@ -635,44 +686,10 @@
                     {
                       "key": "dp_htd_curve_exit_resume_error",
                       "widget": "option",
-                      "title": "\u51fa\u5f2f\u63a5\u56de\u89d2\u5ea6\u5dee",
+                      "title": "\u6a2a\u5411\u63a5\u56de\u89d2\u5ea6\u5dee",
                       "description": "\u5b9e\u9645\u89d2\u4e0e\u671f\u671b\u89d2\u5dee\u503c\u4f4e\u4e8e\u8be5\u503c\u65f6\u7acb\u5373\u63a5\u56de\uff08\u63a8\u8350\u7ea65\u5ea6\uff0c\u5e94\u5c0f\u4e8e\u91ca\u653e\u89d2\u5ea6\u5dee\uff09\u3002",
                       "min": 2,
                       "max": 15,
-                      "step": 1,
-                      "unit": "\u00b0",
-                      "enablement": [
-                        {
-                          "type": "param",
-                          "key": "dp_htd_curve_exit_enabled",
-                          "equals": true
-                        }
-                      ]
-                    },
-                    {
-                      "key": "dp_htd_curve_exit_model_angle",
-                      "widget": "option",
-                      "title": "\u51fa\u5f2f\u91ca\u653e\u6a21\u578b\u8f6c\u89d2\u95e8\u9650",
-                      "description": "\u6a21\u578b\u671f\u671b\u8f6c\u89d2\u4e0d\u9ad8\u4e8e\u8be5\u503c\uff08\u89c6\u4e3a\u5df2\u8fd1\u76f4\u884c\uff09\u624d\u89e6\u53d1\uff08\u63a8\u8350\u7ea66\u5ea6\uff09\u3002",
-                      "min": 2,
-                      "max": 15,
-                      "step": 1,
-                      "unit": "\u00b0",
-                      "enablement": [
-                        {
-                          "type": "param",
-                          "key": "dp_htd_curve_exit_enabled",
-                          "equals": true
-                        }
-                      ]
-                    },
-                    {
-                      "key": "dp_htd_curve_latch_angle",
-                      "widget": "option",
-                      "title": "\u51fa\u5f2f\u91ca\u653e\u5f2f\u9053\u786e\u8ba4\u8f6c\u89d2",
-                      "description": "\u6b64\u524d\u6a21\u578b\u671f\u671b\u8f6c\u89d2\u66fe\u8fbe\u5230\u8be5\u503c\u4ee5\u4e0a\u624d\u786e\u8ba4\u521a\u7ecf\u8fc7\u5f2f\u9053\uff08Q3\u63a8\u8350\u7ea612\u5ea6\uff09\u3002",
-                      "min": 8,
-                      "max": 40,
                       "step": 1,
                       "unit": "\u00b0",
                       "enablement": [

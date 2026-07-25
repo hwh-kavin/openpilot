@@ -2293,36 +2293,60 @@ msgid "出弯后模型已近直行且实际角与期望角差值偏大时释放�
 msgstr "出彎後模型已近直行且實際角與期望角差值偏大時釋放橫向，車身回正至接近期望後立即接回。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
-msgid "出弯释放角度差"
-msgstr "出彎釋放角度差"
+msgid "触发释放角度差"
+msgstr "觸發釋放角度差"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
-msgid "实际转角与模型期望的差值不低于该值时触发出弯释放（推荐约10度）。"
-msgstr "實際轉角與模型期望的差值不低於該值時觸發出彎釋放（推薦約10度）。"
+msgid "触发释放横向角度差"
+msgstr "觸發釋放角度差"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
-msgid "出弯接回角度差"
-msgstr "出彎接回角度差"
+msgid "实际转角与模型期望的差值不低于该值时触发出弯释放（推荐约8度）。"
+msgstr "實際轉角與模型期望的差值不低於該值時觸發出彎釋放（推薦約8度）。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "横向接回角度差"
+msgstr "橫向接回角度差"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "横向接回角度差差"
+msgstr "橫向接回角度差"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
 msgid "实际角与期望角差值低于该值时立即接回横向（推荐约5度，应小于释放角度差）。"
 msgstr "實際角與期望角差值低於該值時立即接回橫向（推薦約5度，應小於釋放角度差）。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
-msgid "出弯释放模型转角门限"
-msgstr "出彎釋放模型轉角門限"
+msgid "模型直行门限"
+msgstr "模型直行門限"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "模型角度小于设定认为前方直道"
+msgstr "模型直行門限"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
 msgid "模型期望转角不高于该值（视为已近直行）才触发出弯释放（推荐约6度）。"
 msgstr "模型期望轉角不高於該值（視為已近直行）才觸發出彎釋放（推薦約6度）。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
-msgid "出弯释放弯道确认转角"
-msgstr "出彎釋放彎道確認轉角"
+msgid "弯道确认转角"
+msgstr "彎道確認轉角"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
 msgid "此前模型期望转角曾达到该值以上才确认刚经过弯道（Q3推荐约12度）。"
-msgstr "此前模型期望轉角曾達到該值以上才確認剛經過彎道（Q3推薦約12度）。"
+msgstr "模型期望轉角持續達到該值以上，才開始累計彎道確認距離（Q3推薦約12度）。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "模型期望转角持续达到该值以上，才开始累计弯道确认距离（推荐约16度）。"
+msgstr "模型期望轉角持續達到該值以上，才開始累計彎道確認距離（推薦約16度）。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "弯道确认距离"
+msgstr "彎道確認距離"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "期望转角持续超门限并行驶不少于该距离，才确认有效弯道，用于过滤模型短暂抖动（推荐约10米）。"
+msgstr "期望轉角持續超門限並行駛不少於該距離，才確認有效彎道，用於過濾模型短暫抖動（推薦約10米）。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/widgets/setup.py
 msgid "🔥 Firehose Mode 🔥"
