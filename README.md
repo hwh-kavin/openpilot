@@ -1,36 +1,46 @@
 ![](https://user-images.githubusercontent.com/47793918/233812617-beab2e71-57b9-479e-8bff-c3931347ca40.png)
 
-## 🌞 What is sunnypilot?
-[sunnypilot](https://github.com/sunnyhaibin/sunnypilot) is a fork of comma.ai's openpilot, an open source driver assistance system. sunnypilot offers the user a unique driving experience for over 300+ supported car makes and models with modified behaviors of driving assist engagements. sunnypilot complies with comma.ai's safety rules as accurately as possible.
+## 请先切换到 spbig260427-2 分支，随后再切换到本分支
+  1、优化了纵向，将原车纵向和OP视觉纵向融合，弯道减速、高速状态远距离优先选择OP预刹车；
+  2、优化跟车起步响应；
+  3、优化刹车，允许超过设定速度，优先使用油门减速，再启用EPS刹车；
+  4、增加高德地图分屏显示，在配置了高德服务密钥和端密钥后，且WIFI联网正常，可以显示高德分屏地图；
+  5、网页可以访问openpilot，配置参数，包括配置高德参数，目的地址设置；
+  6、横向增加了跟随前方弯道最大曲率，动态改变横向曲率提前量；理论上能过更大弯道；
+  7、修改了panda的部分横向限制；横向最大步径角度能提高一点；
 
-## 💭 Join our Community Forum
-Join the official sunnypilot community forum to stay up to date with all the latest features and be a part of shaping the future of sunnypilot!
+
+## 什么是 sunnypilot？
+[sunnypilot](https://github.com/sunnyhaibin/sunnypilot)是comma.ai的openpilot项目的分支，后者是一款开源驾驶辅助系统。sunnypilot为用户提供了独特的驾驶体验，支持300多种汽车品牌与车型，并对驾驶辅助功能的触发行为进行了定制化调整。sunnypilot 尽可能严格地遵守 comma.ai 的安全规范。
+
+## 加入我们的社区论坛
+加入官方的 sunnypilot 社区论坛，及时了解所有最新功能，并参与塑造 sunnypilot 的未来！
 * https://community.sunnypilot.ai/
 
-## Documentation
-https://docs.sunnypilot.ai/ is your one stop shop for everything from features to installation to FAQ about the sunnypilot
+##文档
+https://docs.sunnypilot.ai/ 是您了解 sunnypilot 各项功能、安装指南及常见问题解答的一站式入口。
 
-## 🚘 Running on a dedicated device in a car
-First, check out this list of items you'll need to [get started](https://community.sunnypilot.ai/t/getting-started-using-sunnypilot-in-your-supported-car/251).
+##在汽车中的专用设备上运行
+首先，请查看这份您需要准备的事项清单[入门指南](https://community.sunnypilot.ai/t/getting-started-using-sunnypilot-in-your-supported-car/251).
 
-## Installation
-Next, refer to the sunnypilot community forum for [installation instructions](https://community.sunnypilot.ai/t/read-before-installing-sunnypilot/254), as well as a complete list of [Recommended Branch Installations](https://community.sunnypilot.ai/t/recommended-branch-installations/235).
+##安装
+接下来，请参阅 sunnypilot 社区论坛中的安装说明](https://community.sunnypilot.ai/t/read-before-installing-sunnypilot/254)，以及完整的[推荐分支安装列表]
 
-## 🎆 Pull Requests
-We welcome both pull requests and issues on GitHub. Bug fixes are encouraged.
+##拉取请求
+我们欢迎在GitHub上提交拉取请求和问题。鼓励修复漏洞。
 
-Pull requests should be against the most current `master` branch.
+拉取请求应基于最新的`master`分支。
 
-## 📊 User Data
+##用户数据
 
-By default, sunnypilot uploads the driving data to comma servers. You can also access your data through [comma connect](https://connect.comma.ai/).
+默认情况下，sunnypilot 会将驾驶数据上传至 comma 服务器。您也可以通过[comma connect](https://connect.comma.ai/).
 
-sunnypilot is open source software. The user is free to disable data collection if they wish to do so.
+sunnypilot 是一款开源软件。用户如需，可自行选择禁用数据收集功能。
 
-sunnypilot logs the road-facing camera, CAN, GPS, IMU, magnetometer, thermal sensors, crashes, and operating system logs.
-The driver-facing camera and microphone are only logged if you explicitly opt-in in settings.
+sunnypilot 会记录面向道路的摄像头、CAN 总线、GPS、IMU、磁力计、温度传感器数据，以及车辆碰撞信息和操作系统日志。
+面向驾驶员的摄像头和麦克风仅在您于设置中明确选择启用时才会被记录。
 
-By using this software, you understand that use of this software or its related services will generate certain types of user data, which may be logged and stored at the sole discretion of comma. By accepting this agreement, you grant an irrevocable, perpetual, worldwide right to comma for the use of this data.
+通过使用本软件，您理解：使用本软件或其相关服务将产生特定类型的用户数据，这些数据可能会由comma自行决定进行记录和存储。在您同意本协议的同时，您即授予comma一项不可撤销、永久且全球范围内的权利，以用于处理上述数据。
 
 ## Licensing
 
