@@ -1,6 +1,6 @@
 ![](https://user-images.githubusercontent.com/47793918/233812617-beab2e71-57b9-479e-8bff-c3931347ca40.png)
 
-##在安装 sp-master260612 之前，请先切换到 spbig260427-2 分支，随后再安装本分支
+## 在安装 sp-master260612 之前，请先切换到 spbig260427-2 分支，随后再安装本分支
 本分支从 sunnypilot 的 master 分支 fork 而来, 260427是fork日期；
 
   1、优化了纵向，将原车纵向和OP视觉纵向融合，弯道减速、高速状态远距离优先选择OP预刹车；
