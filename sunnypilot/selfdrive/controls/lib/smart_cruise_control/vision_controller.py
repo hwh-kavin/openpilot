@@ -32,14 +32,22 @@ ACTIVE_STATES = (VisionState.entering, VisionState.turning, VisionState.leaving)
 ENABLED_STATES = (VisionState.enabled, VisionState.overriding, *ACTIVE_STATES)
 
 _TURNING_LAT_ACC_TH = 1.6
-_LEAVING_LAT_ACC_TH = 1.3
-_FINISH_LAT_ACC_TH = 1.1
+_LEAVING_LAT_ACC_TH = 1.2  # wider gap vs turning re-entry (1.6) to reduce mid-curve flap
+_FINISH_LAT_ACC_TH = 1.0
 
-_NO_OVERSHOOT_TIME_HORIZON = 3.5  # s
+# Inflates cruise setpoint for MPC anti-overshoot; keep modest so a noise
+# does not continuously pump v_cruise mid-curve (Δa * horizon).
+_NO_OVERSHOOT_TIME_HORIZON = 2.5  # s
 
-_A_TARGET_FILTER_RC = 0.45
-_V_TARGET_FILTER_RC = 0.55
-_V_TARGET_RISE_RC = 0.18
+_A_TARGET_FILTER_RC = 0.70
+_V_TARGET_FILTER_RC = 0.55       # allow slowing when κ demand rises
+_V_TARGET_RISE_RC = 0.18         # leaving only: snappy cruise recovery
+_V_TARGET_HOLD_RISE_RC = 1.40    # entering/turning: reject momentary κ dips
+_KAPPA_NOW_FILTER_RC = 0.40
+
+# Rate-limit the cruise setpoint published to MPC (m/s² equivalent on v)
+_OUTPUT_V_RATE_UP = 0.6
+_OUTPUT_V_RATE_DOWN = 2.5
 
 _LEAVING_ACC = 0.6
 
@@ -82,6 +90,9 @@ class SmartCruiseControlVision:
     self.v_passable = 0.
     self._a_target_filter = FirstOrderFilter(0.0, _A_TARGET_FILTER_RC, DT_MDL, initialized=False)
     self._v_target_filter = FirstOrderFilter(0.0, _V_TARGET_FILTER_RC, DT_MDL, initialized=False)
+    self._kappa_now_filter = FirstOrderFilter(0.0, _KAPPA_NOW_FILTER_RC, DT_MDL, initialized=False)
+    self._output_v_target = V_CRUISE_UNSET
+    self._output_v_initialized = False
 
   @staticmethod
   def _lateral_saturated(controls_state) -> bool:
@@ -97,10 +108,30 @@ class SmartCruiseControlVision:
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
-      v_turn = max(self.v_target, self.v_passable, MIN_V)
+      # Use filtered v_target only. v_passable is the raw plan and would bypass
+      # mid-curve hold-rise filtering whenever κ momentarily eases.
+      v_turn = max(self.v_target, MIN_V)
       return v_turn + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
 
     return V_CRUISE_UNSET
+
+  def _slew_output_v_target(self, v_raw: float) -> float:
+    """Limit frame-to-frame cruise setpoint changes while vision SCC is active."""
+    if not self.is_active or v_raw >= V_CRUISE_UNSET:
+      self._output_v_initialized = False
+      self._output_v_target = V_CRUISE_UNSET
+      return V_CRUISE_UNSET
+
+    if not self._output_v_initialized:
+      self._output_v_target = v_raw
+      self._output_v_initialized = True
+      return self._output_v_target
+
+    max_up = _OUTPUT_V_RATE_UP * DT_MDL
+    max_down = _OUTPUT_V_RATE_DOWN * DT_MDL
+    dv = float(np.clip(v_raw - self._output_v_target, -max_down, max_up))
+    self._output_v_target += dv
+    return self._output_v_target
 
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
@@ -126,7 +157,8 @@ class SmartCruiseControlVision:
     )
     kappa_des = abs(float(cs.desiredCurvature))
     kappa_path = abs(float(cs.curvature))
-    self.kappa_now = max(kappa_des, kappa_meas, kappa_path)
+    # Filter current κ so steer/path chatter does not pump v_corner mid-curve.
+    self.kappa_now = self._kappa_now_filter.update(max(kappa_des, kappa_meas, kappa_path))
 
     self.current_lat_acc = compute_actual_lat_accel(self.v_ego, cs.curvature)
     self.actual_lat_acc = max(
@@ -249,7 +281,10 @@ class SmartCruiseControlVision:
     if self.is_active:
       v_turn = max(self.v_target, self.v_passable, MIN_V)
       if v_turn > self._v_target_filter.x:
-        self._v_target_filter.update_alpha(_V_TARGET_RISE_RC)
+        # Mid-curve: rise slowly so κ noise cannot ratchet speed up/down.
+        # Leaving: allow fast rise so cruise recovers after apex.
+        rise_rc = _V_TARGET_RISE_RC if self.state == VisionState.leaving else _V_TARGET_HOLD_RISE_RC
+        self._v_target_filter.update_alpha(rise_rc)
       else:
         self._v_target_filter.update_alpha(_V_TARGET_FILTER_RC)
       self._v_target_filter.update(v_turn)
@@ -257,7 +292,7 @@ class SmartCruiseControlVision:
     elif not self._v_target_filter.initialized:
       self._v_target_filter.update(max(self.v_ego, MIN_V))
 
-    self.output_v_target = self.get_v_target_from_control()
+    self.output_v_target = self._slew_output_v_target(self.get_v_target_from_control())
     self.output_a_target = self.get_a_target_from_control()
 
     self.frame += 1
