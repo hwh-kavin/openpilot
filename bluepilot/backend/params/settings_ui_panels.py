@@ -36,6 +36,7 @@ PANEL_ORDER = [
   "bp_display_panel",
   "bp_models_panel",
   "bp_vehicle_panel",
+  "bp_osm_panel",
   "bp_developer_panel",
 ]
 
@@ -48,45 +49,13 @@ ICON_BY_PANEL = {
   "bp_display_panel": "monitor",
   "bp_models_panel": "model_training",
   "bp_vehicle_panel": "directions_car",
+  "bp_osm_panel": "map",
   "bp_developer_panel": "code",
 }
 
 STRING_PARAM_ACTIONS: dict[str, str] = {
-  "AmapApiKey": "set_amap_api_key",
-  "AmapSecurityJsCode": "set_amap_security_js_code",
-  "AmapWebServiceKey": "set_amap_web_service_key",
 }
 
-AMAP_SETTINGS_GROUP: dict[str, Any] = {
-  "groupName": "amap_online_map",
-  "title": "Amap Online Map",
-  "controls": [
-    {
-      "type": "command_button",
-      "param": "AmapApiKey",
-      "title": "Amap API Key",
-      "desc": "JS API 2.0 Key for the driving split-screen map display",
-      "button_text": "EDIT",
-      "action": "set_amap_api_key",
-    },
-    {
-      "type": "command_button",
-      "param": "AmapSecurityJsCode",
-      "title": "Amap Security Key",
-      "desc": "JS API 2.0 security key for the driving split-screen map",
-      "button_text": "EDIT",
-      "action": "set_amap_security_js_code",
-    },
-    {
-      "type": "command_button",
-      "param": "AmapWebServiceKey",
-      "title": "Amap Web Service Key",
-      "desc": "Web Service Key for on-device route planning (required for navigation)",
-      "button_text": "EDIT",
-      "action": "set_amap_web_service_key",
-    },
-  ],
-}
 
 
 def _resolve_unit(unit: Any) -> str | None:
@@ -348,6 +317,61 @@ def _load_settings_ui() -> dict[str, Any]:
   return json.loads(SETTINGS_UI_PATH.read_text(encoding="utf-8"))
 
 
+def _ui_locale() -> str:
+  try:
+    from bluepilot.backend.network.utils import get_portal_language
+    return get_portal_language()
+  except Exception:
+    return "en"
+
+
+def _zh_translations() -> dict[str, str]:
+  try:
+    from bluepilot.backend.params.param_labels import _load_po_translations
+    _load_po_translations.cache_clear()
+    return _load_po_translations()
+  except Exception:
+    return {}
+
+
+def _tr_text(text: str, translations: dict[str, str]) -> str:
+  if not text:
+    return text
+  return translations.get(text, text) or text
+
+
+def _localize_panel_meta(info: dict[str, str], translations: dict[str, str]) -> dict[str, str]:
+  out = dict(info)
+  if "name" in out:
+    out["name"] = _tr_text(out["name"], translations)
+  if "description" in out:
+    out["description"] = _tr_text(out["description"], translations)
+  return out
+
+
+def _localize_panel(panel: dict[str, Any], translations: dict[str, str]) -> dict[str, Any]:
+  out = dict(panel)
+  for key in ("menuName", "menuDescription"):
+    if key in out and isinstance(out[key], str):
+      out[key] = _tr_text(out[key], translations)
+  groups = []
+  for group in out.get("groups") or []:
+    g = dict(group)
+    if isinstance(g.get("title"), str):
+      g["title"] = _tr_text(g["title"], translations)
+    controls = []
+    for control in g.get("controls") or []:
+      c = dict(control)
+      for field in ("title", "desc"):
+        if isinstance(c.get(field), str):
+          c[field] = _tr_text(c[field], translations)
+      controls.append(c)
+    g["controls"] = controls
+    groups.append(g)
+  out["groups"] = groups
+  return out
+
+
 def list_panels() -> list[dict[str, str]]:
   """Return panel metadata for /api/panels."""
   data = _load_settings_ui()
@@ -389,6 +413,10 @@ def list_panels() -> list[dict[str, str]]:
   for bp_id, info in panels_by_id.items():
     if bp_id not in PANEL_ORDER:
       panels.append(info)
+
+  if _ui_locale() == "zh-CHS":
+    translations = _zh_translations()
+    panels = [_localize_panel_meta(p, translations) for p in panels]
   return panels
 
 
@@ -416,11 +444,6 @@ def get_panel(panel_id: str) -> dict[str, Any] | None:
   if panel is None:
     return None
 
-  # Always expose Amap key editors on Developer settings (Portal).
-  if panel_id == "bp_developer_panel":
-    groups = list(panel.get("groups") or [])
-    if not any(g.get("groupName") == "amap_online_map" for g in groups):
-      groups.append(dict(AMAP_SETTINGS_GROUP))
-      panel = {**panel, "groups": groups}
-
+  if _ui_locale() == "zh-CHS":
+    panel = _localize_panel(panel, _zh_translations())
   return panel

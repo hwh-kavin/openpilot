@@ -364,7 +364,7 @@ def get_all_params(params: Optional[Params] = None, locale: Optional[str] = None
             param_keys.extend(category_info["params"])
 
     # Also include declared keys from params_keys.h even if not yet written to disk,
-    # so unset values (e.g. AmapSecurityJsCode) are still editable in Portal.
+    # so unset values are still editable in Portal.
     try:
         declared = set(_load_param_type_cache().keys())
         param_keys = sorted(set(param_keys) | declared)

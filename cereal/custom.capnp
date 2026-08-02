@@ -464,7 +464,50 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   }
 }
 
-struct CustomReserved10 @0xcb9fd56c7057593a {
+# CarLife Companion map assist (UDP JSON :8888) — display only, not for control
+# schemaVersion 4 fields appended; see PROTOCOL.md
+struct CarLifeMapData @0xcb9fd56c7057593a {
+  timestamp @0 :Int64;                 # Unix ms; align with video timestampMs
+  laneCount @1 :Int16;                 # -1 unknown
+  currentLane @2 :Int16;               # 0-based; -1 unknown
+  lightStatus @3 :Text;                # red|green|yellow|unknown
+  countdown @4 :Int16;                 # seconds; -1 none
+  intersectionDistance @5 :Float32;    # meters; valid when hasIntersectionDistance
+  speedLimit @6 :Int16;                # km/h; -1 unknown
+  curveCurvature @7 :Float32;          # 1/m; valid when hasCurveCurvature
+  laneDirection @8 :Text;              # left|straight|right|uturn|unknown
+  confidence @9 :Float32;
+  isOccluded @10 :Bool;
+  hasIntersectionDistance @11 :Bool;
+  hasCurveCurvature @12 :Bool;
+  lanes @13 :List(LaneInfo);
+
+  # v1.4 / schemaVersion 4
+  schemaVersion @14 :Int16;
+  turnDirection @15 :Text;             # left|right|straight|unknown
+  laneChange @16 :Text;                # left|right|none|unknown
+  speedAction @17 :Text;               # decelerate|start|maintain|unknown
+  lightConfidence @18 :Float32;
+  speedConfidence @19 :Float32;
+  laneConfidence @20 :Float32;
+  actionConfidence @21 :Float32;
+  pathConfidence @22 :Float32;
+  recommendedLanes @23 :List(Int16);
+  hasEgoCar @24 :Bool;
+  egoCarX @25 :Float32;                # normalized 0..1
+  egoCarY @26 :Float32;
+  navPath @27 :List(Point2);           # near→far, normalized
+
+  struct LaneInfo {
+    index @0 :Int16;
+    directions @1 :List(Text);
+    highlighted @2 :Bool;
+  }
+
+  struct Point2 {
+    x @0 :Float32;
+    y @1 :Float32;
+  }
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {

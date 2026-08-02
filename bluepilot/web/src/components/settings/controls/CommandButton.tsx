@@ -82,12 +82,6 @@ export function CommandButton({ control, disabled, disabledReason }: CommandButt
       handleManageSshKeys()
     } else if (control.action === 'set_copyparty_password') {
       handleSetCopypartyPassword()
-    } else if (control.action === 'set_amap_api_key') {
-      handleSetAmapApiKey()
-    } else if (control.action === 'set_amap_security_js_code') {
-      handleSetAmapSecurityJsCode()
-    } else if (control.action === 'set_amap_web_service_key') {
-      handleSetAmapWebServiceKey()
     } else if (control.action === 'view_error_log') {
       handleViewErrorLog()
     } else if (control.confirm) {
@@ -122,33 +116,6 @@ export function CommandButton({ control, disabled, disabledReason }: CommandButt
       message: 'Enter a password to protect your Copyparty server.<br>Leave empty to disable password protection.',
       placeholder: 'Password',
       isPassword: true,
-    })
-    setShowInput(true)
-  }
-
-  const handleSetAmapApiKey = () => {
-    setInputConfig({
-      title: 'Amap API Key',
-      message: 'Enter your Gaode/Amap JS API 2.0 Key for the onroad driving map.',
-      placeholder: 'Amap JS API Key',
-    })
-    setShowInput(true)
-  }
-
-  const handleSetAmapSecurityJsCode = () => {
-    setInputConfig({
-      title: 'Amap Security Key',
-      message: 'Enter your Gaode/Amap JS API 2.0 security key (安全密钥).',
-      placeholder: 'Amap Security Key',
-    })
-    setShowInput(true)
-  }
-
-  const handleSetAmapWebServiceKey = () => {
-    setInputConfig({
-      title: 'Amap Web Service Key',
-      message: 'Enter your Gaode/Amap Web Service Key for on-device route planning (路径规划). JS Key cannot call restapi.',
-      placeholder: 'Amap Web Service Key',
     })
     setShowInput(true)
   }
@@ -206,22 +173,6 @@ export function CommandButton({ control, disabled, disabledReason }: CommandButt
         response = await panelAPI.executePanelCommand({
           action: 'set_copyparty_password',
           password: value,
-        })
-      } else if (control.action === 'set_amap_api_key') {
-        // Set Amap JS API 2.0 key
-        response = await panelAPI.executePanelCommand({
-          action: 'set_amap_api_key',
-          api_key: value,
-        })
-      } else if (control.action === 'set_amap_security_js_code') {
-        response = await panelAPI.executePanelCommand({
-          action: 'set_amap_security_js_code',
-          security_js_code: value,
-        })
-      } else if (control.action === 'set_amap_web_service_key') {
-        response = await panelAPI.executePanelCommand({
-          action: 'set_amap_web_service_key',
-          web_service_key: value,
         })
       } else {
         response = { success: false, error: 'Unknown action' }

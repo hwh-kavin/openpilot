@@ -15,42 +15,6 @@
     "title": "Always-on Driver Monitor",
     "description": ""
   },
-  "AmapApiKey": {
-    "title": "Amap API Key",
-    "description": "Gaode/Amap JS API 2.0 Key for the onroad driving map"
-  },
-  "AmapSecurityJsCode": {
-    "title": "Amap Security Key",
-    "description": "Gaode/Amap JS API 2.0 security key for the onroad driving map"
-  },
-  "AmapWebServiceKey": {
-    "title": "Amap Web Service Key",
-    "description": "Gaode/Amap Web Service Key for on-device route planning and reverse geocoding (JS Key cannot call restapi)"
-  },
-  "NavDestination": {
-    "title": "Navigation Destination",
-    "description": "Active navigation session destination; set only by onroad Destination/Home/Work buttons; cleared on boot and onroad transition"
-  },
-  "NavSavedDestination": {
-    "title": "Saved Destination",
-    "description": "Durable destination shortcut for the onroad Destination button (portal Set Destination)"
-  },
-  "NavHome": {
-    "title": "Home Address",
-    "description": "Saved home address for quick navigation"
-  },
-  "NavWork": {
-    "title": "Work Address",
-    "description": "Saved work address for quick navigation"
-  },
-  "NavSettings": {
-    "title": "Navigation Settings",
-    "description": "Persistent navigation preferences (enabled, avoid tolls/highway, strategy)"
-  },
-  "NavRouteGeometry": {
-    "title": "Navigation Route Geometry",
-    "description": "Active route polyline and maneuver steps from the navigation planner"
-  },
   "ApiCache_Device": {
     "title": "Api Cache  Device",
     "description": ""

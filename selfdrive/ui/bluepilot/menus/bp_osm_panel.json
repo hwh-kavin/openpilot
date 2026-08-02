@@ -1,0 +1,19 @@
+{
+  "menuName": "OSM / Map",
+  "menuDescription": "Phone map mirror (CarLife Companion) and OSM offline maps",
+  "menuIcon": "map",
+  "groups": [
+    {
+      "groupName": "phone_map_mirror",
+      "title": "Phone Map Mirror",
+      "controls": [
+        {
+          "type": "toggle",
+          "param": "CarLifeMapMirrorEnabled",
+          "title": "Enable Phone Map Mirror",
+          "desc": "When on, tap the onroad view (sidebar hidden) to show the CarLife Companion phone map split-screen. Split size follows the phone frame aspect (PROTOCOL.md UDP :8888/:8889)."
+        }
+      ]
+    }
+  ]
+}

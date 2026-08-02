@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import importlib
 import os
 import time
 
@@ -6,9 +7,20 @@ from cereal import messaging
 from openpilot.system.hardware import TICI
 from openpilot.common.realtime import Priority, config_realtime_process, set_core_affinity
 from openpilot.system.ui.lib.application import gui_app
+from openpilot.selfdrive.ui.ui_state import ui_state
+
+# Manager forks with a warm sys.modules cache — reload layouts from disk.
+# Do not reload sunnypilot settings.py: it mutates OP.PanelType and breaks on reload.
+import openpilot.selfdrive.ui.sunnypilot.layouts.settings.osm as _osm_mod
+importlib.reload(_osm_mod)
+import bluepilot.ui.onroad.carlife_map_view as _carlife_view_mod
+importlib.reload(_carlife_view_mod)
+import openpilot.selfdrive.ui.layouts.main as _main_mod
+importlib.reload(_main_mod)
+import openpilot.selfdrive.ui.layouts.sidebar as _sidebar_mod
+importlib.reload(_sidebar_mod)
 from openpilot.selfdrive.ui.layouts.main import MainLayout
 from openpilot.selfdrive.ui.mici.layouts.main import MiciMainLayout
-from openpilot.selfdrive.ui.ui_state import ui_state
 
 BIG_UI = gui_app.big_ui()
 

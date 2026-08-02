@@ -371,17 +371,8 @@ def getVersion() -> dict[str, str]:
 
 @dispatcher.add_method
 def setNavDestination(latitude: int = 0, longitude: int = 0, place_name: str | None = None, place_details: str | None = None) -> dict[str, int]:
-  destination = {
-    "latitude": latitude,
-    "longitude": longitude,
-    "place_name": place_name,
-    "place_details": place_details,
-  }
-  params = Params()
-  params.put("NavDestination", destination)
-  params.put("NavSavedDestination", destination)
-
-  return {"success": 1}
+  # On-device Amap navigation removed; map display is CarLife companion only.
+  return {"success": 0}
 
 
 def scan_dir(path: str, prefix: str, base: str | None = None) -> list[str]:

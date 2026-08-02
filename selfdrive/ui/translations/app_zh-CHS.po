@@ -526,9 +526,38 @@ msgstr "设备 ID"
 msgid "Download"
 msgstr "下载"
 
+msgid "OSM / Map"
+msgstr "OSM / 地图"
+
+msgid "Phone map mirror (CarLife Companion) and OSM offline maps"
+msgstr "手机地图镜像（CarLife Companion）与 OSM 离线地图"
+
+msgid "When on, tap the onroad view (sidebar hidden) to show the CarLife Companion phone map split-screen. Split size follows the phone frame aspect (PROTOCOL.md UDP :8888/:8889)."
+msgstr "开启后，在行车界面（侧栏已隐藏时）点击画面，即可分屏显示 CarLife Companion 手机地图。分屏尺寸按手机画面比例适配（PROTOCOL.md UDP :8888/:8889）。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "Phone Map Mirror"
+msgstr "手机地图镜像"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "CarLife Companion UDP map stream (PROTOCOL.md). Split size follows phone frame aspect."
+msgstr "CarLife Companion UDP 地图流（PROTOCOL.md）。分屏尺寸按手机画面比例适配。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "Enable Phone Map Mirror"
+msgstr "启用手机地图镜像"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "When on, tap the onroad view (sidebar hidden) to show the phone map split-screen."
+msgstr "开启后，在行车界面（侧栏已隐藏时）点击画面，即可分屏显示手机地图。"
+
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "OSM Offline Maps"
-msgstr "Mapbox离线地图"
+msgstr "OSM 离线地图"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
+msgid "Speed limits and road names for mapd"
+msgstr "供 mapd 使用的限速与道路名称"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Speed limits, road names, and offline navigation data"

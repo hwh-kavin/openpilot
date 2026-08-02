@@ -19,8 +19,9 @@ from openpilot.common.swaglog import cloudlog
 
 def launcher(proc: str, name: str) -> None:
   try:
-    # import the process
+    # import the process (reload so forked manager does not keep a stale module)
     mod = importlib.import_module(proc)
+    mod = importlib.reload(mod)
 
     # rename the process
     setproctitle(proc)

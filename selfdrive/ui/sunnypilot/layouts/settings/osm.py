@@ -16,7 +16,7 @@ from time import monotonic
 
 import pyray as rl
 
-from openpilot.common.params import Params, UnknownKeyName
+from openpilot.common.params import Params
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.layouts.settings.software import time_ago
 from openpilot.system.hardware.hw import Paths
@@ -29,10 +29,9 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller, LineSeparator
 
 from openpilot.system.ui.sunnypilot.lib.utils import NoElideButtonAction
 from openpilot.system.ui.sunnypilot.lib.styles import style
-from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP
+from openpilot.system.ui.sunnypilot.widgets.list_view import ListItemSP, toggle_item_sp
 from openpilot.system.ui.sunnypilot.widgets.tree_dialog import TreeFolder, TreeNode, TreeOptionDialog
 from openpilot.system.ui.sunnypilot.widgets.progress_bar import progress_item
-from openpilot.system.ui.widgets.keyboard import Keyboard
 
 MAP_PATH = Path(Paths.mapd_root()) / "offline"
 
@@ -90,9 +89,19 @@ class OSMLayout(Widget):
     self._scroller = Scroller(self.items, line_separator=True, spacing=0)
 
   def _initialize_items(self):
+    self._carlife_section = SectionHeader(
+      tr("Phone Map Mirror"),
+      tr("CarLife Companion UDP map stream (PROTOCOL.md). Split size follows phone frame aspect."),
+    )
+    self._carlife_mirror_toggle = toggle_item_sp(
+      param="CarLifeMapMirrorEnabled",
+      title=tr("Enable Phone Map Mirror"),
+      description=tr("When on, tap the onroad view (sidebar hidden) to show the phone map split-screen."),
+    )
+
     self._osm_section = SectionHeader(
       tr("OSM Offline Maps"),
-      tr("Speed limits, road names, and offline navigation data"),
+      tr("Speed limits and road names for mapd"),
     )
 
     self._mapd_version = text_item(tr("Mapd Version"), lambda: ui_state.params.get("MapdVersion") or "Loading...")
@@ -102,20 +111,11 @@ class OSMLayout(Widget):
     self._country_btn = ListItemSP(tr("Country"), action_item=NoElideButtonAction(tr("SELECT"), enabled=True), callback=lambda: self._select_region("Country"))
     self._state_btn = ListItemSP(tr("State"), action_item=NoElideButtonAction(tr("SELECT"), enabled=True), callback=lambda: self._select_region("State"))
 
-    self._amap_section = SectionHeader(
-      tr("Amap Online Map"),
-      tr("JS key for map display; Web Service key for on-device route planning"),
-    )
-    self._amap_key_btn = ListItemSP(tr("Amap API Key"), action_item=NoElideButtonAction(tr("SET"), enabled=True),
-                                    callback=lambda: self._set_amap_credential("AmapApiKey"))
-    self._amap_security_btn = ListItemSP(tr("Amap Security Key"), action_item=NoElideButtonAction(tr("SET"), enabled=True),
-                                         callback=lambda: self._set_amap_credential("AmapSecurityJsCode"))
-    self._amap_web_key_btn = ListItemSP(tr("Amap Web Service Key"), action_item=NoElideButtonAction(tr("SET"), enabled=True),
-                                        callback=lambda: self._set_amap_credential("AmapWebServiceKey"))
-    self._keyboard: Keyboard | None = None
-    self._keyboard_param: str | None = None
-
     self.items = [
+      self._carlife_section,
+      LineSeparator(),
+      self._carlife_mirror_toggle,
+      LineSeparator(),
       self._osm_section,
       LineSeparator(),
       self._mapd_version,
@@ -124,11 +124,6 @@ class OSMLayout(Widget):
       self._update_btn,
       self._country_btn,
       self._state_btn,
-      self._amap_section,
-      LineSeparator(),
-      self._amap_key_btn,
-      self._amap_security_btn,
-      self._amap_web_key_btn,
     ]
 
   def _show_confirm(self, msg, confirm_text, func):
@@ -170,62 +165,6 @@ class OSMLayout(Widget):
   def _delete_maps(self):
     self._show_confirm(tr("This will delete ALL downloaded OSM offline maps\n\nAre you sure you want to delete all maps?"),
                        tr("Yes, delete all maps"), self._on_confirm_delete_maps)
-
-  def _get_amap_param(self, param_key: str) -> str:
-    try:
-      return ui_state.params.get(param_key) or ""
-    except UnknownKeyName:
-      return ""
-
-  def _set_amap_credential(self, param_key: str):
-    titles = {
-      "AmapApiKey": tr("Amap API Key"),
-      "AmapSecurityJsCode": tr("Amap Security Key"),
-      "AmapWebServiceKey": tr("Amap Web Service Key"),
-    }
-    clear_msgs = {
-      "AmapApiKey": tr("This will remove your Amap API key.\n\nAre you sure you want to continue?"),
-      "AmapSecurityJsCode": tr("This will remove your Amap security key.\n\nAre you sure you want to continue?"),
-      "AmapWebServiceKey": tr("This will remove your Amap Web Service key.\n\nAre you sure you want to continue?"),
-    }
-    current = self._get_amap_param(param_key)
-    if current:
-      self._show_confirm(clear_msgs[param_key], tr("Yes, remove key"),
-                         lambda: ui_state.params.remove(param_key))
-      return
-
-    if self._keyboard is None:
-      self._keyboard = Keyboard(min_text_size=1)
-    self._keyboard_param = param_key
-    self._keyboard.reset()
-    self._keyboard.set_title(titles[param_key])
-    self._keyboard.set_callback(self._on_amap_credential_submit)
-    gui_app.push_widget(self._keyboard)
-
-  def _on_amap_credential_submit(self, result):
-    if result != DialogResult.CONFIRM or not self._keyboard_param:
-      self._keyboard_param = None
-      return
-    value = self._keyboard.text.strip()
-    param_key = self._keyboard_param
-    self._keyboard_param = None
-    if value:
-      ui_state.params.put(param_key, value)
-    else:
-      ui_state.params.remove(param_key)
-
-  @staticmethod
-  def _mask_secret(value: str) -> str:
-    return value[:4] + "****" + value[-4:] if len(value) > 8 else "****"
-
-  def _update_secret_btn(self, btn, param_key: str):
-    value = self._get_amap_param(param_key)
-    if value:
-      btn.action_item.set_value(self._mask_secret(value))
-      btn.action_item.set_text(tr("CLEAR"))
-    else:
-      btn.action_item.set_value(tr("Not set"))
-      btn.action_item.set_text(tr("SET"))
 
   def _update_db(self):
     self._show_confirm(tr("This will start the download process and it might take a while to complete."), tr("Start Download"),
@@ -293,10 +232,6 @@ class OSMLayout(Widget):
 
     self._country_btn.action_item.set_value(ui_state.params.get("OsmLocationTitle") or "")
     self._state_btn.action_item.set_value(ui_state.params.get("OsmStateTitle") or "")
-
-    self._update_secret_btn(self._amap_key_btn, "AmapApiKey")
-    self._update_secret_btn(self._amap_security_btn, "AmapSecurityJsCode")
-    self._update_secret_btn(self._amap_web_key_btn, "AmapWebServiceKey")
 
     pending = ui_state.params.get_bool("OsmDbUpdatesCheck")
     if downloading or pending:

@@ -72,6 +72,13 @@ NATIVE_TITLE_OVERRIDES: dict[str, dict[str, str]] = {
         ),
         "panel": "Sunnylink",
     },
+    "CarLifeMapMirrorEnabled": {
+        "title": "Enable Phone Map Mirror",
+        "description": (
+            "When on, tap the onroad view (sidebar hidden) to show the phone map split-screen."
+        ),
+        "panel": "OSM / Map",
+    },
 }
 
 

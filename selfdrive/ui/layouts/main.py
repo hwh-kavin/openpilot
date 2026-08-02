@@ -1,13 +1,14 @@
-import pyray as rl
 from enum import IntEnum
+
 import cereal.messaging as messaging
-from openpilot.common.params import UnknownKeyName
+import pyray as rl
+
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.layouts.sidebar import Sidebar, SIDEBAR_WIDTH
 from openpilot.selfdrive.ui.layouts.home import HomeLayout
 from openpilot.selfdrive.ui.layouts.settings.settings import SettingsLayout, PanelType
-from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView, draw_onroad_border
+from openpilot.selfdrive.ui.onroad.augmented_road_view import AugmentedRoadView
 from openpilot.selfdrive.ui.ui_state import device, ui_state
 from openpilot.selfdrive.ui.layouts.onboarding import OnboardingWindow
 from openpilot.selfdrive.ui.body.layouts.onroad import BodyLayout
@@ -45,9 +46,9 @@ class MainLayout(Widget):
     self._content_rect = rl.Rectangle(0, 0, 0, 0)
     self._banner_height = 0.0
 
-    # Split-screen state
+    # Split-screen state (CarLife companion map mirror)
     self._split_screen = False
-    self._amap_view = None
+    self._carlife_map_view = None
     self._bottom_dev_ui = DeveloperUiRenderer() if gui_app.sunnypilot_ui() else None
 
     # Set callbacks
@@ -116,12 +117,12 @@ class MainLayout(Widget):
       self._layouts[self._current_mode].show_event()
       if self._road_view is not None:
         self._road_view.set_draw_border(True)
-    # Exit split-screen / stop map worker request when leaving onroad
+    # Exit split-screen / stop map viewer when leaving onroad
     if layout != MainState.ONROAD:
       if self._split_screen:
         self._split_screen = False
-      if self._amap_view is not None:
-        self._amap_view.set_enabled(False)
+      if self._carlife_map_view is not None:
+        self._carlife_map_view.set_enabled(False)
 
   def open_settings(self, panel_type: PanelType):
     self._layouts[MainState.SETTINGS].set_current_panel(panel_type)
@@ -136,50 +137,43 @@ class MainLayout(Widget):
     user_bookmark.valid = True
     self._pm.send('bookmarkButton', user_bookmark)
 
+  def _carlife_mirror_enabled(self) -> bool:
+    return ui_state.params.get_bool("CarLifeMapMirrorEnabled")
+
   def _on_onroad_clicked(self):
     if self._split_screen:
       # Exit split-screen → show sidebar
       self._split_screen = False
       self._sidebar.set_visible(True)
+      if self._carlife_map_view is not None:
+        self._carlife_map_view.set_enabled(False)
     elif not self._sidebar.is_visible:
-      # Sidebar hidden → enter split-screen as soon as credentials exist.
-      # Map may still be loading (GPS/tiles); AmapView shows a placeholder.
-      if self._can_enter_split_screen():
+      # Sidebar hidden → enter CarLife map split only when mirror is enabled.
+      if self._carlife_mirror_enabled():
+        self._ensure_carlife_map_view()
+        self._carlife_map_view.prepare()
         self._split_screen = True
-        self._ensure_amap_view()
-        self._amap_view.prepare()
       else:
         self._sidebar.set_visible(True)
     else:
       # Sidebar visible → hide sidebar
       self._sidebar.set_visible(False)
 
-  def _has_amap_prerequisites(self) -> bool:
-    """JS API 2.0 credentials configured. Network/GPS/tiles may still be warming up."""
-    try:
-      has_key = bool(ui_state.params.get("AmapApiKey"))
-      has_security = bool(ui_state.params.get("AmapSecurityJsCode"))
-    except UnknownKeyName:
-      return False
-    return has_key and has_security
+  def _ensure_carlife_map_view(self) -> None:
+    if self._carlife_map_view is None:
+      from bluepilot.ui.onroad.carlife_map_view import CarLifeMapView
+      self._carlife_map_view = CarLifeMapView()
 
-  def _ensure_amap_view(self) -> None:
-    if self._amap_view is None:
-      from bluepilot.ui.onroad.amap_view import AmapView
-      self._amap_view = AmapView()
-
-  def _prepare_amap(self) -> None:
-    if not self._has_amap_prerequisites():
-      if self._amap_view is not None:
-        self._amap_view.set_enabled(False)
+  def _prepare_carlife_map(self) -> None:
+    # Warm shm only when mirror is enabled.
+    if not self._carlife_mirror_enabled():
+      if self._split_screen:
+        self._split_screen = False
+      if self._carlife_map_view is not None:
+        self._carlife_map_view.set_enabled(False)
       return
-    # Warm tiles as soon as onroad + credentials, even before the user opens split-screen.
-    self._ensure_amap_view()
-    self._amap_view.prepare()
-
-  def _can_enter_split_screen(self) -> bool:
-    """Enter immediately when map is configured — do not wait for first tile/GPS frame."""
-    return self._has_amap_prerequisites()
+    self._ensure_carlife_map_view()
+    self._carlife_map_view.prepare()
 
   def _on_body_changed(self):
     self._layouts[MainState.HOME] = self._home_body_layout if ui_state.is_body else self._home_layout
@@ -210,7 +204,7 @@ class MainLayout(Widget):
       )
 
     if self._current_mode == MainState.ONROAD:
-      self._prepare_amap()
+      self._prepare_carlife_map()
 
     if self._current_mode == MainState.ONROAD and self._split_screen:
       self._render_split_screen(content_rect)
@@ -237,37 +231,49 @@ class MainLayout(Widget):
     self._bottom_dev_ui.render_bottom(inner_rect)
 
   def _render_split_screen(self, rect: rl.Rectangle):
-    """Render split-screen: driving view (left) + Amap (right), with unified border."""
-    from openpilot.selfdrive.ui import UI_BORDER_SIZE
+    """Waiting: 50/50. Ready: map height-fit (keep aspect), leftover width → driving."""
+    ox, oy = float(rect.x), float(rect.y)
+    iw, ih = float(rect.width), float(rect.height)
+    if iw <= 1 or ih <= 1:
+      return
 
-    # Draw unified border around the full area
-    draw_onroad_border(rect)
+    self._ensure_carlife_map_view()
+    self._carlife_map_view.prepare()
 
-    # Inner content area (inside the colored border)
-    inner_x = rect.x + UI_BORDER_SIZE
-    inner_y = rect.y + UI_BORDER_SIZE
-    inner_w = rect.width - 2 * UI_BORDER_SIZE
-    inner_h = rect.height - 2 * UI_BORDER_SIZE
+    # Both panes always span full content height so the join has no vertical black bars.
+    map_h = ih
+    map_y = oy
+    min_drive_w = 360.0
+    max_map_w = max(1.0, iw - min_drive_w)
 
-    half_w = int(inner_w / 2)
+    if self._carlife_map_view.is_ready():
+      # Height-fit phone frame aspect → map width; leftover width goes to driving.
+      frame = self._carlife_map_view.frame_size()
+      if frame is not None:
+        fw, fh = float(frame[0]), float(frame[1])
+        map_w = min(max_map_w, ih * (fw / fh)) if fh > 0 else max_map_w * 0.5
+      else:
+        map_w, _ = self._carlife_map_view.displayed_size(max_map_w, ih)
+      map_w = max(1.0, min(max_map_w, map_w))
+    else:
+      # Waiting placeholder: fixed half / half split.
+      map_w = iw * 0.5
 
-    left_rect = rl.Rectangle(inner_x, inner_y, half_w, inner_h)
-    right_rect = rl.Rectangle(inner_x + half_w, inner_y, inner_w - half_w, inner_h)
+    map_x = ox + iw - map_w
+    drive_w = map_x - ox
 
-    # Left: driving view without its own border
+    left_rect = rl.Rectangle(ox, oy, drive_w, ih)
+    right_rect = rl.Rectangle(map_x, map_y, map_w, map_h)
+
     self._road_view.set_draw_border(False)
     self._road_view.render(left_rect)
 
-    # Right: Amap map view (isolate failures so UI stays up)
     try:
-      self._ensure_amap_view()
-      self._amap_view.render(right_rect)
+      # Pane is aspect-correct (or half-width while waiting) and full height — fill edge-to-edge.
+      self._carlife_map_view.render(right_rect)
     except Exception:
-      rl.draw_rectangle(int(right_rect.x), int(right_rect.y),
-                        int(right_rect.width), int(right_rect.height),
-                        rl.Color(30, 30, 30, 255))
+      pass
 
-    # Divider between driving view and map
-    divider_x = int(inner_x + half_w)
-    rl.draw_line(divider_x, int(inner_y), divider_x, int(inner_y + inner_h), rl.Color(0, 0, 0, 220))
-    rl.draw_line(divider_x + 1, int(inner_y), divider_x + 1, int(inner_y + inner_h), rl.Color(90, 90, 90, 180))
+    divider_x = int(round(map_x))
+    rl.draw_line(divider_x, int(oy), divider_x, int(oy + ih), rl.Color(0, 0, 0, 220))
+    rl.draw_line(divider_x + 1, int(oy), divider_x + 1, int(oy + ih), rl.Color(90, 90, 90, 180))

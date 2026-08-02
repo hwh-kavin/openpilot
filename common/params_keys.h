@@ -260,20 +260,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneTurnValue", {PERSISTENT | BACKUP, FLOAT, "19.0"}},
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
 
-    // mapd
-    {"AmapApiKey", {PERSISTENT | BACKUP, STRING}},
-    {"AmapSecurityJsCode", {PERSISTENT | BACKUP, STRING}},
-    {"AmapWebServiceKey", {PERSISTENT | BACKUP, STRING}},
-    // Active navigation session only — never resume after boot / new onroad cycle.
-    // Saved Destination / Home / Work shortcuts remain persistent for the onroad buttons.
-    {"NavDestination", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
-    {"NavSavedDestination", {PERSISTENT | BACKUP, JSON}},
-    {"NavHome", {PERSISTENT | BACKUP, JSON}},
-    {"NavWork", {PERSISTENT | BACKUP, JSON}},
-    {"NavSettings", {PERSISTENT | BACKUP, JSON}},
-    {"NavRouteGeometry", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
-    {"NavRouteError", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
-    {"NavGuidance", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
@@ -291,6 +277,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"OsmStateName", {PERSISTENT, STRING, "All"}},
     {"OsmStateTitle", {PERSISTENT, STRING}},
     {"OsmWayTest", {PERSISTENT, STRING}},
+    // CarLife Companion phone map mirror (PROTOCOL.md UDP :8888/:8889)
+    {"CarLifeMapMirrorEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"RoadName", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"RoadNameToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
 

@@ -1,1 +1,1 @@
-# BluePilot Amap map worker (isolated low-priority process)
+# BluePilot CarLife companion map mirror (carlifed)
