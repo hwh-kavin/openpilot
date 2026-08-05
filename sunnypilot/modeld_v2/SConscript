@@ -3,7 +3,7 @@ import glob
 
 from openpilot.common.transformations.camera import _ar_ox_fisheye, _os_fisheye
 from openpilot.common.transformations.model import MEDMODEL_INPUT_SIZE
-from openpilot.system.hardware import HARDWARE, PC
+from openpilot.common.hardware import HARDWARE, PC
 
 Import('env', 'arch', 'release')
 lenv = env.Clone()
@@ -38,7 +38,7 @@ camera_res_args = ' '.join(f'{cw}x{ch}' for cw, ch in CAMERA_CONFIGS)
 
 pythonpath_string = 'PYTHONPATH="${PYTHONPATH}:' + env.Dir("#tinygrad_repo").abspath + ':' + env.Dir("#").abspath + '"'
 compile_modeld_script = File("compile_modeld.py").abspath
-upstream_compile_script = File(Dir("#selfdrive/modeld").File("compile_modeld.py").abspath)
+upstream_compile_script = File(Dir("#openpilot/selfdrive/modeld").File("compile_modeld.py").abspath)
 script_deps = [File("compile_modeld.py"), upstream_compile_script]
 
 def compile_combined(model_type, onnx_args, output_name):
@@ -82,18 +82,3 @@ if os.path.isfile(supercombo_onnx):
   compile_combined('supercombo',
                    f'--supercombo-onnx {supercombo_onnx}',
                    'driving_combined_supercombo_tinygrad.pkl')
-
-if PC:
-  inputs = tinygrad_files + [File(Dir("#sunnypilot/modeld_v2").File("install_models_pc.py").abspath)]
-  outputs = []
-  model_dir = Dir("models").abspath
-  cmd = f'python3 {Dir("#sunnypilot/modeld_v2").abspath}/install_models_pc.py {model_dir}'
-
-  for model_name in ['supercombo', 'driving_vision', 'driving_off_policy', 'driving_on_policy', 'driving_policy']:
-    if File(f"models/{model_name}.onnx").exists():
-        inputs.append(File(f"models/{model_name}.onnx"))
-        inputs.append(File(f"models/{model_name}_tinygrad.pkl"))
-        outputs.append(File(f"models/{model_name}_metadata.pkl"))
-  if outputs:
-    lenv.Command(outputs, inputs, cmd)
-
