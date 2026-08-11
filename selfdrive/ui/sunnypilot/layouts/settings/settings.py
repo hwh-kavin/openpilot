@@ -35,21 +35,25 @@ from openpilot.system.ui.widgets.scroller_tici import Scroller
 OP.PANEL_COLOR = rl.Color(10, 10, 10, 255)
 ICON_SIZE = 70
 
-OP.PanelType = IntEnum(
-  "PanelType",
-  [es.name for es in OP.PanelType] + [
-    "SUNNYLINK",
-    "MODELS",
-    "STEERING",
-    "CRUISE",
-    "VISUALS",
-    "DISPLAY",
-    "OSM",
-    "TRIPS",
-    "VEHICLE",
-  ],
-  start=0,
+# Extend upstream PanelType with sunnypilot panels. Must be idempotent:
+# manager forks with a warm sys.modules cache and may reload this module.
+_SP_PANEL_TYPES = (
+  "SUNNYLINK",
+  "MODELS",
+  "STEERING",
+  "CRUISE",
+  "VISUALS",
+  "DISPLAY",
+  "OSM",
+  "TRIPS",
+  "VEHICLE",
 )
+_panel_names: list[str] = []
+for _name in [es.name for es in OP.PanelType] + list(_SP_PANEL_TYPES):
+  if _name not in _panel_names:
+    _panel_names.append(_name)
+if any(_name not in OP.PanelType.__members__ for _name in _SP_PANEL_TYPES):
+  OP.PanelType = IntEnum("PanelType", _panel_names, start=0)
 
 
 @dataclass

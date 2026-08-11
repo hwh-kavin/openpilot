@@ -53,3 +53,13 @@ if __name__ == "__main__":
   path = sys.argv[1]
   chunk_paths = get_chunk_targets(path, os.path.getsize(path))
   chunk_file(path, chunk_paths)
+
+
+# compatibility shim for upstream sunnypilot imports
+# Return a real file-like object backed by the chunked payload so callers can
+# use it as a context manager/file handle without leaking OS file descriptors.
+import io
+
+
+def open_file_chunked(path):
+    return io.BytesIO(read_file_chunked(path))

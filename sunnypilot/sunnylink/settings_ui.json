@@ -619,7 +619,7 @@
                       "key": "dp_htd_curve_latch_angle",
                       "widget": "option",
                       "title": "\u5f2f\u9053\u786e\u8ba4\u8f6c\u89d2",
-                      "description": "\u6a21\u578b\u671f\u671b\u8f6c\u89d2\u6301\u7eed\u8fbe\u5230\u8be5\u503c\u4ee5\u4e0a\uff0c\u624d\u5f00\u59cb\u7d2f\u8ba1\u5f2f\u9053\u786e\u8ba4\u8ddd\u79bb\uff08\u63a8\u8350\u7ea616\u5ea6\uff09\u3002",
+                      "description": "\u6a21\u578b\u671f\u671b\u8f6c\u89d2\u6301\u7eed\u8fbe\u5230\u8be5\u503c\u4ee5\u4e0a\uff0c\u624d\u5f00\u59cb\u7d2f\u8ba1\u5f2f\u9053\u786e\u8ba4\u8ddd\u79bb\uff08\u63a8\u8350\u7ea620\u5ea6\uff09\u3002",
                       "min": 8,
                       "max": 40,
                       "step": 1,

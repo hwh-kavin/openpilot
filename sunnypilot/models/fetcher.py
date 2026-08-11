@@ -6,12 +6,10 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import time
-import os
 import requests
 from requests.exceptions import (SSLError, RequestException, HTTPError)
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.hardware.hw import Paths
 from openpilot.sunnypilot.models.helpers import is_bundle_version_compatible
 
 from cereal import custom
@@ -21,11 +19,32 @@ class ModelParser:
   """Handles parsing of model data into cereal objects"""
 
   @staticmethod
+  def _sanitize_url(url: str) -> str:
+    """Fix common URL issues in model bundle data."""
+    if not url:
+      return url
+    # Force HTTPS for GitLab URLs
+    url = url.replace("http://gitlab.com/", "https://gitlab.com/")
+    # Fix known path typos (e.g. "recompile" -> "recompiled")
+    url = url.replace("/recompile18/", "/recompiled18/")
+    return url
+
+  @staticmethod
   def _parse_download_uri(download_uri_data) -> custom.ModelManagerSP.DownloadUri:
     download_uri = custom.ModelManagerSP.DownloadUri()
-    download_uri.uri = download_uri_data.get("url")
+    download_uri.uri = ModelParser._sanitize_url(download_uri_data.get("url", ""))
     download_uri.sha256 = download_uri_data.get("sha256")
     return download_uri
+
+  # Known corrections for model bundle data with broken URLs/SHA256 in the source JSON.
+  # Keyed by model ref; each entry may contain download_uri_base and/or chunk_sha256.
+  # IMPORTANT: chunk_sha256 must match the bytes currently served at download_uri_base.
+  # Wrong overrides cause hash validation to fail after a successful download, the
+  # manager deletes the model files, and calibration stays at 0% (no cameraOdometry).
+  _BUNDLE_FIXES: dict[str, dict] = {
+    # RDF Model (August 05, 2026): upstream JSON SHAs are correct for the hosted
+    # chunks; do not override them. Keep this entry only if a URL rewrite is needed.
+  }
 
   @staticmethod
   def _parse_chunk(chunk_data) -> custom.ModelManagerSP.Chunk:
@@ -42,19 +61,11 @@ class ModelParser:
 
     if "chunks" in artifact_data:
       artifact.chunks = [ModelParser._parse_chunk(chunk_data) for chunk_data in artifact_data["chunks"]]
-
-      try:
-        model_dir = Paths.model_root()
-        os.makedirs(model_dir, exist_ok=True)
-        manifest_path = os.path.join(model_dir, f"{artifact.fileName}.chunkmanifest")
-        num_chunks = str(len(artifact.chunks))
-
-        if not os.path.exists(manifest_path) or open(manifest_path).read().strip() != num_chunks:
-          with open(manifest_path, "w") as f:
-            f.write(num_chunks)
-          cloudlog.info(f"Wrote chunk manifest for {artifact.fileName}: {num_chunks} chunks")
-      except Exception as e:
-        cloudlog.warning(f"Failed to write chunk manifest for {artifact.fileName}: {e}")
+      # Do NOT write chunk manifests here. Parsing the remote catalog must be
+      # side-effect free: writing manifests without chunk files makes modeld
+      # think a model is present (_pkl_exists), then crash on load and stall
+      # calibration at 0%. Manifests are written by ModelManagerSP after a
+      # successful download.
 
     return artifact
 
@@ -78,6 +89,23 @@ class ModelParser:
 
   @staticmethod
   def _parse_bundle(bundle) -> custom.ModelManagerSP.ModelBundle:
+    # Apply known data corrections for bundles with broken URLs/SHA256 in source JSON
+    bundle_ref = bundle.get("ref")
+    if bundle_ref and bundle_ref in ModelParser._BUNDLE_FIXES:
+      fix = ModelParser._BUNDLE_FIXES[bundle_ref]
+      # Fix download URL
+      for model in bundle.get("models", []):
+        artifact = model.get("artifact", {})
+        download_uri = artifact.get("download_uri", {})
+        if "download_uri_base" in fix:
+          download_uri["url"] = fix["download_uri_base"]
+        # Fix chunk SHA256 values
+        chunk_fixes = fix.get("chunk_sha256", {})
+        for chunk in artifact.get("chunks", []):
+          chunk_name = chunk.get("file_name")
+          if chunk_name and chunk_name in chunk_fixes:
+            chunk["sha256"] = chunk_fixes[chunk_name]
+
     model_bundle = custom.ModelManagerSP.ModelBundle()
     model_bundle.index = int(bundle["index"])
     model_bundle.internalName = bundle["short_name"]

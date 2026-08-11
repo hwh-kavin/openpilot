@@ -25,7 +25,7 @@
   "dp_htd_curve_exit_resume_error": "出弯接回：实际角与期望角差值低于该值时立即接回（推荐约5度，应小于释放角度差）。",
   "dp_htd_curve_exit_resume_delay_ms": "出弯对齐后的接回延迟。与人工HTD延时作用相同：让期望曲率对齐到当前方向角再混合接回，避免接回后仍输出弯中指令。默认300ms。",
   "dp_htd_curve_exit_model_angle": "出弯释放：模型期望转角不高于该值（视为已近直行）才触发（推荐约6度）。",
-  "dp_htd_curve_latch_angle": "模型期望转角持续达到该值以上，才开始累计弯道确认距离（推荐约16度）。",
+  "dp_htd_curve_latch_angle": "模型期望转角持续达到该值以上，才开始累计弯道确认距离（推荐约20度）。",
   "dp_htd_curve_latch_distance": "期望转角持续超门限并行驶不少于该距离，才确认有效弯道，用于过滤模型短暂抖动（推荐约10米）。",
   "DynamicExperimentalControl": "由模型决定何时使用 sunnypilot ACC 或 sunnypilot 端到端纵向控制。",
   "EnableCopyparty": "BluePilot Portal 是基于 Web 的界面，可查看路线、日志、系统指标和设备设置。通过设备 IP 地址在本地访问（默认端口 80）。",

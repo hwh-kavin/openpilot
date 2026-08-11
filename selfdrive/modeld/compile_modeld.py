@@ -113,7 +113,23 @@ def make_frame_prepare(nv12: NV12Frame, model_w, model_h):
   return frame_prepare_tinygrad
 
 
-def make_input_queues(vision_input_shapes, policy_input_shapes, frame_skip, device):
+def make_input_queues(*args, **kwargs):
+  # Support both the legacy split call signature and the newer compatibility
+  # form used by sunnypilot tests, where the input shapes are passed as a
+  # single combined dict and frame_skip is the second positional argument.
+  if len(args) == 4:
+    vision_input_shapes, policy_input_shapes, frame_skip, device = args
+  elif len(args) == 3:
+    vision_input_shapes, policy_input_shapes, frame_skip = args
+    device = kwargs.get('device', 'NPY')
+  elif len(args) == 2:
+    combined_shapes, frame_skip = args
+    device = kwargs.get('device', 'NPY')
+    vision_input_shapes = {k: v for k, v in combined_shapes.items() if 'img' in k}
+    policy_input_shapes = {k: v for k, v in combined_shapes.items() if 'img' not in k}
+  else:
+    raise TypeError("make_input_queues() requires either (vision, policy, frame_skip, device) or (combined_shapes, frame_skip, device=...)")
+
   img = vision_input_shapes['img']  # (1, 12, 128, 256)
   n_frames = img[1] // 6
   img_buf_shape = (frame_skip * (n_frames - 1) + 1, 6, img[2], img[3])

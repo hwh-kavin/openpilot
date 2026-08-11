@@ -83,12 +83,16 @@ class DeveloperLayoutSP(DeveloperLayout):
       dialog2 = ConfirmDialog(tr("Would you like to delete this log?"), tr("Yes"), tr("No"), rich=False, callback=self._on_delete_confirm)
       gui_app.push_widget(dialog2)
 
+  def show_event(self):
+    super().show_event()
+    self._update_state()
+
   def _on_error_log_clicked(self):
     text = ""
     if os.path.exists(self.error_log_path):
       text = f"<b>{datetime.datetime.fromtimestamp(os.path.getmtime(self.error_log_path)).strftime('%d-%b-%Y %H:%M:%S').upper()}</b><br><br>"
       try:
-        with open(self.error_log_path) as file:
+        with open(self.error_log_path, encoding="utf-8") as file:
           text += file.read()
       except Exception:
         pass

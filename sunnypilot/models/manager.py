@@ -17,11 +17,16 @@ from openpilot.system.hardware.hw import Paths
 
 from cereal import messaging, custom
 from openpilot.sunnypilot.models.fetcher import ModelFetcher
-from openpilot.sunnypilot.models.helpers import verify_file, get_active_bundle
+from openpilot.sunnypilot.models.helpers import verify_file, get_active_bundle, validate_active_bundle
 
 
 class ModelManagerSP:
   """Manages model downloads and status reporting"""
+
+  # Idle-read timeout: each received packet resets the 100s timer until the
+  # full download finishes. No overall wall-clock limit (total=None).
+  _DOWNLOAD_SOCK_READ_TIMEOUT_S = 100
+  _DOWNLOAD_CONNECT_TIMEOUT_S = 30
 
   def __init__(self):
     self.params = Params()
@@ -32,6 +37,16 @@ class ModelManagerSP:
     self.active_bundle: custom.ModelManagerSP.ModelBundle = get_active_bundle(self.params)
     self._chunk_size = 128 * 1000  # 128 KB chunks
     self._download_start_times: dict[str, float] = {}  # Track start time per model
+
+  @classmethod
+  def _download_timeout(cls) -> aiohttp.ClientTimeout:
+    # sock_read is an idle timeout between socket reads: any successful read
+    # restarts the countdown. Only stalling >100s with no data times out.
+    return aiohttp.ClientTimeout(
+      total=None,
+      sock_connect=cls._DOWNLOAD_CONNECT_TIMEOUT_S,
+      sock_read=cls._DOWNLOAD_SOCK_READ_TIMEOUT_S,
+    )
 
   def _sync_artifact_progress(self, source_artifact) -> None:
     """Mirror download progress to all artifacts sharing the same filename in the selected bundle."""
@@ -63,7 +78,7 @@ class ModelManagerSP:
     """Downloads a file with progress tracking"""
     self._download_start_times[model.fileName] = time.monotonic()
 
-    async with aiohttp.ClientSession() as session:
+    async with aiohttp.ClientSession(timeout=self._download_timeout()) as session:
       async with session.get(url) as response:
         response.raise_for_status()
         total_size = int(response.headers.get("content-length", 0))
@@ -102,7 +117,7 @@ class ModelManagerSP:
       chunk_url = get_chunk_name(base_url, i, num_chunks)
       chunk_path = get_chunk_name(base_path, i, num_chunks)
       chunk_downloaded = 0
-      async with aiohttp.ClientSession() as session:
+      async with aiohttp.ClientSession(timeout=self._download_timeout()) as session:
         async with session.get(chunk_url) as response:
           response.raise_for_status()
           chunk_size = int(response.headers.get("content-length", 0))
@@ -182,6 +197,13 @@ class ModelManagerSP:
       for f in [full_path] + [p for p in (os.path.join(destination_path, f) for f in os.listdir(destination_path)) if filename in p]:
         if os.path.isfile(f):
           os.remove(f)
+      # If we just deleted the active model's files, clear ActiveBundle so modeld
+      # does not keep trying to load a missing pkl (which stalls calibration at 0%).
+      if self.active_bundle and any(m.artifact.fileName == filename for m in self.active_bundle.models):
+        cloudlog.warning(f"Cleared ActiveBundle after failed download of active model {filename}")
+        self.active_bundle = None
+        self.params.remove("ModelManager_ActiveBundle")
+        self.params.put("ModelRunnerTypeCache", int(custom.ModelManagerSP.Runner.stock), block=True)
       artifact.downloadProgress.status = custom.ModelManagerSP.DownloadStatus.failed
       artifact.downloadProgress.eta = 0
       self._sync_artifact_progress(artifact)
@@ -251,6 +273,7 @@ class ModelManagerSP:
     while True:
       try:
         self.available_models = self.model_fetcher.get_available_bundles()
+        validate_active_bundle(self.params, self.available_models)
         self.active_bundle = get_active_bundle(self.params)
 
         if (index_to_download := self.params.get("ModelManager_DownloadIndex")) is not None:

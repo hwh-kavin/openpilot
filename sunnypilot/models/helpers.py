@@ -6,6 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 
 import hashlib
+import os
 import pickle
 import numpy as np
 
@@ -16,8 +17,8 @@ from openpilot.system.hardware.hw import Paths
 from pathlib import Path
 
 # see the README.md for more details on the model selector versioning
-CURRENT_SELECTOR_VERSION = 15
-REQUIRED_MIN_SELECTOR_VERSION = 14
+CURRENT_SELECTOR_VERSION = 16
+REQUIRED_MIN_SELECTOR_VERSION = 15
 
 
 CUSTOM_MODEL_PATH = Paths.model_root()
@@ -56,18 +57,75 @@ def is_bundle_version_compatible(bundle: dict) -> bool:
   return bool(REQUIRED_MIN_SELECTOR_VERSION <= bundle.get("minimumSelectorVersion", 0) <= CURRENT_SELECTOR_VERSION)
 
 
-def get_active_bundle(params: Params = None) -> custom.ModelManagerSP.ModelBundle:
+def get_active_bundle(params: Params | None = None, raw_bundle_dict: dict | bytes | None = None) -> "custom.ModelManagerSP.ModelBundle | None":
   """Gets the active model bundle from cache"""
-  if params is None:
-    params = Params()
+  params = params or Params()
 
   try:
-    if (active_bundle := params.get("ModelManager_ActiveBundle") or {}) and is_bundle_version_compatible(active_bundle):
-      return custom.ModelManagerSP.ModelBundle(**active_bundle)
+    active_bundle_dict = raw_bundle_dict if raw_bundle_dict is not None else (params.get("ModelManager_ActiveBundle") or {})
+    if isinstance(active_bundle_dict, dict) and active_bundle_dict and is_bundle_version_compatible(active_bundle_dict):
+      return custom.ModelManagerSP.ModelBundle(**active_bundle_dict)
   except Exception:
     pass
 
   return None
+
+
+_LAST_VALIDATED_RAW: dict | bytes | None = None
+
+
+def _bundle_needs_reset(active_bundle: custom.ModelManagerSP.ModelBundle, available_bundles: list[custom.ModelManagerSP.ModelBundle] | None) -> bool:
+  if available_bundles is None:
+    return False
+  return active_bundle.ref not in {bundle.ref for bundle in available_bundles}
+
+
+def _bundle_files_loadable(active_bundle: custom.ModelManagerSP.ModelBundle) -> bool:
+  """Return True if every artifact for the bundle is present on disk and loadable."""
+  from openpilot.common.file_chunker import get_manifest_path, get_chunk_name
+
+  for model in active_bundle.models:
+    filename = model.artifact.fileName if model.artifact else None
+    if not filename:
+      continue
+    full_path = os.path.join(Paths.model_root(), filename)
+    if os.path.isfile(full_path):
+      continue
+    manifest = get_manifest_path(full_path)
+    if not os.path.isfile(manifest):
+      return False
+    try:
+      num_chunks = int(open(manifest).read().strip())
+    except (ValueError, OSError):
+      return False
+    if num_chunks <= 0 or not all(os.path.isfile(get_chunk_name(full_path, i, num_chunks)) for i in range(num_chunks)):
+      return False
+  return True
+
+
+def validate_active_bundle(params: Params, available_bundles: list[custom.ModelManagerSP.ModelBundle] | None = None) -> None:
+  from openpilot.common.swaglog import cloudlog
+
+  global _LAST_VALIDATED_RAW
+
+  raw_bundle = params.get("ModelManager_ActiveBundle")
+  if not raw_bundle:
+    return
+
+  active_bundle = get_active_bundle(params, raw_bundle_dict=raw_bundle)
+  missing_files = active_bundle is not None and not _bundle_files_loadable(active_bundle)
+  # Always re-check files on disk (chunks can disappear after a failed re-download).
+  # Skip the heavier catalog/ref check only when the raw bundle is unchanged.
+  ref_changed = raw_bundle != _LAST_VALIDATED_RAW
+  needs_reset = active_bundle is None or missing_files or (ref_changed and _bundle_needs_reset(active_bundle, available_bundles))
+  if needs_reset:
+    reason = "files missing" if missing_files else "invalid"
+    cloudlog.warning(f"Active model bundle {reason}; resetting to default")
+    params.remove("ModelManager_ActiveBundle")
+    params.put("ModelRunnerTypeCache", int(custom.ModelManagerSP.Runner.stock), block=True)
+    _LAST_VALIDATED_RAW = None
+  else:
+    _LAST_VALIDATED_RAW = raw_bundle
 
 
 def get_active_model_runner(params: Params = None, force_check=False) -> int:

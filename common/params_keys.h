@@ -217,7 +217,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Curve-exit: release lat when |actual−model| is large after a curve (self-center)
     {"dp_htd_curve_exit_enabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"dp_htd_curve_exit_model_angle", {PERSISTENT | BACKUP, FLOAT, "6.0"}},
-    {"dp_htd_curve_latch_angle", {PERSISTENT | BACKUP, FLOAT, "16.0"}},
+    {"dp_htd_curve_latch_angle", {PERSISTENT | BACKUP, FLOAT, "20.0"}},
     {"dp_htd_curve_latch_distance", {PERSISTENT | BACKUP, FLOAT, "10.0"}},
     {"dp_htd_curve_exit_error", {PERSISTENT | BACKUP, FLOAT, "10.0"}},
     {"dp_htd_curve_exit_resume_error", {PERSISTENT | BACKUP, FLOAT, "5.0"}},

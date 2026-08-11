@@ -4,7 +4,7 @@ from tinygrad.tensor import Tensor
 from tinygrad.helpers import flatten, merge_dicts, DEBUG, Context, BEAM, getenv, JIT, JIT_BATCH_SIZE, dedup, pluralize, VIZ
 from tinygrad.device import Buffer, Compiled, Device, MultiBuffer
 from tinygrad.dtype import DType, dtypes
-from tinygrad.uop.ops import UOp, PatternMatcher, Variable, sym_infer, Ops, buffers, track_rewrites, graph_rewrite
+from tinygrad.uop.ops import UOp, PatternMatcher, Variable, sym_infer, Ops, GroupOp, buffers, track_rewrites, graph_rewrite
 from tinygrad.engine.realize import capturing, Estimates, compile_linear, run_linear, graph_cache, estimate_uop, get_runtime
 from tinygrad.engine.realize import unwrap_multi, resolve_params, get_call_arg_uops, get_call_outs_ins
 from tinygrad.schedule.memory import memory_plan_rewrite, _collect_bufs
@@ -232,6 +232,51 @@ def _prepare_jit_inputs(args, kwargs):
   expected_input_info = [(x[0], tuple(sorted(x[1].keys(), key=lambda v: v.expr)), x[2], x[3]) for x in inputs]
   return input_buf_uops, var_vals, names, expected_input_info
 
+def _view_logical_shape(view) -> tuple | None:
+  """Return the logical tensor shape for a JIT input view.
+
+  Current tinygrad encodes reshapes as Ops.RESHAPE (shape in .marg).
+  Nearby model builds encoded the same thing as Ops.CUSTOM_FUNCTION with a
+  shape arg in src[1] (GEP of VCONST scalars, or a vec CONST/VCONST).
+  Flat buffer inputs are Ops.NOOP after base substitution and have no shape.
+  """
+  from tinygrad.uop.ops import Ops
+  if view.op is Ops.NOOP:
+    return ()
+  if view.op in GroupOp.Movement and hasattr(view, 'marg'):
+    try:
+      return tuple(view.marg)
+    except Exception:
+      pass
+  if (shape := view._shape) is not None:
+    return tuple(shape)
+  # Legacy CUSTOM_FUNCTION reshape encoding used by recompiled packed models
+  if view.op is Ops.CUSTOM_FUNCTION and len(view.src) >= 2:
+    shape_uop = view.src[1]
+    if shape_uop.op is Ops.GEP:
+      return tuple(int(s.arg) for s in shape_uop.src)
+    if shape_uop.op in {Ops.VCONST, Ops.CONST}:
+      arg = shape_uop.arg
+      if isinstance(arg, tuple):
+        return tuple(int(x) for x in arg)
+      # vec(n) filled with scalar -> (scalar,) * n  e.g. (3,3)
+      return (int(arg),) * shape_uop.dtype.count
+  return None
+
+def _input_info_compatible(expected, actual) -> bool:
+  """Allow view-UOp graph differences across tinygrad versions when shape/dtype/device match.
+
+  Packed models compiled on nearby tinygrad builds capture RESHAPE views as
+  CUSTOM_FUNCTION/GEP. Exact UOp equality fails even though buffers match.
+  """
+  if len(expected) != len(actual): return False
+  for (eview, evars, edtype, edev), (aview, avars, adtype, adev) in zip(expected, actual):
+    if (edtype, edev, evars) != (adtype, adev, avars): return False
+    if eview == aview: continue
+    eshape, ashape = _view_logical_shape(eview), _view_logical_shape(aview)
+    if eshape is None or ashape is None or eshape != ashape: return False
+  return True
+
 class TinyJit(Generic[ReturnType]):
   def __init__(self, fxn:Callable[..., ReturnType]|None, captured:CapturedJit|None=None, prune=False):
     assert fxn or captured, "need either a function or a CapturedJit"
@@ -292,8 +337,12 @@ class TinyJit(Generic[ReturnType]):
       # jit exec
       assert self.captured is not None
       if self.captured.expected_names != names: raise JitError(f"args mismatch in JIT: {self.captured.expected_names=} != {names}")
-      if self.captured.expected_input_info != expected_input_info:
+      if not _input_info_compatible(self.captured.expected_input_info, expected_input_info):
         raise JitError(f"args mismatch in JIT: {self.captured.expected_input_info=} != {expected_input_info=}")
+      # Rebase pickled views onto the current tinygrad reshape encoding after the
+      # first compatible call so later checks stay cheap and match local graphs.
+      if self.captured.expected_input_info != expected_input_info:
+        self.captured.expected_input_info = expected_input_info
       ret = self.captured(input_buf_uops, var_vals)
 
     self.cnt += 1

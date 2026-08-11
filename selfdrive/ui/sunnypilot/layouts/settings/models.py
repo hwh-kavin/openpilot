@@ -128,7 +128,13 @@ class ModelsLayout(Widget):
   def calculate_cache_size():
     cache_size = 0.0
     if os.path.exists(CUSTOM_MODEL_PATH):
-      cache_size = sum(os.path.getsize(os.path.join(CUSTOM_MODEL_PATH, file)) for file in os.listdir(CUSTOM_MODEL_PATH)) / (1024**2)
+      for file in os.listdir(CUSTOM_MODEL_PATH):
+        try:
+          cache_size += os.path.getsize(os.path.join(CUSTOM_MODEL_PATH, file))
+        except FileNotFoundError:
+          # File was removed between listdir and getsize (e.g. by model manager cleanup)
+          pass
+      cache_size /= (1024 ** 2)
     return cache_size
 
   def _clear_cache(self):
@@ -272,3 +278,4 @@ class ModelsLayout(Widget):
 
   def show_event(self):
     self._scroller.show_event()
+    self._update_state()

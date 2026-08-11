@@ -10,7 +10,9 @@ from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.ui_state import ui_state
 
 # Manager forks with a warm sys.modules cache — reload layouts from disk.
-# Do not reload sunnypilot settings.py: it mutates OP.PanelType and breaks on reload.
+# Reload settings before main so SettingsLayoutSP picks up the fresh module.
+import openpilot.selfdrive.ui.sunnypilot.layouts.settings.settings as _settings_mod
+importlib.reload(_settings_mod)
 import openpilot.selfdrive.ui.sunnypilot.layouts.settings.osm as _osm_mod
 importlib.reload(_osm_mod)
 import bluepilot.ui.onroad.carlife_map_view as _carlife_view_mod

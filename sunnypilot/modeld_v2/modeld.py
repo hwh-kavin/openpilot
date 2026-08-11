@@ -54,8 +54,20 @@ PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
 
 
 def _pkl_exists(path):
-  from openpilot.common.file_chunker import get_manifest_path
-  return os.path.exists(path) or os.path.exists(get_manifest_path(path))
+  """True only if the pkl is actually loadable (full file or all chunks present)."""
+  from openpilot.common.file_chunker import get_manifest_path, get_chunk_name
+  if os.path.isfile(path):
+    return True
+  manifest = get_manifest_path(path)
+  if not os.path.isfile(manifest):
+    return False
+  try:
+    num_chunks = int(open(manifest).read().strip())
+  except (ValueError, OSError):
+    return False
+  if num_chunks <= 0:
+    return False
+  return all(os.path.isfile(get_chunk_name(path, i, num_chunks)) for i in range(num_chunks))
 
 
 def _find_driving_pkl(bundle):
@@ -70,6 +82,30 @@ def _find_driving_pkl(bundle):
   pkl_path = os.path.join(model_root, pkl_name)
   if _pkl_exists(pkl_path):
     return pkl_path
+  return None
+
+
+def _normalize_captured_tensors(obj) -> None:
+  """Ensure pickled TinyJit return tensors have slots expected by the current Tensor API.
+
+  Packed models compiled on nearby tinygrad builds may restore Tensors without
+  requires_grad/grad initialized (slots left unset). That breaks .numpy().
+  """
+  if isinstance(obj, Tensor):
+    if not hasattr(obj, 'requires_grad'):
+      object.__setattr__(obj, 'requires_grad', False)
+    if not hasattr(obj, 'grad'):
+      object.__setattr__(obj, 'grad', None)
+  elif isinstance(obj, dict):
+    for value in obj.values():
+      _normalize_captured_tensors(value)
+  elif isinstance(obj, (list, tuple)):
+    for value in obj:
+      _normalize_captured_tensors(value)
+  else:
+    captured = getattr(obj, 'captured', None)
+    if captured is not None:
+      _normalize_captured_tensors(captured.ret)
 
 
 class FrameMeta:
@@ -119,8 +155,11 @@ class ModelState(ModelStateBase):
 
     self._run_policy = jits[(cam_w, cam_h)]['run_policy']
     self._warp_enqueue = jits[(cam_w, cam_h)]['warp_enqueue']
+    _normalize_captured_tensors(self._run_policy)
+    _normalize_captured_tensors(self._warp_enqueue)
 
-    # TODO-SP: Remove legacy use_packed detection block after all models are recompiled
+    # Packed input layout is the current model architecture (selector v16+ / recompiled18).
+    # Fall back to unpacked queues only for older captured JITs without packed_npy_inputs.
     captured = getattr(self._run_policy, 'captured', None)
     if captured is not None:
       use_packed = 'packed_npy_inputs' in getattr(captured, 'expected_names', [])
@@ -157,6 +196,13 @@ class ModelState(ModelStateBase):
       frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
       self.input_queues, self.numpy_inputs = make_split_input_queues(vision_input_shapes, policy_input_shapes,
                                                                      frame_skip, device=self.QUEUE_DEV, use_packed=use_packed)
+
+    # Unpacked legacy models may want a synthetic action_t; packed models keep
+    # traffic_convention inside packed_npy_inputs and must not inject extra JIT args.
+    expected_names = set(getattr(getattr(self._run_policy, 'captured', None), 'expected_names', None) or [])
+    if ('traffic_convention' in self.numpy_inputs and 'action_t' not in self.input_queues and
+        'action_t' in expected_names):
+      self.input_queues['action_t'] = Tensor(np.zeros_like(self.numpy_inputs['traffic_convention']), device='NPY').realize()
 
     self._desire_key = next(key for key in self.numpy_inputs if key.startswith('desire'))
     self._road_key = next(key for key in self._vision_input_names if 'big' not in key)
@@ -408,7 +454,8 @@ def main(demo=False):
     v_ego = max(sm["carState"].vEgo, 0.)
     if sm.frame % 60 == 0:
       model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
-      model.PLANPLUS_CONTROL = params.get("PlanplusControl", return_default=True)
+      planplus = params.get("PlanplusControl", return_default=True)
+      model.PLANPLUS_CONTROL = float(planplus) if planplus is not None else 1.0
       camera_offset_helper.set_offset(params.get("CameraOffset", return_default=True))
     lat_delay = model.lat_delay + model.LAT_SMOOTH_SECONDS
     if sm.updated["liveCalibration"] and sm.seen['roadCameraState'] and sm.seen['deviceState']:

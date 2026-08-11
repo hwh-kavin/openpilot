@@ -37,12 +37,20 @@ def append_error_log(line: str, *, check_enable: bool = True, params: Params | N
       f.write(entry)
 
     # Keep file bounded: drop oldest half if oversized.
+    # Find a safe truncation point (after a <br>\n) to avoid breaking HTML.
     try:
       if os.path.getsize(path) > _ERROR_LOG_MAX_BYTES:
         with open(path, encoding="utf-8") as f:
           data = f.read()
+        # Truncate at a safe boundary: find the first <br>\n after the midpoint
+        mid = len(data) // 2
+        safe_pos = data.find("<br>\n", mid)
+        if safe_pos != -1:
+          data = data[safe_pos + len("<br>\n"):]
+        else:
+          data = data[mid:]
         with open(path, "w", encoding="utf-8") as f:
-          f.write(data[len(data) // 2:])
+          f.write(data)
     except OSError:
       pass
   except Exception:

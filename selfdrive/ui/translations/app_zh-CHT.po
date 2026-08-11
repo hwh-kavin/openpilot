@@ -2337,8 +2337,8 @@ msgid "此前模型期望转角曾达到该值以上才确认刚经过弯道（Q
 msgstr "模型期望轉角持續達到該值以上，才開始累計彎道確認距離（Q3推薦約12度）。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
-msgid "模型期望转角持续达到该值以上，才开始累计弯道确认距离（推荐约16度）。"
-msgstr "模型期望轉角持續達到該值以上，才開始累計彎道確認距離（推薦約16度）。"
+msgid "模型期望转角持续达到该值以上，才开始累计弯道确认距离（推荐约20度）。"
+msgstr "模型期望轉角持續達到該值以上，才開始累計彎道確認距離（推薦約20度）。"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
 msgid "弯道确认距离"

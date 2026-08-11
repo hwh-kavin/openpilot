@@ -27,6 +27,21 @@ axis_colors = {AxisType.GLOBAL: "blue", AxisType.THREAD: "BLUE", AxisType.LOCAL:
 axis_to_pos = {AxisType.LOOP: -1, AxisType.THREAD: 0, AxisType.GLOBAL: 0, AxisType.WARP: 1, AxisType.LOCAL: 2, AxisType.UPCAST: 3,
                AxisType.GROUP_REDUCE: 2, AxisType.REDUCE: 4, AxisType.UNROLL: 5}
 
+# Compatibility for models pickled with a nearby tinygrad that serialized PARAM.arg as ParamArg
+# (local runtime still creates PARAM with integer slot args via UOp.param).
+@dataclass(frozen=True, order=True)
+class ParamArg:
+  slot: int
+  vmin_vmax: tuple[PyConst, PyConst]|None = None
+  name: str|None = None
+  addrspace: AddrSpace = AddrSpace.GLOBAL
+  axis: int|None = None
+  device: str|tuple[str, ...]|None = None
+  def __repr__(self):
+    fields = (("vmin_vmax", None), ("name", None), ("addrspace", AddrSpace.GLOBAL), ("axis", None), ("device", None))
+    args = [str(self.slot)] + [f"{k}={v!r}" for k, default in fields if (v := getattr(self, k)) != default]
+    return f"ParamArg({', '.join(args)})"
+
 range_start = {Ops.STAGE: 1, Ops.REDUCE: 1, Ops.WMMA: 3, Ops.END: 1, Ops.CALL: 1, Ops.FUNCTION: 1,
                Ops.COPY: 2, Ops.BUFFER_VIEW: 1, Ops.LINEAR: 0}
 
@@ -85,9 +100,10 @@ class UOpMetaClass(type):
     if (wret:=UOpMetaClass.ucache.get(key:=(op, dtype, src, arg, tag), None)) is not None and (ret:=wret()) is not None: return ret
     UOpMetaClass.ucache[key] = weakref.ref(created:=super().__call__(*key))
     if metadata is not None: all_metadata[created] = metadata
-    # NOTE: this value is set by pickle when pickling a realized tensor
+    # NOTE: this value is set by pickle when pickling a realized tensor.
+    # Older/nearby tinygrad builds also attached realized buffers to Ops.COPY.
     if _buffer is not None:
-      assert op is Ops.BUFFER, f"trying to set Buffer {_buffer} for {op}"
+      assert op in {Ops.BUFFER, Ops.COPY}, f"trying to set Buffer {_buffer} for {op}"
       buffers[created] = _buffer
     if SPEC > 1:
       from tinygrad.uop.spec import spec_full, test_pyrender
@@ -249,7 +265,19 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
         # HACK: BUFFER_VIEW is used inside kernels, so we set the shape to () if it's on an INDEX
         if self.src[0].op is Ops.INDEX: return ()
         return (self.arg[0],)
-      case Ops.CUSTOM_FUNCTION: return None
+      case Ops.CUSTOM_FUNCTION:
+        # Graph runners use CUSTOM_FUNCTION with arg like "graph" and no tensor shape.
+        # Nearby packed-model builds also used CUSTOM_FUNCTION to encode RESHAPE as
+        # (buf, shape_uop); teach that encoding so pickled outputs keep a shape.
+        if self.arg is None and len(self.src) >= 2:
+          shape_uop = self.src[1]
+          if shape_uop.op is Ops.GEP:
+            return tuple(int(s.arg) for s in shape_uop.src)
+          if shape_uop.op in {Ops.VCONST, Ops.CONST}:
+            arg = shape_uop.arg
+            if isinstance(arg, tuple): return tuple(int(x) for x in arg)
+            return (int(arg),) * shape_uop.dtype.count
+        return None
       case Ops.STAGE: return tuple([int(r.vmax+1) for r in self.src[1:]])
       case Ops.DEFINE_LOCAL | Ops.DEFINE_REG: return (self.ptrdtype.size,)
       case Ops.PARAM:
@@ -688,6 +716,8 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
   @recursive_property
   def _device(self) -> str|tuple[str, ...]|None:
     if self.op is Ops.DEVICE: return self.arg
+    # Nearby packed-model builds used UNIQUE(str) as a device marker instead of DEVICE.
+    if self.op is Ops.UNIQUE and isinstance(self.arg, str): return self.arg
     if self.op is Ops.STAGE: return self.arg.device
     if self.op is Ops.AFTER: return self.src[0]._device
     if self.op is Ops.MSELECT:
@@ -727,6 +757,10 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
   def has_buffer_identity(self):
     """Check if this UOp has a concrete buffer identity in the graph (RESHAPE/MULTI -> BUFFER chain)."""
     if self.op in {Ops.RESHAPE, Ops.MULTI}: return self.src[0].has_buffer_identity()
+    # Legacy CUSTOM_FUNCTION reshape from packed model builds
+    if self.op is Ops.CUSTOM_FUNCTION and self.arg is None and len(self.src) >= 1:
+      return self.src[0].has_buffer_identity()
+    if self.op is Ops.COPY and buffers.get(self) is not None: return True
     if self.op is Ops.GETTUPLE and self.src[0].op is Ops.TUPLE: return self.src[0].src[self.arg].has_buffer_identity()
     return self.op in {Ops.BUFFER, Ops.BUFFER_VIEW, Ops.PARAM}
 
@@ -739,6 +773,11 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
   @property
   def buffer(self) -> Buffer|MultiBuffer:
     if self.op in {Ops.CONTIGUOUS, Ops.RESHAPE, Ops.DETACH, Ops.AFTER}: return self.src[0].buffer
+    # Legacy CUSTOM_FUNCTION reshape encoding used by packed model builds
+    if self.op is Ops.CUSTOM_FUNCTION and self.arg is None and len(self.src) >= 1:
+      return self.src[0].buffer
+    # Pickled COPY uops may carry the realized buffer directly in the buffers map
+    if self.op is Ops.COPY and (cret:=buffers.get(self)) is not None: return cret
     # this buffer can process disk tensors and simple movement ops
     if self is not self.base:
       buf = self.base.buffer
@@ -780,8 +819,10 @@ class UOp(OpMixin, metaclass=UOpMetaClass):
     return ret
   @property
   def realized(self) -> Buffer|MultiBuffer|None:
-    # only these can be realized
-    if self.op not in (Ops.BUFFER, Ops.MSTACK): return None
+    # only these can be realized (COPY included for pickled packed-model outputs)
+    if self.op not in (Ops.BUFFER, Ops.MSTACK, Ops.COPY): return None
+    if self.op is Ops.COPY:
+      return buffers.get(self) if (b:=buffers.get(self)) is not None and b.is_allocated() else None
     # LUNIQUEs are never realized
     if self.op_in_backward_slice_with_self(Ops.LUNIQUE): return None
     # NOTE: this is used by the JIT to determine which inputs we capture

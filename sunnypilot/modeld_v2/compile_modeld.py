@@ -127,6 +127,9 @@ def generate_queues_and_npy(input_shapes: dict, frame_skip: int, device: str = D
       'big_tfm': np.zeros((3, 3), dtype=np.float32)
     }
 
+    if 'traffic_convention' in input_shapes:
+      npy_arrays['traffic_convention'] = np.zeros(input_shapes['traffic_convention'], dtype=np.float32)
+
     for key, shape in input_shapes.items():
       if key not in npy_arrays and 'img' not in key and key not in ('features_buffer', desire_key):
         npy_arrays[key] = np.zeros(shape, dtype=np.float32)
@@ -141,6 +144,9 @@ def generate_queues_and_npy(input_shapes: dict, frame_skip: int, device: str = D
     if features_buffer:
       queues['feat_q'] = Tensor(np.zeros((frame_skip * (features_buffer[1] - 1) + 1, features_buffer[0], features_buffer[2]),
                          dtype=np.float32), device=device).contiguous().realize()
+
+    if 'action_t' in input_shapes:
+      queues['action_t'] = Tensor(np.zeros(input_shapes['action_t'], dtype=np.float32), device='NPY').realize()
 
     queues.update({key: Tensor(value, device='NPY').realize() for key, value in npy_arrays.items()})
 

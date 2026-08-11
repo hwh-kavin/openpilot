@@ -139,7 +139,7 @@ class SteeringLayout(Widget):
       min_value=8,
       max_value=40,
       value_change_step=1,
-      description=lambda: tr("模型期望转角持续达到该值以上，才开始累计弯道确认距离（推荐约16度）。"),
+      description=lambda: tr("模型期望转角持续达到该值以上，才开始累计弯道确认距离（推荐约20度）。"),
       label_callback=lambda angle: f"{angle}°",
     )
     self._htd_curve_latch_distance = option_item_sp(

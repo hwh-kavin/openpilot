@@ -13,7 +13,7 @@ ANGLE_ERROR_FILTER_RC = 0.25
 
 # Curve-exit defaults (Ford Q3–friendly: difference-based, not absolute steer ≥25°)
 DEFAULT_CURVE_EXIT_MODEL_DEG = 6.0       # model nearly straight
-DEFAULT_CURVE_LATCH_DEG = 16.0           # confirm we were in a curve
+DEFAULT_CURVE_LATCH_DEG = 20.0           # confirm we were in a curve
 DEFAULT_CURVE_LATCH_DISTANCE_M = 10.0    # sustained curve distance to filter model spikes
 DEFAULT_CURVE_EXIT_ERROR_DEG = 10.0      # |actual − model| to release
 DEFAULT_CURVE_EXIT_RESUME_ERROR_DEG = 5.0  # |actual − model| to re-engage (hysteresis)
