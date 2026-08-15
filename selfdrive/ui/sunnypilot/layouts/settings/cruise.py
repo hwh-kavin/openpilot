@@ -58,7 +58,8 @@ class CruiseLayout(Widget):
                      "follow down to a stop; during stop-go, follow stock pullaway when AccPrpl requests go "
                      "(and send resume); if stock will not go, OP vision pulls away. Above 40 km/h, stock "
                      "braking is ignored and OP owns decel (fewer false brakes off-highway). OP also handles "
-                     "SCC / earlier braking. Requires openpilot longitudinal."),
+                     "SCC / earlier braking. While enabled, OP lead detection is vision-only (stock ACC already "
+                     "uses the car radar). Requires openpilot longitudinal."),
       param="FordStockAccFusion")
 
     self.scc_v_toggle = toggle_item_sp(

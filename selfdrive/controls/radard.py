@@ -30,14 +30,15 @@ RADAR_TO_CENTER = 2.7   # (deprecated) RADAR is ~ 2.7m ahead from center of car
 RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame (default / Toyota)
 
 # Ford Delphi radar reports dRel from the front bumper; vision uses the camera origin.
-# Geometry helpers remain for track association / future features; longitudinal lead
-# selection uses the shared get_lead() path (stock ACC fusion owns Ford long control).
+# With FordStockAccFusion, stock ACC already uses the car radar — OP leads stay vision-only
+# to avoid adjacent-lane radar false associates causing OP brake jerk.
 FORD_RADAR_TO_CAMERA = 1.35
 FORD_LATERAL_MATCH_GATE = 2.0
 FORD_LOW_SPEED_MIN_DREL = 0.5
 FORD_LOW_SPEED_MAX_DREL = 25.0
 FORD_V_EGO_STATIONARY = 6.0
 FORD_LOW_SPEED_LATERAL = 1.5
+PARAMS_UPDATE_FRAMES = 50  # ~1s at model rate
 
 
 def get_radar_to_camera(CP: structs.CarParams) -> float:
@@ -227,8 +228,15 @@ def _vision_matched_track(v_ego: float, ready: bool, tracks: dict[int, Track],
 
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, lead_prob: float, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
-             low_speed_override: bool = True) -> dict[str, Any]:
+             low_speed_override: bool = True, vision_only: bool = False) -> dict[str, Any]:
   radar_to_camera = get_radar_to_camera(CP)
+
+  # Vision-only: skip radar track association / low-speed radar override
+  if vision_only:
+    if ready and (lead_prob > .5):
+      return get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob, radar_to_camera)
+    return {'status': False}
+
   lateral_gate = get_lateral_match_gate(CP)
   low_speed_min_drel = get_low_speed_min_drel(CP)
   low_speed_max_drel = get_low_speed_max_drel(CP)
@@ -287,10 +295,27 @@ class RadarD:
     self.radar_state_valid = False
 
     self.ready = False
+    self._params = Params()
+    self._frame = 0
+    # Ford + stock ACC fusion: OP leads are vision-only (stock path already has radar)
+    self._vision_only_leads = self.CP.brand == "ford" and self._params.get_bool("FordStockAccFusion")
+
+  def _update_vision_only_leads(self):
+    if self.CP.brand != "ford":
+      self._vision_only_leads = False
+      return
+    if (self._frame % PARAMS_UPDATE_FRAMES) != 0:
+      return
+    try:
+      self._vision_only_leads = self._params.get_bool("FordStockAccFusion")
+    except Exception:
+      pass
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
     self.current_time = 1e-9*max(sm.logMonoTime.values())
+    self._frame += 1
+    self._update_vision_only_leads()
 
     if sm.recv_frame['carState'] != self.last_v_ego_frame:
       self.v_ego = sm['carState'].vEgo
@@ -337,14 +362,15 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      # Tracks from liveTracks (radar point cloud) are kept for association / future use.
-      # Ford longitudinal uses stock ACC fusion; leadOne uses the shared vision+radar get_lead().
+      # With FordStockAccFusion: vision-only leads (stock ACC already uses car radar).
+      # Otherwise: shared vision+radar association.
+      vision_only = self._vision_only_leads
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
                                           self.lead_prob_filters[0].x, self.CP, self.CP_SP,
-                                          low_speed_override=True)
+                                          low_speed_override=not vision_only, vision_only=vision_only)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
                                           self.lead_prob_filters[1].x, self.CP, self.CP_SP,
-                                          low_speed_override=False)
+                                          low_speed_override=False, vision_only=vision_only)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
