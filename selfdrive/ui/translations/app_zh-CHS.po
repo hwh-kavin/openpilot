@@ -1345,6 +1345,14 @@ msgstr "打转向灯时暂停横向控制"
 msgid "Pause lateral control with blinker when traveling below the desired speed selected."
 msgstr "当车速低于设定值时，打转向灯将暂停横向控制。"
 
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "Block Lane Change: Road Edge Detection"
+msgstr "路沿检测阻止变道"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "Blocks the lane change if the model sees a road edge on your signaled side."
+msgstr "模型在转向灯一侧检测到路沿时，阻止自动变道。"
+
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering_sub_layouts/mads_settings.py
 msgid "Pause: ALC will pause when the brake pedal is pressed."
 msgstr "暂停保持：当踩下制动踏板时，ALC将暂停。"

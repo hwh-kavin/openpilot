@@ -1202,6 +1202,14 @@ msgstr ""
 msgid "Pause lateral control with blinker when traveling below the desired speed selected."
 msgstr ""
 
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "Block Lane Change: Road Edge Detection"
+msgstr "路沿檢測阻止變道"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "Blocks the lane change if the model sees a road edge on your signaled side."
+msgstr "模型在轉向燈一側檢測到路沿時，阻止自動變道。"
+
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering_sub_layouts/mads_settings.py
 msgid "Pause: ALC will pause when the brake pedal is pressed."
 msgstr ""
