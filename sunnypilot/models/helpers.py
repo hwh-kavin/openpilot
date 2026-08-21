@@ -54,7 +54,12 @@ def is_bundle_version_compatible(bundle: dict) -> bool:
   :return: True if the selector version is within the accepted range for the bundle; otherwise False.
   :rtype: Bool
   """
-  return bool(REQUIRED_MIN_SELECTOR_VERSION <= bundle.get("minimumSelectorVersion", 0) <= CURRENT_SELECTOR_VERSION)
+  # Upstream JSON sometimes stores this as a string (e.g. "16"); coerce before compare.
+  try:
+    min_sel = int(bundle.get("minimumSelectorVersion", 0) or 0)
+  except (TypeError, ValueError):
+    return False
+  return bool(REQUIRED_MIN_SELECTOR_VERSION <= min_sel <= CURRENT_SELECTOR_VERSION)
 
 
 def get_active_bundle(params: Params | None = None, raw_bundle_dict: dict | bytes | None = None) -> "custom.ModelManagerSP.ModelBundle | None":
@@ -75,7 +80,9 @@ _LAST_VALIDATED_RAW: dict | bytes | None = None
 
 
 def _bundle_needs_reset(active_bundle: custom.ModelManagerSP.ModelBundle, available_bundles: list[custom.ModelManagerSP.ModelBundle] | None) -> bool:
-  if available_bundles is None:
+  # None or empty: catalog unavailable (fetch/DNS failure). Do not wipe ActiveBundle —
+  # that used to clear a working RDF/C210 selection and leave calibration stuck at 0%.
+  if not available_bundles:
     return False
   return active_bundle.ref not in {bundle.ref for bundle in available_bundles}
 
@@ -133,8 +140,13 @@ def get_active_model_runner(params: Params = None, force_check=False) -> int:
     params = Params()
 
   cached_runner_type = params.get("ModelRunnerTypeCache")
+  # Onroad uses the cache to avoid thrashing, but a stale non-stock cache with no
+  # ActiveBundle starts modeld_tinygrad without a pkl → crash loop → 0% calibration.
   if cached_runner_type is not None and not force_check:
-    return cached_runner_type
+    if (cached_runner_type == int(custom.ModelManagerSP.Runner.stock) or
+        params.get("ModelManager_ActiveBundle")):
+      return cached_runner_type
+    force_check = True
 
   runner_type = custom.ModelManagerSP.Runner.stock
 

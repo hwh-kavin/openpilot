@@ -58,7 +58,8 @@ class CruiseLayout(Widget):
                      "follow down to a stop; during stop-go, follow stock pullaway when AccPrpl requests go "
                      "(and send resume); if stock will not go, OP vision pulls away. Above 40 km/h, stock "
                      "braking is ignored and OP owns decel (fewer false brakes off-highway). OP also handles "
-                     "SCC / earlier braking. While enabled, OP lead detection is vision-only (stock ACC already "
+                     "SCC / earlier braking. Stock follow gap is set from speed (<40 km/h: 1 bar, <70: 2, "
+                     "<90: 3, else 4). While enabled, OP lead detection is vision-only (stock ACC already "
                      "uses the car radar). Requires openpilot longitudinal."),
       param="FordStockAccFusion")
 
@@ -105,8 +106,9 @@ class CruiseLayout(Widget):
     self.acm_toggle = toggle_item_sp(
       title=tr("启用自适应滑行模式(ACM)"),
       description=tr("无前车时允许轻微超速滑行（设定速度～设定+附加），少刹车、降油门以节油。"
-                     "有前车且距离/TTC 足够安全时优先关油门滑行，过近或危险时自动退出。"
-                     "低于设定速度时恢复正常加速。经典 ACC 与实验模式均可用；SCC 弯道降速激活时自动暂停。"),
+                     "有前车且距离/TTC 足够安全时优先关油门滑行；约 40 km/h 以上跟车落在目标车距中带时也会关油门滑行（不挡刹车）。"
+                     "过近或危险时自动退出。低于设定速度时恢复正常加速。"
+                     "经典 ACC 与实验模式均可用；SCC 弯道降速激活时自动暂停。"),
       param="dp_acm_enabled",
     )
 

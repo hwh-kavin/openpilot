@@ -1,9 +1,9 @@
 from __future__ import annotations
 from typing import Callable, cast
 from dataclasses import dataclass
-from tinygrad.helpers import prod, Target
+from tinygrad.helpers import prod, Target, EMULATED_DTYPES
 from tinygrad.uop.ops import Ops, UOp, sint, ssimplify, smin, GroupOp, PatternMatcher
-from tinygrad.dtype import AddrSpace, PtrDType
+from tinygrad.dtype import AddrSpace, PtrDType, DType, dtypes
 from tinygrad.codegen.opt.tc import TensorCore
 from tinygrad.device import Compiler
 
@@ -38,7 +38,7 @@ class Estimates:
     for u in uops:
       if u.op in {Ops.LOAD, Ops.STORE}:
         buf = u
-        while len(buf.src): buf = buf.src[0]
+        while len(buf.src) and buf.op is not Ops.PARAM: buf = buf.src[0]
         if buf.op is Ops.PARAM:
           # u.src[0] is INDEX, cap at buffer size for re-reads (e.g. matmul)
           accessed = mem.get((buf, u.op), 0) + u.src[0].dtype.base.itemsize * mults
@@ -85,3 +85,6 @@ class Renderer:
   def render(self, uops:list[UOp]) -> str: raise NotImplementedError("needs a renderer")
   def asm(self, prg:UOp, lin:UOp) -> bytes: raise NotImplementedError("needs an assembler")
   def aux(self, uops:list[UOp]) -> dict: raise NotImplementedError("needs aux")
+  def supported_dtypes(self) -> set[DType]:
+    # double can't be bitcast to anything without long support
+    return set(dtypes.all) - {dtypes.weakint} - ({dtypes.double} if dtypes.long in EMULATED_DTYPES.tolist(dtypes) else set())

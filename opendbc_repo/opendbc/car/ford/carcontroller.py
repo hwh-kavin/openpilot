@@ -36,6 +36,14 @@ FUSION_OP_PULLAWAY_ACCEL = 0.4  # m/s^2
 PARAMS_UPDATE_FRAMES = 100  # ~1s at 100Hz
 LOG_EVERY_FRAMES = 100
 
+# Pulse stock GAP so IPMA's AccTGap_D_Dsply matches speed-based 1–4 bars
+STOCK_GAP_PRESS_HOLD_S = 0.12
+STOCK_GAP_RETRY_S = 0.55
+STOCK_GAP_DRIVER_HOLD_S = 8.0
+STOCK_GAP_MAX_PRESSES = 6
+STOCK_GAP_MIN = 1
+STOCK_GAP_MAX = 5
+
 
 def _stock_lead_moving(CS, cruise_kph: float) -> bool:
   """True when stock ACC target speed dropped — lead actually moving, not cruise default."""
@@ -252,6 +260,17 @@ class CarController(CarControllerBase):
     self._stock_acc_session = False
     self._standstill_since: float | None = None
     self._stock_go_confirm = 0
+    self._stock_gap_press_until = 0.0
+    self._stock_gap_retry_until = 0.0
+    self._stock_gap_driver_until = 0.0
+    self._stock_gap_presses = 0
+    self._stock_gap_target_last = 0
+    self._brake_pressed_last = False
+    self._long_active_last = False
+    self._last_op_accel = 0.0
+    self._last_stock_a: float | None = None
+    self._last_long_state = ""
+    self._last_v_trg_kph = 0.0
 
   def _update_stock_go_confirm(self, stock_a: float | None, allowed: bool) -> None:
     if allowed and stock_a is not None and stock_a > FUSION_STOCK_PULLAWAY_THRESH:
@@ -264,6 +283,50 @@ class CarController(CarControllerBase):
       allowed and stock_a is not None and stock_a > FUSION_STOCK_PULLAWAY_THRESH and
       self._stock_go_confirm >= FUSION_STOCK_GO_DEBOUNCE_CYCLES
     )
+
+  def _update_stock_gap_request(self, CS, target_bars: int) -> bool:
+    """Hold True while a synthetic stock GAP press should be sent.
+
+    Reads IPMA AccTGap_D_Dsply (camera ACCDATA_3) and pulses AccButtnGapTogglePress
+    until it matches the speed-based 1–4 bar target. A real driver GAP press
+    pauses auto-set for a few seconds.
+    """
+    now = time.monotonic()
+    if CS.distance_button:
+      self._stock_gap_driver_until = now + STOCK_GAP_DRIVER_HOLD_S
+      self._stock_gap_presses = 0
+      return False
+    if now < self._stock_gap_driver_until:
+      return False
+    if not self._fusion_enabled or not CS.out.cruiseState.available:
+      self._stock_gap_presses = 0
+      return False
+
+    stock = int(getattr(CS, "stock_acc_tgap", 0) or 0)
+    if stock < STOCK_GAP_MIN or stock > STOCK_GAP_MAX:
+      return False
+
+    target = int(np.clip(int(target_bars), 1, 4))
+    if stock == target:
+      self._stock_gap_presses = 0
+      self._stock_gap_target_last = target
+      return False
+
+    if target != self._stock_gap_target_last:
+      self._stock_gap_presses = 0
+      self._stock_gap_target_last = target
+
+    if now < self._stock_gap_press_until:
+      return True
+    if self._stock_gap_presses >= STOCK_GAP_MAX_PRESSES:
+      return False
+    if now < self._stock_gap_retry_until:
+      return False
+
+    self._stock_gap_presses += 1
+    self._stock_gap_press_until = now + STOCK_GAP_PRESS_HOLD_S
+    self._stock_gap_retry_until = now + STOCK_GAP_RETRY_S
+    return True
 
   def _update_fusion_params(self):
     if (self.frame % PARAMS_UPDATE_FRAMES) != 0 and self._params is not None:
@@ -294,6 +357,52 @@ class CarController(CarControllerBase):
     except Exception:
       pass
 
+  def _maybe_log_driver_brake(self, CC, CS, hud_control) -> None:
+    """On driver brake rising edge while long was active, snapshot last long command.
+
+    pedalPressed immediately clears longActive, so use the previous-cycle command
+    (what the car was actually being asked to do when the driver intervened).
+    """
+    brake_rising = bool(CS.out.brakePressed) and not self._brake_pressed_last
+    long_was_on = bool(self._long_active_last) or bool(CC.longActive)
+    prev_long = self._long_active_last
+    self._brake_pressed_last = bool(CS.out.brakePressed)
+    self._long_active_last = bool(CC.longActive)
+
+    if not self._fusion_log or not self.CP.openpilotLongitudinalControl:
+      return
+    if not brake_rising or not long_was_on:
+      return
+    # Brake-to-hold / engage at a stop is not a missed auto-brake
+    if CS.out.standstill or CS.out.cruiseState.standstill:
+      return
+
+    stock_s = "None" if self._last_stock_a is None else ("%.2f" % self._last_stock_a)
+    self._log_fusion(
+      "纵向人工刹车 DriverBrakeIntervene: v_ego=%.1f a_ego=%.2f cruise=%.1f "
+      "longActive=%s->%s lead=%s longState=%s mode=%s "
+      "op=%.2f stock=%s fused_gas=%.2f fused_brk=%.2f brake_req=%s "
+      "prpl=%.2f brk=%.2f pred=%.2f v_trg=%.1f" % (
+        CS.out.vEgo * CV.MS_TO_KPH,
+        CS.out.aEgo,
+        CS.out.cruiseState.speed * CV.MS_TO_KPH,
+        prev_long,
+        CC.longActive,
+        bool(hud_control.leadVisible),
+        self._last_long_state,
+        self._last_fusion_mode,
+        self._last_op_accel,
+        stock_s,
+        self.gas,
+        self.accel,
+        self.brake_request,
+        getattr(CS, "stock_acc_prpl", 0.0),
+        getattr(CS, "stock_acc_brk", 0.0),
+        getattr(CS, "stock_acc_prpl_pred", 0.0),
+        self._last_v_trg_kph,
+      )
+    )
+
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
 
@@ -305,6 +414,7 @@ class CarController(CarControllerBase):
     fcw_alert = hud_control.visualAlert == VisualAlert.fcw
 
     self._update_fusion_params()
+    self._maybe_log_driver_brake(CC, CS, hud_control)
 
     # Standstill hold timing (logged; stop-go latch for stock pullaway / resume)
     at_stop = CS.out.standstill or CS.out.cruiseState.standstill
@@ -334,6 +444,7 @@ class CarController(CarControllerBase):
     induce_stock_resume = (
       self._fusion_enabled and self._stock_acc_session and stock_pullaway_ready
     )
+    want_stock_gap = self._update_stock_gap_request(CS, hud_control.leadDistanceBars)
 
     ### acc buttons ###
     if CC.cruiseControl.cancel:
@@ -346,6 +457,9 @@ class CarController(CarControllerBase):
     # the stock system checks for steering pressed, and eventually disengages cruise control
     elif CS.acc_tja_status_stock_values["Tja_D_Stat"] != 0 and (self.frame % CarControllerParams.ACC_UI_STEP) == 0:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, tja_toggle=True))
+    elif want_stock_gap and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
+      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, gap_toggle=True))
+      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, gap_toggle=True))
 
     ### lateral control ###
     # send steer msg at 20Hz
@@ -507,8 +621,10 @@ class CarController(CarControllerBase):
             if is_ford_auto_follow_gap(self._params, self.CP):
               at_stop = CS.out.standstill or CS.out.cruiseState.standstill
               t_af = get_t_follow_auto(CS.out.vEgo, at_stop)
-              auto_follow_extra = " t_follow_auto=%.2f bars=%d" % (
+              auto_follow_extra = " t_follow_auto=%.2f bars=%d stock_tgap=%d presses=%d" % (
                 t_af, hud_control.leadDistanceBars,
+                int(getattr(CS, "stock_acc_tgap", 0) or 0),
+                self._stock_gap_presses,
               )
           except Exception:
             pass
@@ -550,6 +666,10 @@ class CarController(CarControllerBase):
 
       self.accel = accel
       self.gas = gas
+      self._last_op_accel = op_accel
+      self._last_stock_a = stock_a
+      self._last_long_state = str(long_state)
+      self._last_v_trg_kph = v_trg_kph
 
     ### ui ###
     send_ui = (self.main_on_last != main_on) or (self.lkas_enabled_last != CC.latActive) or (self.steer_alert_last != steer_alert)

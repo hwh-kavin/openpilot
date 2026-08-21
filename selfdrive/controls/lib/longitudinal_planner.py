@@ -163,7 +163,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.acm.update_states(
       sm['carControl'], sm['radarState'], user_ctrl_lon, v_ego, v_cruise,
       mode=mode, personality=personality, dtsc_is_active=self.dec.active(),
-      scc_active=scc_active, road_pitch=road_pitch)
+      scc_active=scc_active, road_pitch=road_pitch, t_follow=t_follow)
     # ACM on MPC trajectory (ACC and Experimental); SCC active still bypasses inside ACM
     self.a_desired_trajectory = self.acm.update_a_desired_trajectory(
       self.a_desired_trajectory, v_ego, lead, personality_t_follow,

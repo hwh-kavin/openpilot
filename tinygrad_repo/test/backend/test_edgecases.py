@@ -127,19 +127,19 @@ class TestInputValidation(unittest.TestCase):
     with self.assertRaises(ValueError):
       torch.optim.AdamW([torch.tensor([1.], requires_grad=True)], lr=0.1, weight_decay=-0.1)
     with self.assertRaises(ValueError):
-      nn.optim.AdamW([Tensor([1.], requires_grad=True)], lr=0.1, weight_decay=-0.1)
+      nn.optim.AdamW([Tensor([1.])], lr=0.1, weight_decay=-0.1)
 
   def test_negative_lr(self):
     with self.assertRaises(ValueError):
       torch.optim.SGD([torch.tensor([1.], requires_grad=True)], lr=-0.1)
     with self.assertRaises(ValueError):
-      nn.optim.SGD([Tensor([1.], requires_grad=True)], lr=-0.1)
+      nn.optim.SGD([Tensor([1.])], lr=-0.1)
 
   def test_negative_momentum(self):
     with self.assertRaises(ValueError):
       torch.optim.SGD([torch.tensor([1.], requires_grad=True)], lr=0.1, momentum=-0.1)
     with self.assertRaises(ValueError):
-      nn.optim.SGD([Tensor([1.], requires_grad=True)], lr=0.1, momentum=-0.1)
+      nn.optim.SGD([Tensor([1.])], lr=0.1, momentum=-0.1)
 
 class TestZeroFolding(unittest.TestCase):
   # we don't need more of these
@@ -219,7 +219,6 @@ class TestUOpValidationIssue(unittest.TestCase):
 class TestEdgeCases(unittest.TestCase):
   # add tests exposing new and diverse kinds of bugs that might impact real users here
 
-  @unittest.expectedFailure
   def test_circular_pad_negative(self):
     # negative pads with circular mode should wrap like PyTorch
     arr = np.arange(9).reshape(1, 1, 3, 3).astype(np.float32)

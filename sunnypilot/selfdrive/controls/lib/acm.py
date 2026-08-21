@@ -47,6 +47,18 @@ FOLLOW_COAST_MARGIN_STRENGTH = 1.5
 FOLLOW_COAST_MARGIN_PITCH = 0.7
 FOLLOW_COAST_LEAD_BRAKE = -0.5
 
+# Highway follow mid-band coast: cut gas when lead is near desired gap (ratio ~1)
+# Low-speed FollowCoastLogic stays below FOLLOW_COAST_SPEED_MAX; mid-band starts above.
+MIDBAND_V_MIN = 11.0  # ~40 km/h
+MIDBAND_RATIO_ENTER_LO = 1.02
+MIDBAND_RATIO_ENTER_HI = 1.35
+MIDBAND_RATIO_EXIT_LO = 0.95
+MIDBAND_RATIO_EXIT_HI = 1.45
+MIDBAND_TTC_ENTER = 3.5
+MIDBAND_TTC_EXIT = 2.5
+MIDBAND_VREL_CLOSING_EXIT = 1.2  # m/s closing → leave coast for OP brake
+MIDBAND_COOLDOWN_TIME = 0.4
+
 SPEED_BP = [0., 10., 20., 30.]
 MIN_DIST_V = [5., 10., 15., 20.]
 
@@ -292,6 +304,88 @@ class FollowCoastLogic:
 
 
 # =========================================================
+# Highway follow mid-band coast (cut gas near desired gap)
+# =========================================================
+class FollowMidBandCoastLogic:
+  """When lead sits in the mid follow band, cut throttle and coast via OP.
+
+  Allows full OP braking (unlike low-speed FollowCoast which softens brakes).
+  Publishes as followCoast so Ford fusionAcmCoast routes to op_coast.
+  """
+
+  def __init__(self):
+    self.active = False
+    self._last_exit_time = 0.0
+
+  def update_states(self, enabled, has_lead, lead, v_ego, t_follow, pitch,
+                    dtsc_is_active, user_ctrl_lon, current_time):
+    if (not enabled or not has_lead or dtsc_is_active or user_ctrl_lon or
+        pitch is None or v_ego < MIDBAND_V_MIN):
+      if self.active:
+        self._last_exit_time = current_time
+      self.active = False
+      return
+
+    if (current_time - self._last_exit_time) < MIDBAND_COOLDOWN_TIME:
+      self.active = False
+      return
+
+    ratio = compute_lead_ratio(lead, v_ego, t_follow)
+    ttc = compute_lead_ttc(lead, v_ego)
+    closing = max(v_ego - lead.vLead, 0.0)
+    is_lead_braking = lead.aLeadK < FOLLOW_COAST_LEAD_BRAKE
+
+    if ratio is None:
+      if self.active:
+        self._last_exit_time = current_time
+      self.active = False
+      return
+
+    if self.active:
+      ttc_bad = ttc is not None and ttc < MIDBAND_TTC_EXIT
+      should_exit = (
+        ratio < MIDBAND_RATIO_EXIT_LO or
+        ratio > MIDBAND_RATIO_EXIT_HI or
+        ttc_bad or
+        is_lead_braking or
+        closing > MIDBAND_VREL_CLOSING_EXIT
+      )
+      if should_exit:
+        self.active = False
+        self._last_exit_time = current_time
+    else:
+      ttc_ok = ttc is None or ttc >= MIDBAND_TTC_ENTER
+      should_enter = (
+        MIDBAND_RATIO_ENTER_LO <= ratio <= MIDBAND_RATIO_ENTER_HI and
+        ttc_ok and
+        not is_lead_braking and
+        closing <= MIDBAND_VREL_CLOSING_EXIT
+      )
+      if should_enter:
+        self.active = True
+
+  def process_trajectory(self, a_desired_trajectory, pitch):
+    if not self.active or pitch is None:
+      return a_desired_trajectory
+
+    traj = np.copy(a_desired_trajectory)
+    if np.min(traj) < EMERGENCY_DECEL_THRESHOLD:
+      self.active = False
+      return a_desired_trajectory
+
+    # Cut gas only — never block a harder OP brake
+    return np.minimum(traj, 0.0)
+
+  def apply_to_accel(self, a_target: float) -> float:
+    if not self.active:
+      return float(a_target)
+    if a_target < EMERGENCY_DECEL_THRESHOLD:
+      self.active = False
+      return float(a_target)
+    return float(min(a_target, 0.0))
+
+
+# =========================================================
 # L3 comfort: SoftHold (MPC_FOLLOW only)
 # =========================================================
 class SoftHoldLogic:
@@ -490,6 +584,7 @@ class ACM:
 
     self.coasting = CoastingLogic()
     self.follow_coast = FollowCoastLogic()
+    self.midband_coast = FollowMidBandCoastLogic()
     self.soft_hold = SoftHoldLogic()
 
   @property
@@ -504,8 +599,16 @@ class ACM:
     # SCC curve slowing always wins; ACM works in both classic ACC and Experimental/E2E.
     return (not self.enabled) or self._scc_is_active
 
+  def _clear_coast_states(self):
+    self.coasting.active = False
+    self.coasting.coast_strength = 0.0
+    self.coasting._lead_aware = False
+    self.follow_coast.active = False
+    self.midband_coast.active = False
+
   def update_states(self, cc, rs, user_ctrl_lon, v_ego, v_cruise, mode='acc', personality=log.LongitudinalPersonality.standard,
-                    dtsc_is_active=False, scc_active=False, road_pitch: float | None = None):
+                    dtsc_is_active=False, scc_active=False, road_pitch: float | None = None,
+                    t_follow: float | None = None):
     self.personality = personality
     self._dtsc_is_active = dtsc_is_active
     self._scc_is_active = scc_active
@@ -513,10 +616,7 @@ class ACM:
 
     if not self.enabled or road_pitch is None or scc_active:
       self.comfort_state = ComfortState.OFF
-      self.coasting.active = False
-      self.coasting.coast_strength = 0.0
-      self.coasting._lead_aware = False
-      self.follow_coast.active = False
+      self._clear_coast_states()
       if road_pitch is not None:
         self.current_pitch = road_pitch
       return
@@ -525,15 +625,13 @@ class ACM:
     current_time = time.monotonic()
     lead = rs.leadOne
     has_lead = lead is not None and lead.status
-    t_follow = get_T_FOLLOW(personality)
+    if t_follow is None:
+      t_follow = get_T_FOLLOW(personality)
     strength = compute_coast_strength(lead, v_ego, t_follow) if has_lead else 1.0
 
     if self.coasting.check_emergency(lead, v_ego, current_time):
       self.comfort_state = ComfortState.MPC_FOLLOW
-      self.coasting.active = False
-      self.coasting.coast_strength = 0.0
-      self.coasting._lead_aware = False
-      self.follow_coast.active = False
+      self._clear_coast_states()
       return
 
     self.coasting.update_states(
@@ -544,8 +642,17 @@ class ACM:
       self.enabled, has_lead, lead, v_ego, t_follow, road_pitch, strength,
       dtsc_is_active, user_ctrl_lon, current_time)
 
+    self.midband_coast.update_states(
+      self.enabled, has_lead, lead, v_ego, t_follow, road_pitch,
+      dtsc_is_active, user_ctrl_lon, current_time)
+
+    # Priority: low-speed follow coast → highway mid-band → cruise coast → MPC follow
     if self.follow_coast.active:
       self.comfort_state = ComfortState.FOLLOW_COAST
+      self.midband_coast.active = False
+    elif self.midband_coast.active:
+      self.comfort_state = ComfortState.FOLLOW_COAST
+      self.coasting.active = False
     elif self.coasting.active:
       self.comfort_state = ComfortState.CRUISE_COAST
     else:
@@ -565,6 +672,8 @@ class ACM:
       return self.coasting.process_trajectory(a_desired_trajectory, pitch)
 
     if self.comfort_state == ComfortState.FOLLOW_COAST:
+      if self.midband_coast.active:
+        return self.midband_coast.process_trajectory(a_desired_trajectory, pitch)
       return self.follow_coast.process_trajectory(a_desired_trajectory, pitch)
 
     return self.soft_hold.process_trajectory(a_desired_trajectory, v_ego, lead, pitch, t_follow)
@@ -606,6 +715,8 @@ class ACM:
       return float(max(a_target, a_coast))
 
     if self.comfort_state == ComfortState.FOLLOW_COAST:
+      if self.midband_coast.active:
+        return self.midband_coast.apply_to_accel(a_target)
       return float(max(a_target, get_coast_accel(pitch)))
 
     # Soft hold / MPC follow comfort on a single-sample trajectory

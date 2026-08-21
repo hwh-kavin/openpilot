@@ -291,7 +291,8 @@ def create_lkas_ui_msg(packer, CAN: CanBus, main_on: bool, enabled: bool, steer_
   return packer.make_can_msg("IPMA_Data", CAN.main, values)
 
 
-def create_button_msg(packer, bus: int, stock_values: dict, cancel=False, resume=False, tja_toggle=False):
+def create_button_msg(packer, bus: int, stock_values: dict, cancel=False, resume=False, tja_toggle=False,
+                      gap_toggle=False, gap_inc=False, gap_dec=False):
   """
   Creates a CAN message for the Ford SCCM buttons/switches.
 
@@ -338,5 +339,8 @@ def create_button_msg(packer, bus: int, stock_values: dict, cancel=False, resume
     "CcAslButtnCnclPress": 1 if cancel else 0,      # CC cancel button
     "CcAsllButtnResPress": 1 if resume else 0,      # CC resume button
     "TjaButtnOnOffPress": 1 if tja_toggle else 0,   # LCA/TJA toggle button
+    "AccButtnGapTogglePress": 1 if gap_toggle else values["AccButtnGapTogglePress"],
+    "AccButtnGapIncPress": 1 if gap_inc else values["AccButtnGapIncPress"],
+    "AccButtnGapDecPress": 1 if gap_dec else values["AccButtnGapDecPress"],
   })
   return packer.make_can_msg("Steering_Data_FD1", bus, values)

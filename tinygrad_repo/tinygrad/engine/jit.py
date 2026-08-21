@@ -4,7 +4,7 @@ from tinygrad.tensor import Tensor
 from tinygrad.helpers import flatten, merge_dicts, DEBUG, Context, BEAM, getenv, JIT, JIT_BATCH_SIZE, dedup, pluralize, VIZ
 from tinygrad.device import Buffer, Compiled, Device, MultiBuffer
 from tinygrad.dtype import DType, dtypes
-from tinygrad.uop.ops import UOp, PatternMatcher, Variable, sym_infer, Ops, GroupOp, buffers, track_rewrites, graph_rewrite
+from tinygrad.uop.ops import UOp, PatternMatcher, Variable, sym_infer, Ops, buffers, track_rewrites, graph_rewrite
 from tinygrad.engine.realize import capturing, Estimates, compile_linear, run_linear, graph_cache, estimate_uop, get_runtime
 from tinygrad.engine.realize import unwrap_multi, resolve_params, get_call_arg_uops, get_call_outs_ins
 from tinygrad.schedule.memory import memory_plan_rewrite, _collect_bufs
@@ -43,7 +43,7 @@ def graph_split_rewrite(linear:UOp, max_batch_size:int=0) -> UOp:
     current_batch, current_batch_devs = [], []
 
   for si in linear.src:
-    if si.src[0].op is Ops.BUFFER_VIEW: continue
+    if si.src[0].op is Ops.SLICE: continue
 
     devs = dedup([Device[x] for b in si.src[1:] if b.op is not Ops.BIND for x in (b.device if isinstance(b.device, tuple) else (b.device,))])
     graph_t = graph_class(devs[0]) if devs[0].graph is not None else None
@@ -94,7 +94,7 @@ class GraphRunner:
     self.runtimes: list[Any|None] = []
     self.uop_replace: list[list[tuple[int, int]]] = []
     for call in self.linear.src:
-      replace = [(p, b.arg) for p, b in enumerate(get_call_arg_uops(call)) if b.op is Ops.PARAM]
+      replace = [(p, b.arg.slot) for p, b in enumerate(get_call_arg_uops(call)) if b.op is Ops.PARAM]
       for dev_idx, (bufs, device_vars) in enumerate(unwrap_multi(call, resolve_params(call, input_uops))):
         self.calls.append((dev_idx, call.src[0], [b.ensure_allocated() for b in bufs], device_vars))
         self.runtimes.append(get_runtime(bufs[0].device, call.src[0]) if call.src[0].op is Ops.PROGRAM else None)
@@ -193,7 +193,7 @@ class CapturedJit(Generic[ReturnType]):
       if call.op is not Ops.CALL: continue
       arg_uops = get_call_arg_uops(call)
       outs, ins = get_call_outs_ins(call)
-      out |= {arg_uops[k] for k in set(outs) - set(ins) if arg_uops[k].op in (Ops.BUFFER, Ops.BUFFER_VIEW)}
+      out |= {arg_uops[k] for k in set(outs) - set(ins) if arg_uops[k].op in (Ops.BUFFER, Ops.SLICE)}
     return out
 
   def __call__(self, input_uops:list[UOp], var_vals:dict[str, int]) -> ReturnType:
@@ -219,10 +219,11 @@ def _prepare_jit_inputs(args, kwargs):
   for x in args + tuple(kwargs.values()):
     it = x if isinstance(x, (tuple,list)) else x.values() if isinstance(x, dict) else []
     tensors += [t for t in it if t.__class__ is Tensor and not any(t is y for y in tensors)]
+  def get_input_uops() -> list[UOp]: return flatten([t.uop.src if t.uop.op is Ops.MULTI else [t.uop] for t in tensors])
+  # TODO: drop the CONST branch once all CONST are deviceless
+  if any(u.device is None or u.base.op is Ops.CONST for u in get_input_uops()): raise JitError("JIT inputs must be real buffers; use .clone()")
   if len(unrealized_tensors := [x for x in tensors if not x.uop.is_realized]): Tensor.realize(*unrealized_tensors)
-  input_uops: list[UOp] = flatten([t.uop.src if t.uop.op is Ops.MULTI else [t.uop] for t in tensors])
-  if any(u.base.op is Ops.CONST for u in input_uops):
-    raise JitError("JIT inputs cannot be const, create a buffer with .contiguous()")
+  input_uops = get_input_uops()
   # collect buffer UOps (including MultiBuffer)
   input_buf_uops: list[UOp] = [u.base for u in input_uops if u.base.realized is not None]
   if len(set(input_buf_uops)) != len(input_buf_uops): raise JitError("duplicate inputs to JIT")
@@ -231,51 +232,6 @@ def _prepare_jit_inputs(args, kwargs):
   var_vals = {k.expr:v for k,v in _var_vals.items()}
   expected_input_info = [(x[0], tuple(sorted(x[1].keys(), key=lambda v: v.expr)), x[2], x[3]) for x in inputs]
   return input_buf_uops, var_vals, names, expected_input_info
-
-def _view_logical_shape(view) -> tuple | None:
-  """Return the logical tensor shape for a JIT input view.
-
-  Current tinygrad encodes reshapes as Ops.RESHAPE (shape in .marg).
-  Nearby model builds encoded the same thing as Ops.CUSTOM_FUNCTION with a
-  shape arg in src[1] (GEP of VCONST scalars, or a vec CONST/VCONST).
-  Flat buffer inputs are Ops.NOOP after base substitution and have no shape.
-  """
-  from tinygrad.uop.ops import Ops
-  if view.op is Ops.NOOP:
-    return ()
-  if view.op in GroupOp.Movement and hasattr(view, 'marg'):
-    try:
-      return tuple(view.marg)
-    except Exception:
-      pass
-  if (shape := view._shape) is not None:
-    return tuple(shape)
-  # Legacy CUSTOM_FUNCTION reshape encoding used by recompiled packed models
-  if view.op is Ops.CUSTOM_FUNCTION and len(view.src) >= 2:
-    shape_uop = view.src[1]
-    if shape_uop.op is Ops.GEP:
-      return tuple(int(s.arg) for s in shape_uop.src)
-    if shape_uop.op in {Ops.VCONST, Ops.CONST}:
-      arg = shape_uop.arg
-      if isinstance(arg, tuple):
-        return tuple(int(x) for x in arg)
-      # vec(n) filled with scalar -> (scalar,) * n  e.g. (3,3)
-      return (int(arg),) * shape_uop.dtype.count
-  return None
-
-def _input_info_compatible(expected, actual) -> bool:
-  """Allow view-UOp graph differences across tinygrad versions when shape/dtype/device match.
-
-  Packed models compiled on nearby tinygrad builds capture RESHAPE views as
-  CUSTOM_FUNCTION/GEP. Exact UOp equality fails even though buffers match.
-  """
-  if len(expected) != len(actual): return False
-  for (eview, evars, edtype, edev), (aview, avars, adtype, adev) in zip(expected, actual):
-    if (edtype, edev, evars) != (adtype, adev, avars): return False
-    if eview == aview: continue
-    eshape, ashape = _view_logical_shape(eview), _view_logical_shape(aview)
-    if eshape is None or ashape is None or eshape != ashape: return False
-  return True
 
 class TinyJit(Generic[ReturnType]):
   def __init__(self, fxn:Callable[..., ReturnType]|None, captured:CapturedJit|None=None, prune=False):
@@ -337,12 +293,8 @@ class TinyJit(Generic[ReturnType]):
       # jit exec
       assert self.captured is not None
       if self.captured.expected_names != names: raise JitError(f"args mismatch in JIT: {self.captured.expected_names=} != {names}")
-      if not _input_info_compatible(self.captured.expected_input_info, expected_input_info):
-        raise JitError(f"args mismatch in JIT: {self.captured.expected_input_info=} != {expected_input_info=}")
-      # Rebase pickled views onto the current tinygrad reshape encoding after the
-      # first compatible call so later checks stay cheap and match local graphs.
       if self.captured.expected_input_info != expected_input_info:
-        self.captured.expected_input_info = expected_input_info
+        raise JitError(f"args mismatch in JIT: {self.captured.expected_input_info=} != {expected_input_info=}")
       ret = self.captured(input_buf_uops, var_vals)
 
     self.cnt += 1

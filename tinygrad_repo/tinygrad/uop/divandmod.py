@@ -65,7 +65,7 @@ def fold_divmod_general(d: UOp) -> UOp|None:
     # nest_by_factor: x//c -> (x//f)//(c//f), x%c -> (x//f%(c//f))*f + b where b=x%f
     # FLOORDIV identity holds for any sign of x; FLOORMOD reconstruction needs x.vmin>=0
     results = []
-    for div in {abs(f) for u, f in zip(uops_no_const, factors) if u.op not in (Ops.CONST, Ops.VCONST) and 1 < abs(f) < c and (c%f)==0}:
+    for div in {abs(f) for u, f in zip(uops_no_const, factors) if u.op is not Ops.CONST and 1 < abs(f) < c and (c%f)==0}:
       if (newxs := fold_divmod_general(x//div)) is not None:
         if d.op is Ops.FLOORDIV:
           results.append((len(newxs.backward_slice), newxs // (c // div)))
@@ -108,7 +108,7 @@ div_and_mod_symbolic = PatternMatcher([
   # (x//c+a)//d -> (x+a*c)//(c*d) for c>0, d>0
   ((UPat.var("x")//UPat.cvar("c") + UPat.cvar("a"))//UPat.cvar("d"), lambda x,c,a,d: (x+a*c)//(c*d) if c.vmin>0 and d.vmin>0 else None),
   # (x+c)//d -> (x+c%d)//d + c//d for d>0 (split out the multiple of d in the constant)
-  ((UPat.var("x", dtypes.weakint)+UPat.cvar("c", vec=False))//UPat.cvar("d", vec=False),
+  ((UPat.var("x", dtypes.weakint)+UPat.cvar("c"))//UPat.cvar("d"),
     lambda x,c,d: (x+c.arg%d.arg)//d + c.arg//d.arg if c.arg%d.arg!=c.arg and d.arg>0 else None),
 
   # ** 2. Slow Rules **

@@ -86,10 +86,10 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     raise NotImplementedError("Longitudinal personality not supported")
 
 
-# Ford + FordStockAccFusion: speed-based follow time gap (no gap-button / personality distance)
-_FORD_AUTO_T_FOLLOW_V_KPH = [0., 20., 40., 60., 80., 100.]
-_FORD_AUTO_T_FOLLOW = [1.20, 1.30, 1.40, 1.50, 1.60, 1.70]
-_FORD_FOLLOW_BARS_HOLD_S = 1.0
+# Ford + FordStockAccFusion: speed-based stock follow gap (button + OP t_follow)
+# <40 km/h → 1, <70 → 2, <90 → 3, else → 4
+_FORD_AUTO_T_FOLLOW_BY_BARS = {1: 1.20, 2: 1.40, 3: 1.55, 4: 1.70}
+_FORD_FOLLOW_BARS_HOLD_S = 2.0
 
 
 def is_ford_auto_follow_gap(params, CP) -> bool:
@@ -104,13 +104,27 @@ def is_ford_auto_follow_gap(params, CP) -> bool:
     return False
 
 
+def _v_kph_to_bars_target(v_kph: float) -> int:
+  """Stock ACC follow bars from ego speed (km/h).
+
+  <40 → 1, <70 → 2, <90 → 3, else → 4
+  """
+  if v_kph < 40.0:
+    return 1
+  if v_kph < 70.0:
+    return 2
+  if v_kph < 90.0:
+    return 3
+  return 4
+
+
 def get_t_follow_auto(v_ego: float, standstill: bool = False) -> float:
-  """Continuous t_follow from speed (m/s). Standstill uses minimum gap."""
+  """t_follow matching the speed-based stock 1–4 bar gap."""
   from opendbc.car.common.conversions import Conversions as CV
   if standstill:
-    return float(_FORD_AUTO_T_FOLLOW[0])
+    return float(_FORD_AUTO_T_FOLLOW_BY_BARS[1])
   v_kph = max(0.0, v_ego * CV.MS_TO_KPH)
-  return float(np.interp(v_kph, _FORD_AUTO_T_FOLLOW_V_KPH, _FORD_AUTO_T_FOLLOW))
+  return float(_FORD_AUTO_T_FOLLOW_BY_BARS[_v_kph_to_bars_target(v_kph)])
 
 
 def resolve_t_follow(v_ego: float, standstill: bool, personality, params, CP) -> float:
@@ -119,22 +133,8 @@ def resolve_t_follow(v_ego: float, standstill: bool, personality, params, CP) ->
   return get_T_FOLLOW(personality)
 
 
-def _v_kph_to_bars_target(v_kph: float) -> int:
-  """Ford IPC distance bars from ego speed (km/h).
-
-  0–30 → 1, 30–50 → 2, 50–70 → 3, 70+ → 4
-  """
-  if v_kph < 30.0:
-    return 1
-  if v_kph < 50.0:
-    return 2
-  if v_kph < 70.0:
-    return 3
-  return 4
-
-
 class FordFollowBarsDisplay:
-  """Smooth Ford IPC 1–4 bar display for speed-based auto follow gap."""
+  """Hysteresis for speed-based stock follow gap (1–4 bars)."""
 
   def __init__(self):
     self.bars = 3

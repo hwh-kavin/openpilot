@@ -19,6 +19,7 @@ import time
 import numpy as np
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
+from cereal import custom
 from opendbc.car.structs import car
 from setproctitle import setproctitle
 from openpilot.cereal.messaging import PubMaster, SubMaster
@@ -109,6 +110,14 @@ def _normalize_captured_tensors(obj) -> None:
       _normalize_captured_tensors(captured.ret)
 
 
+def _reset_to_stock_runner(reason: str) -> None:
+  """Drop ActiveBundle so manager starts stock modeld (needed for calibration)."""
+  cloudlog.error(reason)
+  params = Params()
+  params.remove("ModelManager_ActiveBundle")
+  params.put("ModelRunnerTypeCache", int(custom.ModelManagerSP.Runner.stock), block=True)
+
+
 class FrameMeta:
   frame_id: int = 0
   timestamp_sof: int = 0
@@ -140,13 +149,24 @@ class ModelState(ModelStateBase):
     self.PLANPLUS_CONTROL: float = 1.0
 
     pkl_path = _find_driving_pkl(model_bundle)
-    assert pkl_path is not None, "No driving pkl found — all models must be compiled with compile_modeld.py"
+    if pkl_path is None:
+      # Stale ActiveBundle / runner cache: refuse to crash-loop. Fall back to stock
+      # so calibrationd can receive cameraOdometry again.
+      _reset_to_stock_runner("No driving pkl found for active bundle; resetting to stock runner")
+      raise FileNotFoundError("No driving pkl found — select the model again or use Default")
     self._init_combined(pkl_path, cam_w, cam_h, model_bundle)
 
   def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
     # TODO-SP: switch to load_oob from openpilot/selfdrive/helpers on next full recompile of all models
-    jits = pickle.load(open_file_chunked(pkl_path))
+    try:
+      jits = pickle.load(open_file_chunked(pkl_path))
+    except Exception as e:
+      # RDF and other nearby-tinygrad pickles used to fail here (Ops.COPY buffer attach).
+      # If load still fails, drop the broken active model so stock modeld can calibrate.
+      cloudlog.exception(f"failed to load driving pkl {pkl_path}: {e}")
+      _reset_to_stock_runner(f"failed to load driving pkl {pkl_path}; resetting to stock runner")
+      raise
 
     self.DEV = Device.DEFAULT
     self.WARP_DEV = 'CPU' if USBGPU else self.DEV
@@ -236,6 +256,52 @@ class ModelState(ModelStateBase):
       frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.WARP_DEV).contiguous().realize(),
       big_frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.WARP_DEV).contiguous().realize())
 
+    # Some recompiled tinygrad pickles load but never update outputs (CapturedJit ret
+    # frozen). That publishes constant cameraOdometry.trans≈0 so calibration stays 0%.
+    if not self._outputs_respond_to_frames():
+      _reset_to_stock_runner(
+        f"driving pkl {pkl_path} produces frozen outputs on this tinygrad; resetting to stock runner")
+      raise RuntimeError("Incompatible tinygrad model pickle (frozen outputs)")
+
+  def _outputs_respond_to_frames(self) -> bool:
+    """True if two different synthetic frames change model outputs."""
+    class _FakeBuf:
+      def __init__(self, data: np.ndarray):
+        self.data = data
+
+    def _run_with_fill(fill: int) -> np.ndarray | None:
+      bufs = {
+        name: _FakeBuf(np.full(self.frame_buf_params[name][3], fill, dtype=np.uint8))
+        for name in self.vision_input_names
+      }
+      transforms = {name: np.eye(3, dtype=np.float32) for name in self.vision_input_names}
+      inputs: dict[str, np.ndarray] = {
+        self.desire_key: np.zeros(self.constants.DESIRE_LEN, dtype=np.float32),
+        'traffic_convention': np.array([1.0, 0.0], dtype=np.float32),
+      }
+      if 'lateral_control_params' in self.numpy_inputs:
+        inputs['lateral_control_params'] = np.array([10.0, 0.1], dtype=np.float32)
+      if 'action_t' in self.numpy_inputs:
+        inputs['action_t'] = np.array([0.1, 0.1], dtype=np.float32)
+      out = self.run(bufs, transforms, inputs, prepare_only=False)
+      if out is None or 'pose' not in out:
+        return None
+      # Use a wide slice of outputs so a broken pose head alone still fails the check.
+      chunks = [out['pose'].reshape(-1)]
+      for key in ('plan', 'lane_lines', 'hidden_state'):
+        if key in out:
+          chunks.append(out[key].reshape(-1)[:64])
+      return np.concatenate(chunks)
+
+    try:
+      a = _run_with_fill(0)
+      b = _run_with_fill(255)
+    except Exception:
+      cloudlog.exception("tinygrad model smoke test raised")
+      return False
+    if a is None or b is None:
+      return False
+    return bool(np.max(np.abs(a - b)) > 1e-4)
 
   @property
   def mlsim(self) -> bool:

@@ -115,11 +115,24 @@ class ModelsLayoutMici(NavScroller):
     self._show_selection_view(folder_buttons, self._reset_main_view)
 
   def _select_model(self, bundle):
+    prev_ref = self.model_manager.activeBundle.ref if (
+      self.model_manager.activeBundle and self.model_manager.activeBundle.ref
+    ) else "Default"
     ui_state.params.put("ModelManager_DownloadIndex", bundle.index)
+    if bundle.ref != prev_ref:
+      ui_state.params.remove("CalibrationParams")
+      ui_state.params.remove("LiveTorqueParameters")
     self._reset_main_view()
 
   def _select_default(self):
+    prev_ref = self.model_manager.activeBundle.ref if (
+      self.model_manager.activeBundle and self.model_manager.activeBundle.ref
+    ) else "Default"
     ui_state.params.remove("ModelManager_ActiveBundle")
+    ui_state.params.put("ModelRunnerTypeCache", int(custom.ModelManagerSP.Runner.stock), block=True)
+    if prev_ref != "Default":
+      ui_state.params.remove("CalibrationParams")
+      ui_state.params.remove("LiveTorqueParameters")
     self._reset_main_view()
 
   def _select_folder(self, folder_name):

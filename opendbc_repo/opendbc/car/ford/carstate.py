@@ -29,6 +29,7 @@ class CarState(CarStateBase, MadsCarState):
     self.stock_acc_prpl_pred = CarControllerParams.INACTIVE_GAS
     self.stock_acc_v_trg = 0.0
     self.stock_acc_enbl = False
+    self.stock_acc_tgap = 0
 
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
@@ -125,6 +126,8 @@ class CarState(CarStateBase, MadsCarState):
     self.stock_acc_prpl_pred = float(accdata["AccPrpl_A_Pred"])
     self.stock_acc_v_trg = float(accdata["AccVeh_V_Trg"])
     self.stock_acc_enbl = bool(accdata["Cmbb_B_Enbl"])
+    # IPMA still publishes AccTGap on camera ACCDATA_3 (blocked from IPC while OP TXes HUD)
+    self.stock_acc_tgap = int(cp_cam.vl["ACCDATA_3"]["AccTGap_D_Dsply"])
 
     MadsCarState.update_mads(self, ret, can_parsers)
 

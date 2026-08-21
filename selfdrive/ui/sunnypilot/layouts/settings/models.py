@@ -194,26 +194,31 @@ class ModelsLayout(Widget):
         label.action_item.update(p.progress, text, show, color)
 
   @staticmethod
-  def _show_reset_params_dialog():
-    def _callback(response):
-      if response == DialogResult.CONFIRM:
-        ui_state.params.remove("CalibrationParams")
-        ui_state.params.remove("LiveTorqueParameters")
-    msg = tr("Model download has started in the background. We suggest resetting calibration. Would you like to do that now?")
-    dialog = ConfirmDialog(msg, tr("Reset Calibration"), callback=_callback)
-    gui_app.push_widget(dialog)
+  def _reset_calibration_for_model_switch():
+    """Clear calib so the next onroad drive re-enters calibration (same as Device → Reset)."""
+    ui_state.params.remove("CalibrationParams")
+    ui_state.params.remove("LiveTorqueParameters")
 
   def _on_model_selected(self, result):
     if result != DialogResult.CONFIRM:
       return
     selected_ref = self.model_dialog.selection_ref
+    prev_ref = self.model_manager.activeBundle.ref if (
+      self.model_manager and self.model_manager.activeBundle and self.model_manager.activeBundle.ref
+    ) else "Default"
+
     if selected_ref == "Default":
       ui_state.params.remove("ModelManager_ActiveBundle")
-      self._show_reset_params_dialog()
+      ui_state.params.put("ModelRunnerTypeCache", int(custom.ModelManagerSP.Runner.stock), block=True)
     elif selected_bundle := next((bundle for bundle in self.model_manager.availableBundles if bundle.ref == selected_ref), None):
       ui_state.params.put("ModelManager_DownloadIndex", selected_bundle.index)
-      if self.model_manager.activeBundle and selected_bundle.generation != self.model_manager.activeBundle.generation:
-        self._show_reset_params_dialog()
+
+    # Always recalibrate when the driving model changes (Default↔custom or same-generation swaps).
+    # Previously only prompted when activeBundle.generation differed — Default→RDFM never reset,
+    # so calibration stayed "calibrated" from the old model and never auto-restarted.
+    if selected_ref != prev_ref:
+      self._reset_calibration_for_model_switch()
+
     self.model_dialog = None
 
   @staticmethod
