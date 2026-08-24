@@ -31,6 +31,8 @@ FUSION_STOCK_PULLAWAY_THRESH = 0.12  # m/s^2
 FUSION_STOCK_GO_DEBOUNCE_CYCLES = 15
 # stock v_trg below cruise by this margin => lead moving, not spurious resume
 FUSION_LEAD_MOVING_V_TRG_MARGIN_KPH = 5.0
+# Stock intent-brake at/above this magnitude + lead detected => trust stock above 40 km/h
+FUSION_STOCK_HARD_BRAKE = 1.0  # m/s^2
 # Floor accel when planner wants go but LongControl is still in stopping hold (-2 m/s^2)
 FUSION_OP_PULLAWAY_ACCEL = 0.4  # m/s^2
 PARAMS_UPDATE_FRAMES = 100  # ~1s at 100Hz
@@ -98,14 +100,16 @@ def get_stock_acc_accel(CS, *, session_active: bool = False, v_ego: float = 0.0)
 
 
 def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool = False,
-                        stock_auto_resume: bool = False, v_ego: float = 0.0) -> tuple[float, str]:
+                        stock_auto_resume: bool = False, v_ego: float = 0.0,
+                        stock_lead_detected: bool = False) -> tuple[float, str]:
   """
   Fuse stock ACC with OP (vision follow / SCC curve / planner / stop-go).
 
   Before stock session: below ~20 mph → stock_a None → OP only.
   After stock session: stock usable down to stop; OP still wins on earlier brake/curve.
   Above FUSION_OP_BRAKE_ONLY_V (~40 km/h): stock braking is ignored — OP owns decel
-  (avoids stock false brakes on non-highways); stock may still soften positive accel.
+  (avoids stock false brakes on non-highways); exception: hard stock brake intent while
+  a lead is confirmed is kept (stock_brake_keep) so real threats are not dropped.
   Stop-go pullaway: if stock AccPrpl requests go, follow stock (stock_go) / induce resume.
   Do not let OP stopping-hold brake override stock go — that deadlocks AccStopMde.
   If stock will not pull away, prefer OP vision/start (op_go).
@@ -120,7 +124,11 @@ def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool 
 
   # Above 40 km/h: discard stock brake requests entirely (OP owns longitudinal braking).
   # Do not clamp to 0 — that would incorrectly zero OP accel when stock was falsely braking.
+  # Exception: if stock confirms a lead (target speed well below cruise) and wants hard
+  # braking, trust it — a real threat beats the false-brake filter.
   if v_ego > FUSION_OP_BRAKE_ONLY_V and stock_a < -0.05:
+    if stock_lead_detected and stock_a < -FUSION_STOCK_HARD_BRAKE:
+      return float(min(op_a, stock_a)), "stock_brake_keep"
     if stop_go_op:
       return float(min(max(op_a, FUSION_OP_PULLAWAY_ACCEL), FUSION_ACCEL_SOFT_MAX)), "op_go"
     return op_a, "op_brake_only"
@@ -546,11 +554,15 @@ class CarController(CarControllerBase):
         op_for_fuse = op_accel
         if stop_go_op and op_for_fuse < FUSION_OP_PULLAWAY_ACCEL:
           op_for_fuse = FUSION_OP_PULLAWAY_ACCEL
+        # Stock confirms a lead when its own target speed drops well below cruise.
+        cruise_kph = float(CS.out.cruiseState.speed) * CV.MS_TO_KPH
+        stock_lead_detected = _stock_lead_moving(CS, cruise_kph)
         accel, fusion_mode = fuse_stock_op_accel(
           op_for_fuse, stock_a,
           stop_go_op=stop_go_op,
           stock_auto_resume=stock_pullaway,
           v_ego=CS.out.vEgo,
+          stock_lead_detected=stock_lead_detected,
         )
         # Clarify log mode: OP used because session not yet latched below min speed
         if (not self._stock_acc_session) and below_stock_min and fusion_mode == "op_only":
