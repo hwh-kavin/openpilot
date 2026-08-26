@@ -139,6 +139,11 @@ void set_heartbeat_engaged_mads(bool c);
 void mads_heartbeat_engaged_check(void);
 void set_steering_disengage(bool c);
 int get_gas_interceptor_prev(void);
+
+int get_ford_pinion_geometry_count(void);
+float get_ford_pinion_geometry_slip_factor(int idx);
+float get_ford_pinion_geometry_steer_ratio(int idx);
+float get_ford_pinion_geometry_wheelbase(int idx);
 """)
 
 class LibSafety:

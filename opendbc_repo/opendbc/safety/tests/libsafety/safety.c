@@ -300,6 +300,28 @@ int get_gas_interceptor_prev(void){
   return gas_interceptor_prev;
 }
 
+// BluePilot: debug getters for the Ford pinion geometry table (ALLOW_DEBUG builds only).
+// Consumed by test_ford.py's geometry-consistency test, which compares every firmware row
+// against CarSpecs + calc_slip_factor(VehicleModel(CP)) so the table cannot rot as
+// platforms change -- without fragile header parsing.
+#ifdef ALLOW_DEBUG
+int get_ford_pinion_geometry_count(void){
+  return (int)FORD_PINION_GEOMETRY_COUNT;
+}
+
+float get_ford_pinion_geometry_slip_factor(int idx){
+  return ((idx >= 0) && (idx <= (int)FORD_PINION_GEOMETRY_COUNT)) ? ford_pinion_geometry[idx].slip_factor : 0.0f;
+}
+
+float get_ford_pinion_geometry_steer_ratio(int idx){
+  return ((idx >= 0) && (idx <= (int)FORD_PINION_GEOMETRY_COUNT)) ? ford_pinion_geometry[idx].steer_ratio : 0.0f;
+}
+
+float get_ford_pinion_geometry_wheelbase(int idx){
+  return ((idx >= 0) && (idx <= (int)FORD_PINION_GEOMETRY_COUNT)) ? ford_pinion_geometry[idx].wheelbase : 0.0f;
+}
+#endif
+
 void init_tests(void){
   safety_mode_cnt = 2U;  // avoid ignoring relay_malfunction logic
   alternative_experience = 0;

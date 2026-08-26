@@ -137,6 +137,7 @@ class HumanTurnDetection:
     model_desired_angle_deg: float,
     dt: float = 0.01,
     lane_changing: bool = False,
+    human_turn_master: bool | None = None,
   ) -> tuple[bool, HTDState]:
     self._read_params()
     self._angle_error_filter.dt = dt
@@ -147,8 +148,19 @@ class HumanTurnDetection:
     self._last_model_angle = model_desired_angle_deg
     self._lane_changing = lane_changing
 
-    # Recovery 1: master switch off -> immediate resume
-    if not self._enabled:
+    # ``human_turn_master is None`` preserves the legacy behavior where ``dp_htd_enabled`` is
+    # the single master for both human-turn and curve-exit. Ford angle mode passes an explicit
+    # override so its built-in (car-controller-level) human-turn override can replace the dp_htd
+    # detector without also disabling the independent curve-exit release.
+    if human_turn_master is None:
+      human_on = self._enabled
+      curve_exit_on = self._enabled and self._curve_exit_enabled
+    else:
+      human_on = human_turn_master
+      curve_exit_on = self._curve_exit_enabled
+
+    # All relevant features disabled -> immediate resume
+    if not human_on and not curve_exit_on:
       if self._state != HTDState.INACTIVE:
         self._transition(HTDState.INACTIVE, "disabled")
       return True, self._state
@@ -163,7 +175,7 @@ class HumanTurnDetection:
     self._update_curve_latch(model_desired_angle_deg, v_ego, dt)
 
     if self._state == HTDState.INACTIVE:
-      if lat_active and self._should_trigger_human():
+      if lat_active and human_on and self._should_trigger_human():
         self._transition(HTDState.PAUSED, "trigger_human", PauseReason.HUMAN_TURN)
         return False, self._state
       if lat_active and self._should_trigger_curve_exit():

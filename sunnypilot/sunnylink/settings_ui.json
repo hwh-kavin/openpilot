@@ -478,6 +478,247 @@
           ]
         },
         {
+          "id": "ford_lateral",
+          "title": "Ford Lateral Control",
+          "description": "BluePilot Ford curvature-primary vs angle-primary steering and tuning",
+          "enablement": [
+            {
+              "type": "capability",
+              "field": "brand",
+              "equals": "ford"
+            }
+          ],
+          "items": [
+            {
+              "key": "FordPrefLateralControl",
+              "widget": "multiple_button",
+              "title": "Lateral Control Method",
+              "description": "Curvature-primary sends the 4-signal polynomial (path offset / path angle / curvature / curvature rate). Angle-primary converts curvature into path_angle (c1) and holds curvature at 0.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "Curvature"
+                },
+                {
+                  "value": 1,
+                  "label": "Angle"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                }
+              ]
+            },
+            {
+              "key": "disable_BP_lat_UI",
+              "widget": "toggle",
+              "title": "Bypass BluePilot Lateral",
+              "description": "Use the stock curvature-only steering path instead of the BluePilot 4-signal / angle strategies.",
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                }
+              ]
+            },
+            {
+              "key": "FordPrefSteerAngleCurvature",
+              "widget": "toggle",
+              "title": "Steering-Angle Curvature Measurement",
+              "description": "Measure curvature from the steering pinion angle instead of the RCM yaw rate (for vehicles with a faulty yaw sensor). Requires the safety firmware to match.",
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                }
+              ]
+            }
+          ],
+          "sub_panels": [
+            {
+              "id": "ford_angle_settings",
+              "label": "Angle Mode Tuning",
+              "trigger_key": "FordPrefLateralControl",
+              "trigger_condition": {
+                "type": "param",
+                "key": "FordPrefLateralControl",
+                "equals": 1
+              },
+              "items": [
+                {
+                  "key": "FordLowSpeedFactor_ang",
+                  "widget": "option",
+                  "title": "Low Speed Factor",
+                  "min": 0.5,
+                  "max": 1.5,
+                  "step": 0.05,
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "FordHighSpeedFactor_ang",
+                  "widget": "option",
+                  "title": "High Speed Factor",
+                  "min": 0.5,
+                  "max": 1.5,
+                  "step": 0.05,
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "FordHighSpeedDampening_ang",
+                  "widget": "option",
+                  "title": "High Speed Dampening",
+                  "min": 0.25,
+                  "max": 1.25,
+                  "step": 0.05,
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "lane_change_factor_high_ang",
+                  "widget": "option",
+                  "title": "Lane Change Factor",
+                  "min": 0.85,
+                  "max": 1.5,
+                  "step": 0.05,
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                }
+              ]
+            },
+            {
+              "id": "ford_curvature_settings",
+              "label": "Curvature Mode Tuning",
+              "trigger_key": "FordPrefLateralControl",
+              "trigger_condition": {
+                "type": "param",
+                "key": "FordPrefLateralControl",
+                "equals": 0
+              },
+              "items": [
+                {
+                  "key": "lane_change_factor_high_curv",
+                  "widget": "option",
+                  "title": "Lane Change Factor",
+                  "min": 0.5,
+                  "max": 1.0,
+                  "step": 0.05,
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "pc_blend_ratio_low_C_UI_curv",
+                  "widget": "option",
+                  "title": "Predicted Curvature Blend (Low Curvature)",
+                  "min": 0.0,
+                  "max": 1.0,
+                  "step": 0.05,
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "pc_blend_ratio_high_C_UI_curv",
+                  "widget": "option",
+                  "title": "Predicted Curvature Blend (High Curvature)",
+                  "min": 0.0,
+                  "max": 1.0,
+                  "step": 0.05,
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "enable_lane_positioning_curv",
+                  "widget": "toggle",
+                  "title": "Lane Positioning (PID)",
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "enable_lane_full_mode_curv",
+                  "widget": "toggle",
+                  "title": "Lane Full Mode",
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "custom_path_offset_curv",
+                  "widget": "option",
+                  "title": "Custom Path Offset",
+                  "min": -0.5,
+                  "max": 0.5,
+                  "step": 0.05,
+                  "unit": "m",
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "custom_profile_curv",
+                  "widget": "multiple_button",
+                  "title": "Tuning Profile",
+                  "options": [
+                    {
+                      "value": 0,
+                      "label": "Default"
+                    },
+                    {
+                      "value": 1,
+                      "label": "Custom"
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
+                  "key": "LC_PID_gain_UI_curv",
+                  "widget": "option",
+                  "title": "Lane Centering PID Gain",
+                  "min": 0.0,
+                  "max": 100.0,
+                  "step": 1.0,
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
           "id": "lane_change",
           "title": "Lane Change",
           "description": "Automatic lane change timing and behavior",
@@ -549,13 +790,13 @@
         {
           "id": "human_turn_detection",
           "title": "Human Turn Detection (HTD)",
-          "description": "Pause lateral during manual turns or after curve exit for self-centering, then resume.",
+          "description": "Pause lateral control during manual turns and resume when complete.",
           "items": [
             {
               "key": "dp_htd_enabled",
               "widget": "toggle",
               "title": "\u542f\u7528\u4eba\u5de5\u8f6c\u5f2f\u68c0\u6d4b(HTD)",
-              "description": "\u4eba\u5de5\u5927\u5e45\u5ea6\u8f6c\u5f2f\uff0c\u6216\u51fa\u5f2f\u540e\u671f\u671b\u89d2\u5df2\u5c0f\u4f46\u4e0e\u5b9e\u9645\u89d2\u5dee\u503c\u4ecd\u5927\u65f6\uff0c\u6682\u505c\u6a2a\u5411\u4ee5\u501f\u52a9\u8f66\u8eab\u56de\u6b63\uff0c\u5bf9\u9f50\u540e\u6062\u590d\u3002",
+              "description": "\u68c0\u6d4b\u5230\u4eba\u5de5\u5927\u5e45\u5ea6\u8f6c\u5f2f\u65f6\u6682\u505c\u6a2a\u5411\u63a7\u5236\uff0c\u8f6c\u5f2f\u7ed3\u675f\u540e\u6062\u590d\u3002",
               "sub_items": [
                 {
                   "key": "dp_htd_turn_angle_threshold",
@@ -578,7 +819,7 @@
                   "key": "dp_htd_resume_angle_diff",
                   "widget": "option",
                   "title": "HTD\u6062\u590d\u89d2\u5ea6\u5dee",
-                  "description": "\u4eba\u5de5\u8f6c\u5f2f\uff1a\u6a21\u578b\u671f\u671b\u89d2\u4e0e\u5b9e\u9645\u89d2\u5dee\u503c\u4f4e\u4e8e\u8be5\u503c\u53ef\u6062\u590d\u6a2a\u5411\u63a7\u5236\u3002",
+                  "description": "\u624b\u63e1\u65b9\u5411\u76d8\u65f6\uff0c\u6a21\u578b\u671f\u671b\u89d2\u4e0e\u5b9e\u9645\u89d2\u5dee\u503c\u4f4e\u4e8e\u8be5\u503c\u53ef\u6062\u590d\u6a2a\u5411\u63a7\u5236\u3002",
                   "min": 1,
                   "max": 30,
                   "step": 1,
@@ -595,7 +836,7 @@
                   "key": "dp_htd_resume_delay_ms",
                   "widget": "option",
                   "title": "HTD\u6062\u590d\u5ef6\u8fdf",
-                  "description": "\u4eba\u5de5\u8f6c\u5f2f\u6ee1\u8db3\u6062\u590d\u6761\u4ef6\u540e\uff0c\u5ef6\u8fdf\u8be5\u65f6\u95f4\u518d\u6062\u590d\u6a2a\u5411\u63a7\u5236\u3002",
+                  "description": "\u6ee1\u8db3\u6062\u590d\u6761\u4ef6\u540e\uff0c\u5ef6\u8fdf\u8be5\u65f6\u95f4\u518d\u6062\u590d\u6a2a\u5411\u63a7\u5236\u3002",
                   "min": 0,
                   "max": 2000,
                   "step": 50,
@@ -605,106 +846,6 @@
                       "type": "param",
                       "key": "dp_htd_enabled",
                       "equals": true
-                    }
-                  ]
-                },
-                {
-                  "key": "dp_htd_curve_exit_enabled",
-                  "widget": "toggle",
-                  "title": "\u51fa\u5f2f\u81ea\u52a8\u91ca\u653e\u6a2a\u5411",
-                  "description": "\u51fa\u5f2f\u540e\u6a21\u578b\u5df2\u8fd1\u76f4\u884c\u4e14\u5b9e\u9645\u89d2\u4e0e\u671f\u671b\u89d2\u5dee\u503c\u504f\u5927\u65f6\u91ca\u653e\u6a2a\u5411\uff0c\u8f66\u8eab\u56de\u6b63\u81f3\u63a5\u8fd1\u671f\u671b\u540e\u7acb\u5373\u63a5\u56de\u3002",
-                  "enablement": [
-                    {
-                      "type": "param",
-                      "key": "dp_htd_enabled",
-                      "equals": true
-                    }
-                  ],
-                  "sub_items": [
-                    {
-                      "key": "dp_htd_curve_latch_angle",
-                      "widget": "option",
-                      "title": "\u5f2f\u9053\u786e\u8ba4\u8f6c\u89d2",
-                      "description": "\u6a21\u578b\u671f\u671b\u8f6c\u89d2\u6301\u7eed\u8fbe\u5230\u8be5\u503c\u4ee5\u4e0a\uff0c\u624d\u5f00\u59cb\u7d2f\u8ba1\u5f2f\u9053\u786e\u8ba4\u8ddd\u79bb\uff08\u63a8\u8350\u7ea620\u5ea6\uff09\u3002",
-                      "min": 8,
-                      "max": 40,
-                      "step": 1,
-                      "unit": "\u00b0",
-                      "enablement": [
-                        {
-                          "type": "param",
-                          "key": "dp_htd_curve_exit_enabled",
-                          "equals": true
-                        }
-                      ]
-                    },
-                    {
-                      "key": "dp_htd_curve_latch_distance",
-                      "widget": "option",
-                      "title": "\u5f2f\u9053\u786e\u8ba4\u8ddd\u79bb",
-                      "description": "\u671f\u671b\u8f6c\u89d2\u6301\u7eed\u8d85\u95e8\u9650\u5e76\u884c\u9a76\u4e0d\u5c11\u4e8e\u8be5\u8ddd\u79bb\uff0c\u624d\u786e\u8ba4\u6709\u6548\u5f2f\u9053\uff0c\u7528\u4e8e\u8fc7\u6ee4\u6a21\u578b\u77ed\u6682\u6296\u52a8\uff08\u63a8\u8350\u7ea610\u7c73\uff09\u3002",
-                      "min": 5,
-                      "max": 50,
-                      "step": 5,
-                      "unit": "m",
-                      "enablement": [
-                        {
-                          "type": "param",
-                          "key": "dp_htd_curve_exit_enabled",
-                          "equals": true
-                        }
-                      ]
-                    },
-                    {
-                      "key": "dp_htd_curve_exit_model_angle",
-                      "widget": "option",
-                      "title": "\u6a21\u578b\u76f4\u884c\u95e8\u9650",
-                      "description": "\u6a21\u578b\u671f\u671b\u8f6c\u89d2\u4e0d\u9ad8\u4e8e\u8be5\u503c\uff08\u89c6\u4e3a\u5df2\u8fd1\u76f4\u884c\uff09\u624d\u89e6\u53d1\uff08\u63a8\u8350\u7ea66\u5ea6\uff09\u3002",
-                      "min": 2,
-                      "max": 15,
-                      "step": 1,
-                      "unit": "\u00b0",
-                      "enablement": [
-                        {
-                          "type": "param",
-                          "key": "dp_htd_curve_exit_enabled",
-                          "equals": true
-                        }
-                      ]
-                    },
-                    {
-                      "key": "dp_htd_curve_exit_error",
-                      "widget": "option",
-                      "title": "\u89e6\u53d1\u91ca\u653e\u89d2\u5ea6\u5dee",
-                      "description": "\u5b9e\u9645\u8f6c\u89d2\u4e0e\u6a21\u578b\u671f\u671b\u7684\u5dee\u503c\u4e0d\u4f4e\u4e8e\u8be5\u503c\u65f6\u89e6\u53d1\u51fa\u5f2f\u91ca\u653e\uff08\u63a8\u8350\u7ea610\u5ea6\uff09\u3002",
-                      "min": 5,
-                      "max": 25,
-                      "step": 1,
-                      "unit": "\u00b0",
-                      "enablement": [
-                        {
-                          "type": "param",
-                          "key": "dp_htd_curve_exit_enabled",
-                          "equals": true
-                        }
-                      ]
-                    },
-                    {
-                      "key": "dp_htd_curve_exit_resume_error",
-                      "widget": "option",
-                      "title": "\u6a2a\u5411\u63a5\u56de\u89d2\u5ea6\u5dee",
-                      "description": "\u5b9e\u9645\u89d2\u4e0e\u671f\u671b\u89d2\u5dee\u503c\u4f4e\u4e8e\u8be5\u503c\u65f6\u7acb\u5373\u63a5\u56de\uff08\u63a8\u8350\u7ea65\u5ea6\uff0c\u5e94\u5c0f\u4e8e\u91ca\u653e\u89d2\u5ea6\u5dee\uff09\u3002",
-                      "min": 2,
-                      "max": 15,
-                      "step": 1,
-                      "unit": "\u00b0",
-                      "enablement": [
-                        {
-                          "type": "param",
-                          "key": "dp_htd_curve_exit_enabled",
-                          "equals": true
-                        }
-                      ]
                     }
                   ]
                 }
@@ -1110,26 +1251,6 @@
             }
           ],
           "items": [
-            {
-              "key": "FordStockAccFusion",
-              "widget": "toggle",
-              "title": "Ford Stock ACC Fusion",
-              "description": "Fuse stock ACC with openpilot longitudinal: stock needs ~20 mph to first enable, then can follow down to a stop; during stop-go, follow stock pullaway when AccPrpl requests go (and send resume); if stock will not go, OP vision pulls away. Stock follow gap is set from speed (<40 km/h: 1 bar, <70: 2, <90: 3, else 4). Requires openpilot longitudinal.",
-              "visibility": [
-                {
-                  "type": "capability",
-                  "field": "brand",
-                  "equals": "ford"
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
-                }
-              ]
-            },
             {
               "key": "SmartCruiseControlVision",
               "widget": "toggle",
@@ -2067,22 +2188,6 @@
               ]
             },
             {
-              "key": "UiAlertLogEnable",
-              "widget": "toggle",
-              "title": "Enable Alert Logging",
-              "description": "When enabled, onroad warnings/errors and Ford stock ACC fusion diagnostics are appended to the error log while driving.",
-              "visibility": [
-                {
-                  "type": "not",
-                  "condition": {
-                    "type": "capability",
-                    "field": "is_sp_release",
-                    "equals": true
-                  }
-                }
-              ]
-            },
-            {
               "key": "EnableCopyparty",
               "widget": "toggle",
               "title": "BluePilot Portal Service",
@@ -2131,6 +2236,22 @@
                   "equals": true
                 }
               ]
+            },
+            {
+              "key": "UiAlertLogEnable",
+              "widget": "toggle",
+              "title": "Enable Alert Logging",
+              "description": "When enabled, onroad warnings/errors and Ford stock ACC fusion diagnostics are appended to the error log while driving.",
+              "visibility": [
+                {
+                  "type": "not",
+                  "condition": {
+                    "type": "capability",
+                    "field": "is_sp_release",
+                    "equals": true
+                  }
+                }
+              ]
             }
           ]
         }
@@ -2149,13 +2270,6 @@
           "title": "Model Behavior",
           "description": "Lane desire and lead-vehicle awareness tuning",
           "items": [
-            {
-              "key": "DriverModelEnable",
-              "widget": "toggle",
-              "needs_onroad_cycle": true,
-              "title": "Disable Driver Monitoring",
-              "description": "Turn on to disable driver monitoring and the driver camera to save compute. Changing this setting will restart sunnypilot if the car is powered on."
-            },
             {
               "key": "LaneTurnDesire",
               "widget": "toggle",

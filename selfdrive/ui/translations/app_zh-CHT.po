@@ -412,7 +412,7 @@ msgstr ""
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/display.py
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering_sub_layouts/torque_settings.py
 msgid "Default"
-msgstr ""
+msgstr "默認"
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/device.py
 msgid "Default: Device will boot/wake-up normally & will be ready to engage."
@@ -2359,4 +2359,65 @@ msgstr "期望轉角持續超門限並行駛不少於該距離，才確認有效
 #: ../pythonpath/openpilot/selfdrive/ui/widgets/setup.py
 msgid "🔥 Firehose Mode 🔥"
 msgstr "🔥 Firehose 模式 🔥"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "Ford Lateral Control Method"
+msgstr "福特橫向控制方式"
+
+msgid "Curvature: 4-signal polynomial (c0/c1/c2/c3). Angle: path_angle derived from curvature."
+msgstr "曲率：四訊號多項式（c0/c1/c2/c3）。角度：由曲率換算 path_angle。"
+
+msgid "Curvature"
+msgstr "曲率"
+
+msgid "Angle"
+msgstr "角度"
+
+msgid "Bypass BluePilot Lateral"
+msgstr "旁路 BluePilot 橫向"
+
+msgid "Use the stock curvature-only steering path instead of BluePilot lateral strategies."
+msgstr "使用原廠僅曲率轉向路徑，替代 BluePilot 橫向策略。"
+
+msgid "Steering-Angle Curvature Measurement"
+msgstr "轉向角曲率測量"
+
+msgid "Measure curvature from the steering pinion angle instead of the RCM yaw rate (for a faulty yaw sensor)."
+msgstr "從轉向小齒輪角測量曲率，替代 RCM 橫擺率（適用於橫擺感測器故障車輛）。"
+
+msgid "Angle: Low Speed Factor"
+msgstr "角度：低速係數"
+
+msgid "Angle: High Speed Factor"
+msgstr "角度：高速係數"
+
+msgid "Angle: High Speed Dampening"
+msgstr "角度：高速阻尼"
+
+msgid "Angle: Lane Change Factor"
+msgstr "角度：變道係數"
+
+msgid "Curvature: Lane Change Factor"
+msgstr "曲率：變道係數"
+
+msgid "Curvature: Blend Ratio (Low Curvature)"
+msgstr "曲率：混合比例（低曲率）"
+
+msgid "Curvature: Blend Ratio (High Curvature)"
+msgstr "曲率：混合比例（高曲率）"
+
+msgid "Curvature: Lane Positioning (PID)"
+msgstr "曲率：車道定位（PID）"
+
+msgid "Curvature: Lane Full Mode"
+msgstr "曲率：完整車道模式"
+
+msgid "Curvature: Tuning Profile"
+msgstr "曲率：調校配置"
+
+msgid "Custom"
+msgstr "自訂"
+
+msgid "Curvature: Lane Centering PID Gain"
+msgstr "曲率：車道居中 PID 增益"
 

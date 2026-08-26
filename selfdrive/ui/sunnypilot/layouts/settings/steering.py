@@ -9,7 +9,7 @@ from enum import IntEnum
 
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp, option_item_sp, LineSeparatorSP
+from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp, option_item_sp, multiple_button_item_sp, LineSeparatorSP
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.steering_sub_layouts.lane_change_settings import LaneChangeSettingsLayout
@@ -184,6 +184,96 @@ class SteeringLayout(Widget):
       label_callback=lambda diff: f"{diff}°",
     )
 
+    self._ford_lateral_method = multiple_button_item_sp(
+      param="FordPrefLateralControl",
+      title=lambda: tr("Ford Lateral Control Method"),
+      description=lambda: tr("Curvature: 4-signal polynomial (c0/c1/c2/c3). Angle: path_angle derived from curvature."),
+      buttons=[tr("Curvature"), tr("Angle")],
+      button_width=350,
+      inline=False,
+    )
+    self._ford_bypass_toggle = toggle_item_sp(
+      param="disable_BP_lat_UI",
+      title=lambda: tr("Bypass BluePilot Lateral"),
+      description=lambda: tr("Use the stock curvature-only steering path instead of BluePilot lateral strategies."),
+    )
+    self._ford_pinion_toggle = toggle_item_sp(
+      param="FordPrefSteerAngleCurvature",
+      title=lambda: tr("Steering-Angle Curvature Measurement"),
+      description=lambda: tr("Measure curvature from the steering pinion angle instead of the RCM yaw rate (for a faulty yaw sensor)."),
+    )
+    self._ford_angle_low_speed = option_item_sp(
+      title=lambda: tr("Angle: Low Speed Factor"),
+      param="FordLowSpeedFactor_ang",
+      min_value=50, max_value=150, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f}",
+      use_float_scaling=True,
+    )
+    self._ford_angle_high_speed = option_item_sp(
+      title=lambda: tr("Angle: High Speed Factor"),
+      param="FordHighSpeedFactor_ang",
+      min_value=50, max_value=150, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f}",
+      use_float_scaling=True,
+    )
+    self._ford_angle_dampening = option_item_sp(
+      title=lambda: tr("Angle: High Speed Dampening"),
+      param="FordHighSpeedDampening_ang",
+      min_value=25, max_value=125, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f}",
+      use_float_scaling=True,
+    )
+    self._ford_angle_lane_change = option_item_sp(
+      title=lambda: tr("Angle: Lane Change Factor"),
+      param="lane_change_factor_high_ang",
+      min_value=85, max_value=150, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f}",
+      use_float_scaling=True,
+    )
+    self._ford_curv_lane_change = option_item_sp(
+      title=lambda: tr("Curvature: Lane Change Factor"),
+      param="lane_change_factor_high_curv",
+      min_value=50, max_value=100, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f}",
+      use_float_scaling=True,
+    )
+    self._ford_curv_blend_low = option_item_sp(
+      title=lambda: tr("Curvature: Blend Ratio (Low Curvature)"),
+      param="pc_blend_ratio_low_C_UI_curv",
+      min_value=0, max_value=100, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f}",
+      use_float_scaling=True,
+    )
+    self._ford_curv_blend_high = option_item_sp(
+      title=lambda: tr("Curvature: Blend Ratio (High Curvature)"),
+      param="pc_blend_ratio_high_C_UI_curv",
+      min_value=0, max_value=100, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f}",
+      use_float_scaling=True,
+    )
+    self._ford_curv_lane_positioning = toggle_item_sp(
+      param="enable_lane_positioning_curv",
+      title=lambda: tr("Curvature: Lane Positioning (PID)"),
+    )
+    self._ford_curv_lane_full_mode = toggle_item_sp(
+      param="enable_lane_full_mode_curv",
+      title=lambda: tr("Curvature: Lane Full Mode"),
+    )
+    self._ford_curv_profile = multiple_button_item_sp(
+      param="custom_profile_curv",
+      title=lambda: tr("Curvature: Tuning Profile"),
+      description="",
+      buttons=[tr("Default"), tr("Custom")],
+      button_width=350,
+      inline=False,
+    )
+    self._ford_curv_pid_gain = option_item_sp(
+      title=lambda: tr("Curvature: Lane Centering PID Gain"),
+      param="LC_PID_gain_UI_curv",
+      min_value=0, max_value=100, value_change_step=1,
+      label_callback=lambda x: f"{x:.0f}",
+    )
+
     items = [
       self._mads_toggle,
       self._mads_settings_button,
@@ -199,6 +289,21 @@ class SteeringLayout(Widget):
       self._torque_customization_button,
       LineSeparatorSP(40),
       self._nnlc_toggle,
+      LineSeparatorSP(40),
+      self._ford_lateral_method,
+      self._ford_bypass_toggle,
+      self._ford_pinion_toggle,
+      self._ford_angle_low_speed,
+      self._ford_angle_high_speed,
+      self._ford_angle_dampening,
+      self._ford_angle_lane_change,
+      self._ford_curv_lane_change,
+      self._ford_curv_blend_low,
+      self._ford_curv_blend_high,
+      self._ford_curv_lane_positioning,
+      self._ford_curv_lane_full_mode,
+      self._ford_curv_profile,
+      self._ford_curv_pid_gain,
       LineSeparatorSP(40),
       self._htd_toggle,
       self._htd_turn_angle_threshold,
@@ -237,17 +342,41 @@ class SteeringLayout(Widget):
     self._torque_control_toggle.action_item.set_enabled(ui_state.is_offroad() and torque_allowed and not nnlc_enabled)
     self._torque_customization_button.action_item.set_enabled(self._torque_control_toggle.action_item.get_state())
 
+    is_ford = ui_state.CP is not None and ui_state.CP.brand == 'ford'
+    ford_angle_mode = is_ford and self._ford_lateral_method.action_item.get_selected_button() == 1
+
+    # Ford angle mode has its own always-on human-turn override at the car-controller level, so
+    # the dp_htd human-turn toggle and its thresholds are redundant there and hidden. The
+    # curve-exit release has no angle-mode equivalent, so it stays visible and independent of
+    # that master switch.
     htd_enabled = self._htd_toggle.action_item.get_state()
-    self._htd_turn_angle_threshold.set_visible(htd_enabled)
-    self._htd_resume_angle_diff.set_visible(htd_enabled)
-    self._htd_resume_delay.set_visible(htd_enabled)
-    self._htd_curve_exit_toggle.set_visible(htd_enabled)
-    curve_exit_enabled = htd_enabled and self._htd_curve_exit_toggle.action_item.get_state()
+    self._htd_toggle.set_visible(not ford_angle_mode)
+    self._htd_turn_angle_threshold.set_visible(htd_enabled and not ford_angle_mode)
+    self._htd_resume_angle_diff.set_visible(htd_enabled and not ford_angle_mode)
+    self._htd_resume_delay.set_visible(htd_enabled and not ford_angle_mode)
+    curve_exit_master = htd_enabled or ford_angle_mode
+    self._htd_curve_exit_toggle.set_visible(curve_exit_master)
+    curve_exit_enabled = curve_exit_master and self._htd_curve_exit_toggle.action_item.get_state()
     self._htd_curve_exit_error.set_visible(curve_exit_enabled)
     self._htd_curve_exit_resume_error.set_visible(curve_exit_enabled)
     self._htd_curve_exit_model.set_visible(curve_exit_enabled)
     self._htd_curve_latch.set_visible(curve_exit_enabled)
     self._htd_curve_latch_distance.set_visible(curve_exit_enabled)
+
+    self._ford_lateral_method.set_visible(is_ford)
+    self._ford_bypass_toggle.set_visible(is_ford)
+    self._ford_pinion_toggle.set_visible(is_ford)
+    self._ford_angle_low_speed.set_visible(ford_angle_mode)
+    self._ford_angle_high_speed.set_visible(ford_angle_mode)
+    self._ford_angle_dampening.set_visible(ford_angle_mode)
+    self._ford_angle_lane_change.set_visible(ford_angle_mode)
+    self._ford_curv_lane_change.set_visible(is_ford and not ford_angle_mode)
+    self._ford_curv_blend_low.set_visible(is_ford and not ford_angle_mode)
+    self._ford_curv_blend_high.set_visible(is_ford and not ford_angle_mode)
+    self._ford_curv_lane_positioning.set_visible(is_ford and not ford_angle_mode)
+    self._ford_curv_lane_full_mode.set_visible(is_ford and not ford_angle_mode)
+    self._ford_curv_profile.set_visible(is_ford and not ford_angle_mode)
+    self._ford_curv_pid_gain.set_visible(is_ford and not ford_angle_mode)
 
   def _render(self, rect):
     if self._current_panel == PanelType.LANE_CHANGE:

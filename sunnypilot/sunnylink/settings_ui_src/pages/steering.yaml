@@ -216,6 +216,149 @@ sections:
         label: v0.0
       enablement:
       - $ref: '#/macros/offroad'
+- id: ford_lateral
+  title: Ford Lateral Control
+  description: BluePilot Ford curvature-primary vs angle-primary steering and tuning
+  enablement:
+  - type: capability
+    field: brand
+    equals: ford
+  items:
+  - key: FordPrefLateralControl
+    widget: multiple_button
+    title: Lateral Control Method
+    description: Curvature-primary sends the 4-signal polynomial (path offset / path angle / curvature / curvature rate).
+      Angle-primary converts curvature into path_angle (c1) and holds curvature at 0.
+    options:
+    - value: 0
+      label: Curvature
+    - value: 1
+      label: Angle
+    enablement:
+    - $ref: '#/macros/offroad'
+  - key: disable_BP_lat_UI
+    widget: toggle
+    title: Bypass BluePilot Lateral
+    description: Use the stock curvature-only steering path instead of the BluePilot 4-signal / angle strategies.
+    enablement:
+    - $ref: '#/macros/offroad'
+  - key: FordPrefSteerAngleCurvature
+    widget: toggle
+    title: Steering-Angle Curvature Measurement
+    description: Measure curvature from the steering pinion angle instead of the RCM yaw rate (for vehicles with a faulty yaw
+      sensor). Requires the safety firmware to match.
+    enablement:
+    - $ref: '#/macros/offroad'
+  sub_panels:
+  - id: ford_angle_settings
+    label: Angle Mode Tuning
+    trigger_key: FordPrefLateralControl
+    trigger_condition:
+      type: param
+      key: FordPrefLateralControl
+      equals: 1
+    items:
+    - key: FordLowSpeedFactor_ang
+      widget: option
+      title: Low Speed Factor
+      min: 0.5
+      max: 1.5
+      step: 0.05
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: FordHighSpeedFactor_ang
+      widget: option
+      title: High Speed Factor
+      min: 0.5
+      max: 1.5
+      step: 0.05
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: FordHighSpeedDampening_ang
+      widget: option
+      title: High Speed Dampening
+      min: 0.25
+      max: 1.25
+      step: 0.05
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: lane_change_factor_high_ang
+      widget: option
+      title: Lane Change Factor
+      min: 0.85
+      max: 1.5
+      step: 0.05
+      enablement:
+      - $ref: '#/macros/offroad'
+  - id: ford_curvature_settings
+    label: Curvature Mode Tuning
+    trigger_key: FordPrefLateralControl
+    trigger_condition:
+      type: param
+      key: FordPrefLateralControl
+      equals: 0
+    items:
+    - key: lane_change_factor_high_curv
+      widget: option
+      title: Lane Change Factor
+      min: 0.5
+      max: 1.0
+      step: 0.05
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: pc_blend_ratio_low_C_UI_curv
+      widget: option
+      title: Predicted Curvature Blend (Low Curvature)
+      min: 0.0
+      max: 1.0
+      step: 0.05
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: pc_blend_ratio_high_C_UI_curv
+      widget: option
+      title: Predicted Curvature Blend (High Curvature)
+      min: 0.0
+      max: 1.0
+      step: 0.05
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: enable_lane_positioning_curv
+      widget: toggle
+      title: Lane Positioning (PID)
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: enable_lane_full_mode_curv
+      widget: toggle
+      title: Lane Full Mode
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: custom_path_offset_curv
+      widget: option
+      title: Custom Path Offset
+      min: -0.5
+      max: 0.5
+      step: 0.05
+      unit: m
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: custom_profile_curv
+      widget: multiple_button
+      title: Tuning Profile
+      options:
+      - value: 0
+        label: Default
+      - value: 1
+        label: Custom
+      enablement:
+      - $ref: '#/macros/offroad'
+    - key: LC_PID_gain_UI_curv
+      widget: option
+      title: Lane Centering PID Gain
+      min: 0.0
+      max: 100.0
+      step: 1.0
+      enablement:
+      - $ref: '#/macros/offroad'
 - id: lane_change
   title: Lane Change
   description: Automatic lane change timing and behavior

@@ -20,6 +20,7 @@ from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
 from opendbc.sunnypilot.car.subaru.values_ext import SubaruFlagsSP, SubaruSafetyFlagsSP
 from opendbc.sunnypilot.car.tesla.values import TeslaFlagsSP
 from opendbc.sunnypilot.car.toyota.values import ToyotaFlagsSP
+from opendbc.sunnypilot.car.ford.values_ext import FordSafetyFlagsSP, FORD_PINION_GEOMETRY_SHIFT, FORD_PINION_GEOMETRY_INDEX
 
 
 class LatControlInputs(NamedTuple):
@@ -87,6 +88,7 @@ def setup_interfaces(CI, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
   _initialize_coop_steering(CP, CP_SP, params_dict)
   _initialize_radar_tracks(CP, CP_SP, can_recv, can_send)
   _initialize_stop_and_go(CP, CP_SP, params_dict)
+  _initialize_ford(CP, CP_SP, params_dict)
   _initialize_toyota(CP, CP_SP, params_dict)
 
 
@@ -131,6 +133,23 @@ def _initialize_stop_and_go(CP: structs.CarParams, CP_SP: structs.CarParamsSP, p
       CP_SP.flags |= SubaruFlagsSP.STOP_AND_GO_MANUAL_PARKING_BRAKE.value
     if stop_and_go or stop_and_go_manual_parking_brake:
       CP_SP.safetyParam |= SubaruSafetyFlagsSP.STOP_AND_GO
+
+
+def _initialize_ford(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params_dict: dict[str, str]) -> None:
+  if CP.brand != 'ford':
+    return
+
+  pinion_curvature = int(params_dict.get("FordPrefSteerAngleCurvature", 0)) == 1
+  if not pinion_curvature:
+    return
+
+  # FORD_EDGE_MK2 (ALT_STEER_ANGLE: relative pinion angle) and unknown platforms
+  # have no geometry-table row -> keep the stock yaw-sourced angle_meas.
+  geometry_index = FORD_PINION_GEOMETRY_INDEX.get(CP.carFingerprint)
+  if geometry_index is None:
+    return
+
+  CP_SP.safetyParam |= int(FordSafetyFlagsSP.STEER_ANGLE_CURVATURE) | (int(geometry_index) << FORD_PINION_GEOMETRY_SHIFT)
 
 
 def _initialize_toyota(CP: structs.CarParams, CP_SP: structs.CarParamsSP, params_dict: dict[str, str]) -> None:

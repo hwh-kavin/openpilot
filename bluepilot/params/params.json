@@ -179,6 +179,140 @@
       "enabled": true
     },
     {
+      "name": "FordPrefLateralControl",
+      "default": 0,
+      "min": 0,
+      "max": 1,
+      "type": "int",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "FordPrefSteerAngleCurvature",
+      "default": false,
+      "type": "bool",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "lane_change_factor_high_curv",
+      "default": 0.85,
+      "min": 0.5,
+      "max": 1.0,
+      "type": "float",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "pc_blend_ratio_high_C_UI_curv",
+      "default": 0.4,
+      "min": 0.0,
+      "max": 1.0,
+      "type": "float",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "pc_blend_ratio_low_C_UI_curv",
+      "default": 0.4,
+      "min": 0.0,
+      "max": 1.0,
+      "type": "float",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "enable_lane_positioning_curv",
+      "default": false,
+      "type": "bool",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": false,
+      "enabled": true
+    },
+    {
+      "name": "custom_path_offset_curv",
+      "default": 0.0,
+      "min": -0.5,
+      "max": 0.5,
+      "type": "float",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "enable_lane_full_mode_curv",
+      "default": false,
+      "type": "bool",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "custom_profile_curv",
+      "default": 0,
+      "min": 0,
+      "max": 1,
+      "type": "int",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "LC_PID_gain_UI_curv",
+      "default": 0.0,
+      "min": 0.0,
+      "max": 100.0,
+      "type": "float",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "FordLowSpeedFactor_ang",
+      "default": 1.0,
+      "min": 0.5,
+      "max": 1.5,
+      "type": "float",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "FordHighSpeedFactor_ang",
+      "default": 1.0,
+      "min": 0.5,
+      "max": 1.5,
+      "type": "float",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "FordHighSpeedDampening_ang",
+      "default": 1.0,
+      "min": 0.25,
+      "max": 1.25,
+      "type": "float",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
+      "name": "lane_change_factor_high_ang",
+      "default": 1.0,
+      "min": 0.85,
+      "max": 1.5,
+      "type": "float",
+      "flags": ["PERSISTENT", "BACKUP"],
+      "create_default": true,
+      "enabled": true
+    },
+    {
       "name": "FordLatTuningPCBlendRatio_high_C",
       "default": 0.4,
       "min": 0.0,

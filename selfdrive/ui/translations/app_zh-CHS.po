@@ -2529,3 +2529,64 @@ msgstr "期望转角持续超门限并行驶不少于该距离，才确认有效
 msgid "🔥 Firehose Mode 🔥"
 msgstr "🔥 Firehose 模式 🔥"
 
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/steering.py
+msgid "Ford Lateral Control Method"
+msgstr "福特横向控制方式"
+
+msgid "Curvature: 4-signal polynomial (c0/c1/c2/c3). Angle: path_angle derived from curvature."
+msgstr "曲率：四信号多项式（c0/c1/c2/c3）。角度：由曲率换算 path_angle。"
+
+msgid "Curvature"
+msgstr "曲率"
+
+msgid "Angle"
+msgstr "角度"
+
+msgid "Bypass BluePilot Lateral"
+msgstr "旁路 BluePilot 横向"
+
+msgid "Use the stock curvature-only steering path instead of BluePilot lateral strategies."
+msgstr "使用原厂仅曲率转向路径，替代 BluePilot 横向策略。"
+
+msgid "Steering-Angle Curvature Measurement"
+msgstr "转向角曲率测量"
+
+msgid "Measure curvature from the steering pinion angle instead of the RCM yaw rate (for a faulty yaw sensor)."
+msgstr "从转向小齿轮角测量曲率，替代 RCM 横摆率（适用于横摆传感器故障车辆）。"
+
+msgid "Angle: Low Speed Factor"
+msgstr "角度：低速系数"
+
+msgid "Angle: High Speed Factor"
+msgstr "角度：高速系数"
+
+msgid "Angle: High Speed Dampening"
+msgstr "角度：高速阻尼"
+
+msgid "Angle: Lane Change Factor"
+msgstr "角度：变道系数"
+
+msgid "Curvature: Lane Change Factor"
+msgstr "曲率：变道系数"
+
+msgid "Curvature: Blend Ratio (Low Curvature)"
+msgstr "曲率：混合比例（低曲率）"
+
+msgid "Curvature: Blend Ratio (High Curvature)"
+msgstr "曲率：混合比例（高曲率）"
+
+msgid "Curvature: Lane Positioning (PID)"
+msgstr "曲率：车道定位（PID）"
+
+msgid "Curvature: Lane Full Mode"
+msgstr "曲率：完整车道模式"
+
+msgid "Curvature: Tuning Profile"
+msgstr "曲率：调校配置"
+
+msgid "Custom"
+msgstr "自定义"
+
+msgid "Curvature: Lane Centering PID Gain"
+msgstr "曲率：车道居中 PID 增益"
+

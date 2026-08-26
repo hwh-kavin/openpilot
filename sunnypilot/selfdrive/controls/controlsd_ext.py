@@ -72,9 +72,17 @@ class ControlsExt(ModelStateBase):
   def apply_htd(self, lat_active: bool, sm: messaging.SubMaster, model_angle_deg: float) -> bool:
     CS = sm['carState']
     lane_changing = sm['modelV2'].meta.laneChangeState != log.LaneChangeState.off
+
+    # Ford angle mode carries its own always-on human-turn override at the car-controller level,
+    # so the dp_htd human-turn detector is redundant there. Keep the curve-exit release working
+    # independently of the (hidden) dp_htd_enabled master by passing an explicit override.
+    human_turn_master = None
+    if self.CP.brand == 'ford' and int(self.params.get("FordPrefLateralControl", return_default=True) or 0) == 1:
+      human_turn_master = False
+
     allowed, _ = self.htd.update(
       lat_active, CS.steeringAngleDeg, CS.vEgo, CS.steeringPressed, model_angle_deg,
-      lane_changing=lane_changing)
+      lane_changing=lane_changing, human_turn_master=human_turn_master)
     return lat_active and allowed
 
   @staticmethod
