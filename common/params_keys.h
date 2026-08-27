@@ -205,6 +205,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"FordLowSpeedFactor_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordHighSpeedFactor_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordHighSpeedDampening_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
+    // BluePilot angle mode: base lateral gain (path_angle = κ·v·gain multiplier); 1.25 default
+    {"FordAngleBaseGain", {PERSISTENT | BACKUP, FLOAT, "1.25"}},
+    // BluePilot angle mode: deviation clip, per-mille m^-1 (5 = 0.005 m^-1); UI range 2..8
+    {"FordAngleDeviationClip", {PERSISTENT | BACKUP, INT, "5"}},
     {"lane_change_factor_high_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordPrefSteerAngleCurvature", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ShowTurnSignals", {PERSISTENT | BACKUP, BOOL, "0"}},

@@ -21,6 +21,13 @@ def driverview(started: bool, params: Params, CP: car.CarParams) -> bool:
 def dmonitoringmodeld_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
   return (WEBCAM or not PC) and driverview(started, params, CP) and not params.get_bool("DriverModelEnable")
 
+def dmonitoringd_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # Also stop the DM policy process when DM is disabled: otherwise it keeps publishing
+  # driverMonitoringState (a benign alertLevel=none packet, but any transient in its 1-2 s
+  # param re-check can surface a stale DM alert). selfdrived ignores driverMonitoringState
+  # when DriverModelEnable is set, so stopping the publisher is safe.
+  return driverview(started, params, CP) and not params.get_bool("DriverModelEnable")
+
 def camerad_env(params: Params) -> dict:
   # When driver monitoring is disabled, skip driver camera ISP (saves significant compute).
   # Keep camera for offroad driver-view preview.
@@ -168,7 +175,7 @@ procs = [
   PythonProcess("selfdrived", "selfdrive.selfdrived.selfdrived", only_onroad),
   PythonProcess("card", "selfdrive.car.card", only_onroad),
   PythonProcess("deleter", "system.loggerd.deleter", always_run),
-  PythonProcess("dmonitoringd", "selfdrive.monitoring.dmonitoringd", driverview, enabled=(WEBCAM or not PC)),
+  PythonProcess("dmonitoringd", "selfdrive.monitoring.dmonitoringd", dmonitoringd_enabled, enabled=(WEBCAM or not PC)),
   PythonProcess("qcomgpsd", "system.qcomgpsd.qcomgpsd", qcomgps, enabled=TICI),
   PythonProcess("pandad", "selfdrive.pandad.pandad", always_run),
   PythonProcess("paramsd", "selfdrive.locationd.paramsd", only_onroad),

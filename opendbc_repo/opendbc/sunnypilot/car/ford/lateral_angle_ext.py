@@ -93,14 +93,25 @@ _PSCM_SAT_UNWIND_RATE = 0.02        # rad/call (0.02 * 20Hz = 0.40 rad/s)
 # Post-override stall blip. Road test 2026-07-14 (route 886240741b067740/000000bd--feb980680f)
 # showed that after driver-touch episodes the Mach-E PSCM keeps reporting InProgress but honors
 # path_angle at only ~0.56x (healthy hands-free delivery on the same route: ~0.95 median). The
-# current-curvature deviation clip below then pins kappa_cmd at measured + CURVATURE_ERROR, so the
+# current-curvature deviation clip below then pins kappa_cmd at measured + _ANGLE_KAPPA_DEVIATION, so the
 # command can never lead the car enough to overcome the attenuation -- a stall equilibrium the
 # driver reads as "not engaging" (wire path_angle flat at ~4 deg for 4.5 s while desired kappa
 # climbed to 3x measured, EPS motor current ~0 A). A short mode-0 pulse -- the identical
 # panda-clean wire pattern the human-turn override sends, no ford.h involvement -- resets the
 # PSCM's authority, after which path_angle ramps back in from zero through the soft ROC.
 _STEER_DT = CarControllerParams.STEER_STEP * DT_CTRL  # 20 Hz lateral tick (matches human_turn.py)
-_STALL_GAP_MIN = 2.0 * CarControllerParams.CURVATURE_ERROR  # desired must lead measured by 2x the clip tolerance
+# BluePilot: default angle-mode deviation-clip tolerance (1/m). Curvature mode clips to the stock
+# CarControllerParams.CURVATURE_ERROR (0.002) to stay inside ford.h's steer_angle_cmd_checks band;
+# angle mode's shadow-curvature cross-check (ford_shadow_curvature_error_check) has its own dedicated
+# looser band, so the command may legitimately lead measured curvature by more than 0.002 during
+# curve entry. The 0.002 lead cap caused curve-entry understeer (steerSaturated); 0.008 over-corrected
+# (line-cutting / lane runout, 2026-08-27) — settled at 0.005. This is only the DEFAULT: the live
+# value is read from the FordAngleDeviationClip param into self.angle_deviation_clip each frame.
+# Must stay <= ford.h's FORD_BP_SHADOW_MAX_ANGLE_ERROR (400 CAN units = 0.008 1/m).
+_ANGLE_KAPPA_DEVIATION = 0.005  # default clip; live value from FordAngleDeviationClip param
+# Sharp-curve boost ratio on top of the base gain (1.60 / 1.25 = 1.28). Fixed; only the base
+# (FordAngleBaseGain) is user-tunable.
+_ANGLE_GAIN_HIGH_C_RATIO = 1.28
 _STALL_HOLD_S = 0.5          # accumulated clip-binding time before a pulse fires
 _STALL_BLIP_FRAMES = 6       # mode-0 pulse length (6 frames @ 20 Hz = 300 ms; PSCM acked mode 0 in ~150 ms on-road)
 _STALL_COOLDOWN_S = 2.0      # re-arm delay after a pulse (release ramp + PSCM response time)
@@ -144,6 +155,9 @@ class LateralAngleExt:
     self.user_dampening_factor = 1.0
     self.bp_low_speed_curv_factor = 1.0
     self.bp_high_speed_curv_factor = 1.0
+    # User-tunable angle-mode base gain + deviation clip (read from Params in update_angle_params).
+    self.angle_base_gain = 1.25
+    self.angle_deviation_clip = _ANGLE_KAPPA_DEVIATION
     # BluePilot: angle mode's own lane-change scaling factor, independent of curvature mode's
     # lane_change_factor_high_curv -- angle needs a boost (>1) where curvature needs a cut (<1).
     self.lane_change_factor_high_ang = 1.0
@@ -192,6 +206,7 @@ class LateralAngleExt:
         ("low_speed_curv_factor", "FordLowSpeedFactor_ang", 0.5, 1.5),
         ("high_speed_curv_factor", "FordHighSpeedFactor_ang", 0.5, 1.5),
         ("user_dampening_factor", "FordHighSpeedDampening_ang", 0.25, 1.25),
+        ("angle_base_gain", "FordAngleBaseGain", 0.5, 2.0),
       ):
         try:
           raw = params.get(key, return_default=True)
@@ -200,6 +215,13 @@ class LateralAngleExt:
               float(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw), min_value, max_value)))
         except Exception:
           pass
+      # Deviation clip is stored as an INT in per-mille units (5 = 0.005 m^-1).
+      # Cap at 8 (0.008) so it can never exceed ford.h's FORD_BP_SHADOW_MAX_ANGLE_ERROR (0.008).
+      try:
+        self.angle_deviation_clip = float(clip(
+          int(params.get("FordAngleDeviationClip", return_default=True)), 2, 8)) / 1000.0
+      except Exception:
+        pass
       try:
         raw = params.get("lane_change_factor_high_ang", return_default=True)
         if raw is not None and raw != b"":
@@ -435,21 +457,17 @@ class LateralAngleExt:
     # Use planner / predicted κ directly for the κ → path_angle map; we are not sending κ on CAN.
     kappa_cmd = float(requested_curvature)
 
-    # BluePilot: clip kappa_cmd to current_curvature (measured, from yaw rate) +- CURVATURE_ERROR,
-    # mirroring lateral_curv_ext.py's apply_ford_curvature_limits_ext exactly (same formula, same
-    # v_ego > 9 gate, same CarControllerParams.CURVATURE_ERROR tolerance). Without this, kappa_cmd
-    # (and therefore path_angle, and the shadow_curvature sent to ford.h) can legitimately lead the
-    # measured curvature by more than ford.h's angle-error tolerance during normal curve entry/exit
-    # -- the shadow-curvature deviation check (ford_shadow_curvature_error_check) would then block
-    # routinely, not just on genuine pothole/override divergence. Curvature mode has always clipped
-    # here; this brings angle mode's actual steering intent in line with that proven behavior rather
-    # than only clipping the value reported to panda (which would make the check a no-op).
+    # BluePilot: clip kappa_cmd to current_curvature (measured, from yaw rate) +- angle_deviation_clip.
+    # The stock tolerance (CarControllerParams.CURVATURE_ERROR = 0.002) was carried over from curvature
+    # mode's steer_angle_cmd_checks band, but angle mode's shadow-curvature check is a separate, looser
+    # band (FORD_BP_SHADOW_MAX_ANGLE_ERROR = 0.008 in ford.h). The clip is user-tunable
+    # (FordAngleDeviationClip): too tight -> curve-entry understeer; too loose -> entry overshoot.
     current_curvature = self.get_current_curvature(CS)
     self.bp_curvature_deviation_limited = False
     if v_ego > 9:
       _kappa_cmd_pre_error_clip = kappa_cmd
-      kappa_cmd = float(clip(kappa_cmd, current_curvature - CarControllerParams.CURVATURE_ERROR,
-                            current_curvature + CarControllerParams.CURVATURE_ERROR))
+      kappa_cmd = float(clip(kappa_cmd, current_curvature - self.angle_deviation_clip,
+                            current_curvature + self.angle_deviation_clip))
       # BluePilot: did this clip actually constrain kappa_cmd this frame (deviation from measured,
       # not rate-of-change -- see carcontroller.py)?
       self.bp_curvature_deviation_limited = bool(abs(kappa_cmd - _kappa_cmd_pre_error_clip) > 1e-9)
@@ -458,11 +476,14 @@ class LateralAngleExt:
 
 
 
-    # Speed-interpolated gain: at low speed both curves use 1.0; at high speed the params take effect.
+    # Speed-interpolated gain: at low speed the base is FordAngleBaseGain (default 1.25); at high
+    # speed the params take effect. κ·v·gain implies a lookahead of v·gain metres; the PSCM needs a
+    # slightly longer effective lookahead than 1.0 s at these speeds. 1.0/1.30 understeered; 1.5/1.95
+    # over-corrected (line-cutting / lane runout). Tune FordAngleBaseGain on-road.
     self.low_gain_calc = interp(
-      v_ego, [13.5, 26.82], [1.0, (self.path_angle_gain_lowC_highV * self.user_dampening_factor)]
+      v_ego, [13.5, 26.82], [self.angle_base_gain, (self.path_angle_gain_lowC_highV * self.user_dampening_factor)]
     )
-    self.high_gain_calc = interp(v_ego, [13.5, 26.82], [(1.30 * self.low_speed_curv_factor), (self.path_angle_gain_highC_highV * self.high_speed_curv_factor)])
+    self.high_gain_calc = interp(v_ego, [13.5, 26.82], [(self.angle_base_gain * _ANGLE_GAIN_HIGH_C_RATIO * self.low_speed_curv_factor), (self.path_angle_gain_highC_highV * self.high_speed_curv_factor)])
 
     # As the curve gets bigger, we will need a little boost to the signal to to not understeer
     self.curvature_factor = interp(abs(kappa_cmd), [0.0007, 0.001], [self.low_gain_calc, self.high_gain_calc])
@@ -546,9 +567,10 @@ class LateralAngleExt:
     # devLim flickers mid-stall (~63% duty on the diagnosis route), so off frames hold the
     # accumulator rather than resetting it; a closed gap or driver press ends the episode.
     self.stall_blip_cooldown_s = max(0.0, self.stall_blip_cooldown_s - _STEER_DT)
+    _stall_gap_min = 2.0 * self.angle_deviation_clip
     _stall_gap = desired_curvature - current_curvature
     _stalled = (not CS.out.steeringPressed and not self.lane_change and v_ego > 9.0
-                and abs(_stall_gap) > _STALL_GAP_MIN
+                and abs(_stall_gap) > _stall_gap_min
                 and abs(desired_curvature) > abs(current_curvature))
     if _stalled:
       if self.bp_curvature_deviation_limited and self.stall_blip_cooldown_s <= 0.0:
@@ -560,7 +582,7 @@ class LateralAngleExt:
         self.stall_blip_count += 1
     else:
       self.stall_blip_hold_s = 0.0
-      if CS.out.steeringPressed or abs(_stall_gap) < 0.5 * _STALL_GAP_MIN:
+      if CS.out.steeringPressed or abs(_stall_gap) < 0.5 * _stall_gap_min:
         self.stall_blip_count = 0  # episode over: the car is tracking again or the driver took it
 
     ramp_type = 2

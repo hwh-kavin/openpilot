@@ -413,13 +413,23 @@ static bool curvature_rate_cmd_checks(int desired_curvature_rate, bool steer_con
 // this via steer_angle_cmd_checks caused blocks at low speed from shadow_curvature jumping frame to
 // frame with nothing driving it toward path_angle's own smooth ROC). This is a pure per-frame
 // proximity check: does this frame's steering intent make physical sense given where the car is.
+
+// BluePilot: angle-mode shadow-curvature deviation tolerance. Looser than curvature mode's
+// max_angle_error (FORD_STEERING_LIMITS = 100 CAN units = 0.002 1/m) because during normal curve
+// entry the path_angle command legitimately leads the measured curvature by more than the tight
+// curvature-mode band -- enforcing that band caused routine curve-entry understeer (steerSaturated).
+// 400 CAN units * (1/50000 1/m per unit) = 0.008 1/m; must stay >= lateral_angle_ext.py's
+// deviation clip (FordAngleDeviationClip param, default 0.005, capped at 0.008) so the Python
+// clip never trips this check in normal driving.
+#define FORD_BP_SHADOW_MAX_ANGLE_ERROR 400
+
 static bool ford_shadow_curvature_error_check(int desired_curvature, bool steer_control_enabled,
                                                const AngleSteeringLimits limits) {
   bool violation = false;
   if (steer_control_enabled && limits.enforce_angle_error &&
       ((vehicle_speed.values[0] / VEHICLE_SPEED_FACTOR) > limits.angle_error_min_speed)) {
-    int lowest_allowed = angle_meas.min - limits.max_angle_error - 1;
-    int highest_allowed = angle_meas.max + limits.max_angle_error + 1;
+    int lowest_allowed = angle_meas.min - FORD_BP_SHADOW_MAX_ANGLE_ERROR - 1;
+    int highest_allowed = angle_meas.max + FORD_BP_SHADOW_MAX_ANGLE_ERROR + 1;
     violation = safety_max_limit_check(desired_curvature, highest_allowed, lowest_allowed);
   }
   return violation;

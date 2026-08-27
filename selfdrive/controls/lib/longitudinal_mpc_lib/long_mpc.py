@@ -274,7 +274,7 @@ def compute_steer_angle_lat_accel(v_ego: float, steer_angle_deg: float, angle_of
 _SCC_KAPPA_VEL_MIN = 1.0  # m/s, floor when converting yaw-rate → κ
 _SCC_KAPPA_EPS = 1e-4
 _SCC_CURVE_TARGET_ACCEL = -1.2  # m/s² comfort brake (scaled by personality)
-_SCC_CURVE_DIST_OFFSET_S = 1.0  # s * v_corner extra distance margin
+_SCC_CURVE_DIST_OFFSET_S = 2.0  # s * v_corner extra distance margin (was 1.0; raised 2026-08-26 to start curve braking earlier)
 _SCC_CURVE_A_MIN = -1.2
 _SCC_CURVE_A_MAX = 0.6
 _SCC_CURVE_LOOKAHEAD_T = 10.0  # s, full model plan horizon

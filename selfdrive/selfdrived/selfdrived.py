@@ -105,7 +105,7 @@ class SelfdriveD(CruiseHelper):
       ignore += ['roadCameraState', 'wideRoadCameraState']
     # Driver monitoring disabled: driver camera is not started
     if self.params.get_bool("DriverModelEnable"):
-      ignore += ['driverCameraState']
+      ignore += ['driverCameraState', 'driverMonitoringState']
     # plannerd publishes these only after modelV2 is flowing — ignore until first valid
     # set so early ACC engage does not trip "Communication Issue Between Processes".
     self.planner_packets = ['longitudinalPlan', 'driverAssistance', 'longitudinalPlanSP']

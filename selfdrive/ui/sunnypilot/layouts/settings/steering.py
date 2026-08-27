@@ -230,6 +230,21 @@ class SteeringLayout(Widget):
       label_callback=lambda x: f"{x / 100:.2f}",
       use_float_scaling=True,
     )
+    self._ford_angle_base_gain = option_item_sp(
+      title=lambda: tr("Angle: Base Lateral Gain"),
+      param="FordAngleBaseGain",
+      min_value=50, max_value=200, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f}",
+      use_float_scaling=True,
+      description=lambda: tr("path_angle 整体增益（κ·v·gain）。过大→弯道压线/冲出车道；过小→转向不足。"),
+    )
+    self._ford_angle_deviation_clip = option_item_sp(
+      title=lambda: tr("Angle: Deviation Clip"),
+      param="FordAngleDeviationClip",
+      min_value=2, max_value=8, value_change_step=1,
+      label_callback=lambda x: f"{x / 1000:.3f}",
+      description=lambda: tr("允许命令领先实测曲率的上限（m⁻¹）。过大→入弯过猛；过小→入弯转向不足。上限 0.008。"),
+    )
     self._ford_curv_lane_change = option_item_sp(
       title=lambda: tr("Curvature: Lane Change Factor"),
       param="lane_change_factor_high_curv",
@@ -297,6 +312,8 @@ class SteeringLayout(Widget):
       self._ford_angle_high_speed,
       self._ford_angle_dampening,
       self._ford_angle_lane_change,
+      self._ford_angle_base_gain,
+      self._ford_angle_deviation_clip,
       self._ford_curv_lane_change,
       self._ford_curv_blend_low,
       self._ford_curv_blend_high,

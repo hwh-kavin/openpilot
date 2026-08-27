@@ -88,6 +88,9 @@ class TestFordSafetyBase(common.CarSafetyTest):
   MAX_CURVATURE = 0.02
   MAX_CURVATURE_ERROR = 0.002
   CURVATURE_ERROR_MIN_SPEED = 10.0  # m/s
+  # BluePilot: angle-mode shadow-curvature deviation band (ford.h FORD_BP_SHADOW_MAX_ANGLE_ERROR).
+  # Looser than curvature mode's MAX_CURVATURE_ERROR so curve-entry lead isn't clipped into understeer.
+  SHADOW_MAX_CURVATURE_ERROR = 0.008
 
   # BluePilot: symmetric 3-point ROCs, matching ford.h FORD_LIMITS (firmware uses the former
   # "down" table for both up/down; Python control uses the stricter up row in values_ext).
@@ -417,7 +420,9 @@ class TestFordSafetyBase(common.CarSafetyTest):
     """Angle mode's shadow_curvature must be checked against measured curvature (angle_meas),
     gated the same way as curvature mode's own check: enforce_angle_error + CURVATURE_ERROR_MIN_SPEED.
     Mirrors test_curvature_rate_limits' up/down structure but for the deviation-only path.
-    path_angle held at a small nonzero value -- see test_angle_mode_corroboration_gate docstring."""
+    path_angle held at a small nonzero value -- see test_angle_mode_corroboration_gate docstring.
+    BluePilot: tolerance is the dedicated SHADOW_MAX_CURVATURE_ERROR band (looser than curvature
+    mode's MAX_CURVATURE_ERROR), matching ford.h FORD_BP_SHADOW_MAX_ANGLE_ERROR."""
     self.safety.set_controls_allowed(True)
     for speed in (self.CURVATURE_ERROR_MIN_SPEED - 1, self.CURVATURE_ERROR_MIN_SPEED + 1):
       limit_enforced = speed > self.CURVATURE_ERROR_MIN_SPEED
@@ -428,10 +433,31 @@ class TestFordSafetyBase(common.CarSafetyTest):
       with self.subTest(speed=speed, case="matches_measured"):
         self.assertTrue(self._tx(self._lat_ctl_msg(True, 0, 0.01, 0, 0)))
 
-      large_deviation = measured_curvature + (self.MAX_CURVATURE_ERROR * 5)
+      large_deviation = measured_curvature + (self.SHADOW_MAX_CURVATURE_ERROR * 5)
       self._tx(self._lka_bp_status_msg(True, large_deviation))
       with self.subTest(speed=speed, case="large_deviation"):
         self.assertEqual(not limit_enforced, self._tx(self._lat_ctl_msg(True, 0, 0.01, 0, 0)))
+
+  def test_shadow_curvature_deviation_boundary(self):
+    """BluePilot: the angle-mode shadow band is SHADOW_MAX_CURVATURE_ERROR (not curvature mode's
+    MAX_CURVATURE_ERROR). A deviation just inside the band must pass; just outside must block.
+    Also proves curvature mode's tighter 0.002 band is NOT what angle mode enforces."""
+    self.safety.set_controls_allowed(True)
+    speed = self.CURVATURE_ERROR_MIN_SPEED + 1
+    measured_curvature = 0.005
+    self._reset_curvature_measurement(measured_curvature, speed)
+
+    # Inside the looser shadow band but outside curvature mode's tight band -> must pass.
+    just_inside = measured_curvature + (self.SHADOW_MAX_CURVATURE_ERROR * 0.6)
+    self._tx(self._lka_bp_status_msg(True, just_inside))
+    with self.subTest(case="just_inside_shadow_band"):
+      self.assertTrue(self._tx(self._lat_ctl_msg(True, 0, 0.01, 0, 0)))
+
+    # Outside the shadow band -> must block.
+    just_outside = measured_curvature + (self.SHADOW_MAX_CURVATURE_ERROR * 1.5)
+    self._tx(self._lka_bp_status_msg(True, just_outside))
+    with self.subTest(case="just_outside_shadow_band"):
+      self.assertFalse(self._tx(self._lat_ctl_msg(True, 0, 0.01, 0, 0)))
 
   def test_shadow_curvature_no_rate_limit(self):
     """shadow_curvature must NOT be rate-of-change limited -- only path_angle's own ROC
