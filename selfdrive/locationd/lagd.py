@@ -390,7 +390,13 @@ def main():
   params = Params()
   CP = messaging.log_from_bytes(params.get("CarParams", block=True), car.CarParams)
 
-  lag_learner = LateralLagEstimator(CP, 1. / SERVICE_LIST['livePose'].frequency)
+  # Angle-steering cars (e.g. Ford) turn at much lower speeds than the torque-control
+  # default (MIN_VEGO = 15 m/s). Below that speed every sample fails the `fast` gate,
+  # so lagd never accumulates a valid block and lateralDelay stays pinned at the
+  # unestimated fallback (steerActuatorDelay + 0.2s). Lower the floor so the ~0.9s
+  # angle-mode lag can actually be measured at the speeds these cars operate.
+  min_vego = 5.0 if CP.steerControlType == car.CarParams.SteerControlType.angle else MIN_VEGO
+  lag_learner = LateralLagEstimator(CP, 1. / SERVICE_LIST['livePose'].frequency, min_vego=min_vego)
   if (initial_lag_params := retrieve_initial_lag(params, CP)) is not None:
     lag, valid_blocks = initial_lag_params
     lag_learner.reset(lag, valid_blocks)

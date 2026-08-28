@@ -86,6 +86,8 @@ class Car:
     self.radar_temp_recovery_frames = GEAR_RECOVERY_HOLDOFF
 
     self.last_actuators_output = structs.CarControl.Actuators()
+    # Ford angle-mode lateral diagnostics (populated by controls_update, read next state_publish)
+    self.lateral_diag = {}
 
     self.params = Params()
 
@@ -272,6 +274,9 @@ class Car:
 
     cs_sp_send = messaging.new_message('carStateSP')
     cs_sp_send.valid = CS.canValid
+    # Ford angle-mode lateral diagnostics (from the carcontroller's previous step)
+    for k, v in self.lateral_diag.items():
+      setattr(CS_SP, k, v)
     cs_sp_send.carStateSP = CS_SP
     self.pm.send('carStateSP', cs_sp_send)
 
@@ -304,7 +309,25 @@ class Car:
       self.last_actuators_output, can_sends = self.CI.apply(CC, convert_carControlSP(CC_SP), now_nanos)
       self.pm.send('sendcan', can_list_to_can_capnp(can_sends, msgtype='sendcan', valid=CS.canValid))
 
+      self._store_lateral_diag()
+
       self.CC_prev = CC
+
+  def _store_lateral_diag(self) -> None:
+    """Snapshot Ford angle-mode lateral diagnostics for the next carStateSP publish."""
+    cc = self.CI.CC
+    self.lateral_diag = {
+      'predictedCurvature': float(getattr(cc, 'bp_predicted_curvature', 0.0) or 0.0),
+      'curvatureLookupTime': float(getattr(cc, 'bp_curvature_lookup_time', 0.0) or 0.0),
+      'kappaEntering': bool(getattr(cc, 'bp_kappa_entering', False)),
+      'pathAngleCmd': float(getattr(cc, 'bp_path_angle_final', 0.0) or 0.0),
+      'kappaCmd': float(getattr(cc, 'bp_kappa_cmd', 0.0) or 0.0),
+      'angleRateLimited': bool(getattr(cc, 'angleRateLimited', False)),
+      'curvatureRateLimited': bool(getattr(cc, 'curvatureRateLimited', False)),
+      'curvatureDeviationLimited': bool(getattr(cc, 'curvatureDeviationLimited', False)),
+      'humanTurnLateralPaused': bool(getattr(cc, 'humanTurnLateralPaused', False)),
+      'stallBlipActive': bool(getattr(cc, 'stallBlipActive', False)),
+    }
 
   def step(self):
     CS, CS_SP, RD = self.state_update()

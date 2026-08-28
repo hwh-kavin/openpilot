@@ -67,6 +67,10 @@ class CarState(CarStateBase, MadsCarState):
       # this signal is always 0 on non-CAN FD cars
       ret.steerFaultTemporary |= cp.vl["Lane_Assist_Data3_FD1"]["LatCtlSte_D_Stat"] not in (1, 2, 3)
 
+    # PSCM lateral control limit status (angle-mode authority feedback).
+    # Wired so lateral_angle_ext's exit-biased blend / unwind rate cap can see it.
+    ret_sp.latCtlLimStat = cp.vl["Lane_Assist_Data3_FD1"]["LatCtlLim_D_Stat"]
+
     # cruise state
     is_metric = cp.vl["INSTRUMENT_PANEL"]["METRIC_UNITS"] == 1 if not self.CP.flags & FordFlags.CANFD else False
     ret.cruiseState.speed = cp.vl["EngBrakeData"]["Veh_V_DsplyCcSet"] * (CV.KPH_TO_MS if is_metric else CV.MPH_TO_MS)

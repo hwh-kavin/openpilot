@@ -19,6 +19,10 @@ class CarControllerParams:
   LKAS_UI_STEP = 100    # IPMA_Data, 1Hz
   ACC_UI_STEP = 20      # ACCDATA_3, 5Hz
   BUTTONS_STEP = 5      # Steering_Data_FD1, 10Hz, but send twice as fast
+  # Debounce the injected cancel button so the 1-2 frame CC.cruiseControl.cancel
+  # glitch right after a physical SET+/RESUME engage is not sent to the PCM
+  # (which would otherwise drop the just-engaged ACC).
+  CANCEL_HOLD_FRAMES = 5  # ~50ms at 100Hz
 
   STEER_DRIVER_ALLOWANCE = 1.0  # Driver intervention threshold, Nm
 

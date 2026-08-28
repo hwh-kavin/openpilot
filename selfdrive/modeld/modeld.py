@@ -202,7 +202,7 @@ def main(demo=False):
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / ModelConstants.MODEL_RUN_FREQ)
   frame_id = 0
-  last_vipc_frame_id = 0
+  last_vipc_frame_id = None
   run_count = 0
 
   model_transform_main = np.zeros((3, 3), dtype=np.float32)
@@ -282,7 +282,11 @@ def main(demo=False):
       vec_desire[desire] = 1
 
     # tracked dropped frames
-    vipc_dropped_frames = max(0, meta_main.frame_id - last_vipc_frame_id - 1)
+    if last_vipc_frame_id is None:
+      # first frame: don't count the camera backlog accumulated during model load
+      vipc_dropped_frames = 0
+    else:
+      vipc_dropped_frames = max(0, meta_main.frame_id - last_vipc_frame_id - 1)
     frames_dropped = frame_dropped_filter.update(min(vipc_dropped_frames, 10))
     if run_count < 10: # let frame drops warm up
       frame_dropped_filter.x = 0.
