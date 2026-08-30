@@ -62,7 +62,9 @@ _PSCM_DREF_SPEEDS_MS = (0.0, 4.17, 27.78, 41.67, 50.0, 55.56)
 _PSCM_DREF_M = (0.5, 0.95, 1.4, 2.075, 2.75, 3.875)
 
 # Default blend ratio validated on F-150 fleet data (0.5s lookup time).
-_FORD_PATH_ANGLE_BLEND_RATIO_DEFAULT = 0.50
+# 2026-08-30: 0.50 -> 0.40 — soften model-lookahead weight to reduce early turn-in;
+# multi-lane city turns were cutting the inside line toward the adjacent lane.
+_FORD_PATH_ANGLE_BLEND_RATIO_DEFAULT = 0.40
 
 # Variable lookup time (VLT): curvature_lookup_time adapts to speed and curvature magnitude.
 # t_lookup = t_base + t_extra_max × speed_factor(v) × kappa_factor(|κ|)
@@ -70,7 +72,8 @@ _FORD_PATH_ANGLE_BLEND_RATIO_DEFAULT = 0.50
 # Extra lookahead collapses toward zero at high speed (PSCM responds faster)
 # and at large curvature (prevents blend importing a "start unwinding" signal too early).
 _DT_MDL = 0.05                       # model loop period (matches common/realtime.py)
-_VLT_T_EXTRA_MAX = 0.10              # max extra lookahead above t_base
+# 2026-08-30: 0.10 -> 0.07 — shorter curve-entry pre-steer (inside-line cutting in multi-lane turns).
+_VLT_T_EXTRA_MAX = 0.07              # max extra lookahead above t_base
 _VLT_V_LOW_MS   = 25.0 * 0.44704    # 25 mph — full extra lookahead at or below this speed
 _VLT_V_HIGH_MS  = 55.0 * 0.44704    # 55 mph — no extra lookahead at or above this speed
 _VLT_KAPPA_FULL  = 0.005             # 1/m — full extra lookahead below this curvature (200m+ radius)
@@ -111,7 +114,8 @@ _STEER_DT = CarControllerParams.STEER_STEP * DT_CTRL  # 20 Hz lateral tick (matc
 _ANGLE_KAPPA_DEVIATION = 0.005  # default clip; live value from FordAngleDeviationClip param
 # Sharp-curve boost ratio on top of the base gain (1.60 / 1.25 = 1.28). Fixed; only the base
 # (FordAngleBaseGain) is user-tunable.
-_ANGLE_GAIN_HIGH_C_RATIO = 1.28
+# 2026-08-30: 1.28 -> 1.20 — reduce apex overshoot / inside cutting on sharp multi-lane turns.
+_ANGLE_GAIN_HIGH_C_RATIO = 1.20
 _STALL_HOLD_S = 0.5          # accumulated clip-binding time before a pulse fires
 _STALL_BLIP_FRAMES = 6       # mode-0 pulse length (6 frames @ 20 Hz = 300 ms; PSCM acked mode 0 in ~150 ms on-road)
 _STALL_COOLDOWN_S = 2.0      # re-arm delay after a pulse (release ramp + PSCM response time)
@@ -158,6 +162,12 @@ class LateralAngleExt:
     # User-tunable angle-mode base gain + deviation clip (read from Params in update_angle_params).
     self.angle_base_gain = 1.25
     self.angle_deviation_clip = _ANGLE_KAPPA_DEVIATION
+    # Lane-centering correction: a heading trim toward the model's predicted centerline
+    # (modelV2 position.y), toggled by FordAngleLaneCenteringEnabled. Angle mode has no c0
+    # (path_offset) trim, so this is the only lateral-offset correction available.
+    self.enable_lane_centering_ang = False
+    self.lane_center_lookup_time = 1.0    # s — model lookahead used to sample position.y
+    self.lane_center_max_correction = 0.12  # rad — cap on the heading correction magnitude
     # BluePilot: angle mode's own lane-change scaling factor, independent of curvature mode's
     # lane_change_factor_high_curv -- angle needs a boost (>1) where curvature needs a cut (<1).
     self.lane_change_factor_high_ang = 1.0
@@ -227,6 +237,10 @@ class LateralAngleExt:
         if raw is not None and raw != b"":
           self.lane_change_factor_high_ang = float(clip(
             float(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw), 0.85, 1.50))
+      except Exception:
+        pass
+      try:
+        self.enable_lane_centering_ang = params.get_bool("FordAngleLaneCenteringEnabled")
       except Exception:
         pass
 
@@ -393,7 +407,10 @@ class LateralAngleExt:
       _kappa_at_t_base = abs(float(interp(_t_base, ModelConstants.T_IDXS, _curvatures_ref)))
     _kappa_entering = _kappa_at_t_base > abs(desired_curvature)
     if _kappa_entering:
-      _kappa_factor = 1.0  # curve deepening ahead: full extra lookahead for gradual entry
+      # curve deepening ahead: extra lookahead for gradual entry.
+      # 2026-08-30: full factor 1.0 -> 0.8 so entry pre-steer stays ahead of the apex but no
+      # longer turns in early enough to cut the inside line in multi-lane turns.
+      _kappa_factor = 0.8
     else:
       _kappa_factor = float(interp(abs(desired_curvature), [_VLT_KAPPA_FULL, _VLT_KAPPA_TAPER], [1.0, 0.0]))
     curvature_lookup_time = _t_base + self.vlt_extra_max * _speed_factor * _kappa_factor
@@ -408,6 +425,15 @@ class LateralAngleExt:
 
     b = float(self.path_angle_blend_ratio)
     b = float(clip(b, 0.0, 1.0))
+
+    # Dynamic blend modulation (2026-08-30): taper the model-lookahead weight down at
+    # low speed and on sharp curves, where early pre-steer cuts the inside line in
+    # multi-lane turns. Keep full weight for gentle high-speed curves, where the
+    # lookahead provides smooth pre-steer.
+    #   b = base * speed_factor(v) * kappa_factor(|κ|), clamped to [0.10, 0.60]
+    b_speed_factor = float(interp(v_ego, [8.0, 22.0], [0.45, 1.0]))
+    b_kappa_factor = float(interp(abs(desired_curvature), [0.001, 0.010], [1.0, 0.55]))
+    b = float(clip(b * b_speed_factor * b_kappa_factor, 0.10, 0.60))
 
     # Exit-biased blend: near the PSCM authority limit or while the planner is actively
     # reducing curvature (exit detected), drop model prediction weight from 60% → ~15%.
@@ -490,6 +516,19 @@ class LateralAngleExt:
 
     path_angle_calc = kappa_cmd * v_ego * self.curvature_factor
     path_angle = path_angle_calc
+
+    # Lane-centering heading correction from the model's predicted lateral offset.
+    # Angle mode has no c0 (path_offset) trim, so when enabled (FordAngleLaneCenteringEnabled)
+    # steer the heading toward the predicted centerline: heading_corr ≈ -offset / lookahead.
+    # Runs before the PSCM clamp and soft ROC, so the correction is bounded and rate-limited
+    # by the same machinery as the curvature-derived path_angle.
+    if self.enable_lane_centering_ang and self.model is not None and len(self.model.position.y) >= 17:
+      offset = float(np.interp(self.lane_center_lookup_time, ModelConstants.T_IDXS,
+                               np.asarray(self.model.position.y, dtype=float)))
+      lookahead_dist = max(v_ego * self.lane_center_lookup_time, 5.0)
+      heading_corr = float(np.clip(-offset / lookahead_dist,
+                                   -self.lane_center_max_correction, self.lane_center_max_correction))
+      path_angle = path_angle_calc + heading_corr
 
 
     # PSCM authority limit clamp.

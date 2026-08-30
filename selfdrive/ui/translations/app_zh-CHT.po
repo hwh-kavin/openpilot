@@ -2397,6 +2397,15 @@ msgstr "角度：高速阻尼"
 msgid "Angle: Lane Change Factor"
 msgstr "角度：變道係數"
 
+msgid "Angle: Base Lateral Gain"
+msgstr "角度：基礎橫向增益"
+
+msgid "Angle: Deviation Clip"
+msgstr "角度：偏差限幅"
+
+msgid "Angle: Lane Centering Correction"
+msgstr "角度：車道居中修正"
+
 msgid "Curvature: Lane Change Factor"
 msgstr "曲率：變道係數"
 

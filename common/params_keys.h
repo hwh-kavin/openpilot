@@ -209,6 +209,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"FordAngleBaseGain", {PERSISTENT | BACKUP, FLOAT, "1.25"}},
     // BluePilot angle mode: deviation clip, per-mille m^-1 (5 = 0.005 m^-1); UI range 2..8
     {"FordAngleDeviationClip", {PERSISTENT | BACKUP, INT, "5"}},
+    // BluePilot angle mode: lane-centering heading correction from modelV2 position.y
+    {"FordAngleLaneCenteringEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"lane_change_factor_high_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordPrefSteerAngleCurvature", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ShowTurnSignals", {PERSISTENT | BACKUP, BOOL, "0"}},

@@ -97,7 +97,7 @@ class SelfdriveD(CruiseHelper):
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
-    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan'] + ['modelDataV2SP']
+    ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan', 'carStateSP'] + ['modelDataV2SP']
     if SIMULATION:
       ignore += ['driverCameraState', 'managerState']
     if REPLAY:
@@ -115,7 +115,7 @@ class SelfdriveD(CruiseHelper):
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'livePose', 'liveDelay',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
                                    'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark', 'audioFeedback',
-                                   'lateralManeuverPlan', 'modelDataV2SP', 'longitudinalPlanSP'] + \
+                                   'lateralManeuverPlan', 'modelDataV2SP', 'longitudinalPlanSP', 'carStateSP'] + \
                                    self.camera_packets + self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
@@ -482,8 +482,16 @@ class SelfdriveD(CruiseHelper):
       desired_lateral_accel = self.sm['modelV2'].action.desiredCurvature * (clipped_speed**2)
       undershooting = abs(desired_lateral_accel) / abs(1e-3 + actual_lateral_accel) > 1.2
       turning = abs(desired_lateral_accel) > 1.0
-      # TODO: lac.saturated includes speed and other checks, should be pulled out
-      if undershooting and turning and lac.saturated:
+      # Ford uses curvature/path-angle lateral control, so the kinematic steering-angle
+      # comparison inside latcontrol_angle is not the real command and false-fires on
+      # small curves. Use the PSCM authority-limit signal instead
+      # (LatCtlLim_D_Stat: 0=NotReached 1=Close 2=Reached 3=DriverActive).
+      if self.CP.brand == 'ford':
+        lat_saturated = self.sm.recv_frame['carStateSP'] > 0 and \
+                        self.sm['carStateSP'].latCtlLimStat >= 2
+      else:
+        lat_saturated = lac.saturated
+      if undershooting and turning and lat_saturated:
         self.events.add(EventName.steerSaturated)
 
     # Check for FCW

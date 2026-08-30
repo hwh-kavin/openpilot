@@ -245,6 +245,11 @@ class SteeringLayout(Widget):
       label_callback=lambda x: f"{x / 1000:.3f}",
       description=lambda: tr("允许命令领先实测曲率的上限（m⁻¹）。过大→入弯过猛；过小→入弯转向不足。上限 0.008。"),
     )
+    self._ford_angle_lane_centering = toggle_item_sp(
+      param="FordAngleLaneCenteringEnabled",
+      title=lambda: tr("Angle: Lane Centering Correction"),
+      description=lambda: tr("在角度模式中，基于模型预测的横向偏移（position.y）加入航向修正，改善复杂路段（车道线不清晰）的居中表现。"),
+    )
     self._ford_curv_lane_change = option_item_sp(
       title=lambda: tr("Curvature: Lane Change Factor"),
       param="lane_change_factor_high_curv",
@@ -314,6 +319,7 @@ class SteeringLayout(Widget):
       self._ford_angle_lane_change,
       self._ford_angle_base_gain,
       self._ford_angle_deviation_clip,
+      self._ford_angle_lane_centering,
       self._ford_curv_lane_change,
       self._ford_curv_blend_low,
       self._ford_curv_blend_high,
@@ -387,6 +393,7 @@ class SteeringLayout(Widget):
     self._ford_angle_high_speed.set_visible(ford_angle_mode)
     self._ford_angle_dampening.set_visible(ford_angle_mode)
     self._ford_angle_lane_change.set_visible(ford_angle_mode)
+    self._ford_angle_lane_centering.set_visible(ford_angle_mode)
     self._ford_curv_lane_change.set_visible(is_ford and not ford_angle_mode)
     self._ford_curv_blend_low.set_visible(is_ford and not ford_angle_mode)
     self._ford_curv_blend_high.set_visible(is_ford and not ford_angle_mode)
