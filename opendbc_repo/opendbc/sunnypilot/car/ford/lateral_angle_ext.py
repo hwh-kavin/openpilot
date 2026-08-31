@@ -25,11 +25,9 @@ import numpy as np
 from numpy import clip, interp
 
 from opendbc.car import DT_CTRL
-from opendbc.car.lateral import apply_std_steer_angle_limits
 from opendbc.car.ford.values import CAR, CarControllerParams
 from opendbc.sunnypilot.car.ford.lateral_curv_ext import LateralResult
 from opendbc.sunnypilot.car.ford.human_turn import HumanTurnDetector
-from opendbc.sunnypilot.car.ford.values_ext import BP_ANGLE_LIMITS
 from selfdrive.modeld.constants import ModelConstants
 
 # Hard-coded per-platform gain defaults.
@@ -146,19 +144,13 @@ class LateralAngleExt:
     self.path_angle_blend_ratio = _FORD_PATH_ANGLE_BLEND_RATIO_DEFAULT
     # Max extra VLT above t_base; from ``FordVLTExtraMax`` param
     self.vlt_extra_max = _VLT_T_EXTRA_MAX
-    # Telemetry: final path_angle (rad) after limits (see bp_card_publisher)
-    self.bp_path_angle_final = 0.0
     # High-speed gain factors: set per-platform via carFingerprint in update_angle_params.
     self.path_angle_gain_lowC_highV = 1.0   # dampening at high speed, low curvature
     self.path_angle_gain_highC_highV = 1.0  # gain at high speed, high curvature
-    self.bp_path_angle_gain_lowC_highV = 1.0
-    self.bp_path_angle_gain_highC_highV = 1.0
     # User-tunable "feel" multipliers: read from the angle-tuning Params below.
     self.low_speed_curv_factor = 1.0
     self.high_speed_curv_factor = 1.0
     self.user_dampening_factor = 1.0
-    self.bp_low_speed_curv_factor = 1.0
-    self.bp_high_speed_curv_factor = 1.0
     # User-tunable angle-mode base gain + deviation clip (read from Params in update_angle_params).
     self.angle_base_gain = 1.25
     self.angle_deviation_clip = _ANGLE_KAPPA_DEVIATION
@@ -171,16 +163,10 @@ class LateralAngleExt:
     # BluePilot: angle mode's own lane-change scaling factor, independent of curvature mode's
     # lane_change_factor_high_curv -- angle needs a boost (>1) where curvature needs a cut (<1).
     self.lane_change_factor_high_ang = 1.0
-    # Telemetry: variable curvature lookup time used this frame (s)
-    self.bp_curvature_lookup_time = _VLT_T_EXTRA_MAX + 0.3725  # warm start at ~0.5s
     # BluePilot: error-clipped kappa path_angle was derived from -- carcontroller.py reads this as
     # shadow_curvature for ford.h's angle-mode deviation check. Actively consumed, not telemetry.
     self.bp_kappa_cmd = 0.0
-    # BluePilot: rate-limit diagnostics (controllerStateBP)
-    self.bp_angle_rate_limited = False      # path_angle soft-ROC clip actually bit this frame
-    self.bp_curvature_rate_limited = False  # equivalent curvature would be rate-limited by curv-mode logic (sim)
     self.bp_curvature_deviation_limited = False  # current_curvature error-clip constrained kappa_cmd this frame
-    self.sim_curvature_last = 0.0           # shadow curvature-mode last for the curvatureRateLimited sim
     # Exit detection: track previous desired curvature to sense when planner is actively reducing
     self._desired_curvature_last = 0.0
     # Human-turn override: while the driver manually turns, lateral is forced inactive (mode 0,
@@ -264,12 +250,8 @@ class LateralAngleExt:
 
     if not CC.latActive:
       self.path_angle_last = 0.0
-      self.bp_path_angle_final = 0.0
       self.apply_curvature_last = 0.0
-      self.bp_angle_rate_limited = False
-      self.bp_curvature_rate_limited = False
       self.bp_curvature_deviation_limited = False
-      self.sim_curvature_last = 0.0
       # Publish the shadow curvature from the measured curvature while inactive. LKA keeps
       # carrying angle_mode_engaged whenever angle mode is configured (independent of
       # latActive), and ford.h latches the shadow from every LKA frame -- so the latched
@@ -309,12 +291,8 @@ class LateralAngleExt:
       True, CS.out.steeringPressed, CS.out.steeringAngleDeg)
     if self.angle_human_turn_active:
       self.path_angle_last = 0.0
-      self.bp_path_angle_final = 0.0
       self.apply_curvature_last = 0.0
-      self.bp_angle_rate_limited = False
-      self.bp_curvature_rate_limited = False
       self.bp_curvature_deviation_limited = False
-      self.sim_curvature_last = 0.0
       # Truthful shadow during the override (mirrors the inactive path -- see the comment
       # there): the driver is steering, so the honest command is the car's actual curvature,
       # and the panda-latched shadow stays current for the re-engage frame.
@@ -363,12 +341,8 @@ class LateralAngleExt:
       self.stall_blip_frames_left -= 1
       self.angle_stall_blip_active = True
       self.path_angle_last = 0.0
-      self.bp_path_angle_final = 0.0
       self.apply_curvature_last = 0.0
-      self.bp_angle_rate_limited = False
-      self.bp_curvature_rate_limited = False
       self.bp_curvature_deviation_limited = False
-      self.sim_curvature_last = 0.0
       # Truthful shadow during the blip (see the inactive-path comment).
       self.bp_kappa_cmd = self.get_current_curvature(CS)
       self._desired_curvature_last = float(actuators.curvature)
@@ -414,7 +388,6 @@ class LateralAngleExt:
     else:
       _kappa_factor = float(interp(abs(desired_curvature), [_VLT_KAPPA_FULL, _VLT_KAPPA_TAPER], [1.0, 0.0]))
     curvature_lookup_time = _t_base + self.vlt_extra_max * _speed_factor * _kappa_factor
-    self.bp_curvature_lookup_time = curvature_lookup_time
 
     predicted_curvature = 0.0
     if self.model is not None and len(self.model.orientationRate.z) >= 17:
@@ -562,24 +535,16 @@ class LateralAngleExt:
     # (63/63/49/10 deg/s at v=9-10/15/25) on this branch's actual 20Hz cadence. See ford.h's
     # FORD_PATH_ANGLE_LIMITS, which must mirror this scaling (x1.02 looser) to stay a true backstop.
     _soft_roc = float(interp(v_ego, [9., 10., 15., 25.], [0.055, 0.055, 0.0425, 0.009]))
-    _path_angle_pre_roc = path_angle
     path_angle = float(clip(path_angle,
                             self.path_angle_last - _soft_roc,
                             self.path_angle_last + _soft_roc))
-    # BluePilot: did the soft ROC clip actually limit the path_angle we wanted to send this frame?
-    self.bp_angle_rate_limited = bool(abs(path_angle - _path_angle_pre_roc) > 1e-9)
 
 
     # c0 always zero -- no centering trim in angle mode.
     path_offset = 0.0
 
-    # Telemetry / state
-    self.bp_path_angle_gain_lowC_highV = self.path_angle_gain_lowC_highV
-    self.bp_path_angle_gain_highC_highV = self.path_angle_gain_highC_highV
-    self.bp_low_speed_curv_factor = self.low_speed_curv_factor
-    self.bp_high_speed_curv_factor = self.high_speed_curv_factor
+    # State
     self.path_angle_last = path_angle
-    self.bp_path_angle_final = path_angle
     self.apply_curvature_last = 0.0
     # BluePilot: the error-clipped kappa path_angle was derived from -- carcontroller.py reads this
     # as shadow_curvature for ford.h's angle-mode deviation check (see fordcan_ext.create_lka_msg).
@@ -591,14 +556,6 @@ class LateralAngleExt:
     # this (driver fighting a sustained curve with the mode still enabled). The honest command
     # during a press is the driver's actual curvature.
     self.bp_kappa_cmd = self.get_current_curvature(CS) if CS.out.steeringPressed else kappa_cmd
-
-    # BluePilot: would the equivalent curvature (kappa_cmd) have been rate-limited by curvature-mode's
-    # ROC (apply_std_steer_angle_limits)? kappa_cmd is already error-clipped above (same clip
-    # curvature mode applies), so only the rate-of-change portion remains to simulate here.
-    _equiv_curv_rl = apply_std_steer_angle_limits(kappa_cmd, self.sim_curvature_last, v_ego,
-                                                  CS.out.steeringAngleDeg, CC.latActive, BP_ANGLE_LIMITS)
-    self.bp_curvature_rate_limited = bool(abs(_equiv_curv_rl - kappa_cmd) > 1e-9)
-    self.sim_curvature_last = float(_equiv_curv_rl)
 
     # Post-override stall detection (mechanism in the module constants' comment). Fires the mode-0
     # blip when, hands-free, desired curvature has led measured by more than 2x the deviation

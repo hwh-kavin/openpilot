@@ -170,15 +170,4 @@ class CarControlSP:
 @auto_dataclass
 class CarStateSP:
   speedLimit: float = auto_field()
-  # Ford angle-mode lateral diagnostics (rlog-visible)
   latCtlLimStat: int = auto_field()
-  predictedCurvature: float = auto_field()
-  curvatureLookupTime: float = auto_field()
-  kappaEntering: bool = auto_field()
-  pathAngleCmd: float = auto_field()
-  kappaCmd: float = auto_field()
-  angleRateLimited: bool = auto_field()
-  curvatureRateLimited: bool = auto_field()
-  curvatureDeviationLimited: bool = auto_field()
-  humanTurnLateralPaused: bool = auto_field()
-  stallBlipActive: bool = auto_field()

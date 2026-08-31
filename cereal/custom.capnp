@@ -451,18 +451,7 @@ struct BackupManagerSP @0xf98d843bfd7004a3 {
 
 struct CarStateSP @0xb86e6369214c01c8 {
   speedLimit @0 :Float32;
-  # Ford angle-mode lateral diagnostics (rlog-visible)
   latCtlLimStat @1 :UInt8;               # LatCtlLim_D_Stat: 0=NotReached 1=Close 2=Reached 3=DriverActive
-  predictedCurvature @2 :Float32;        # model predicted curvature at curvatureLookupTime (1/m)
-  curvatureLookupTime @3 :Float32;       # VLT lookahead used for the blend (s)
-  kappaEntering @4 :Bool;                # curve deepening ahead (full extra lookahead)
-  pathAngleCmd @5 :Float32;              # final path_angle sent on the wire (rad)
-  kappaCmd @6 :Float32;                  # error-clipped kappa path_angle was derived from (1/m)
-  angleRateLimited @7 :Bool;             # soft-ROC clip bit this frame
-  curvatureRateLimited @8 :Bool;         # equivalent curvature would be rate-limited (sim)
-  curvatureDeviationLimited @9 :Bool;    # deviation-clip constrained kappa_cmd this frame
-  humanTurnLateralPaused @10 :Bool;      # human-turn override forced lateral inactive
-  stallBlipActive @11 :Bool;             # stall-blip mode-0 pulse in progress
 }
 
 struct LiveMapDataSP @0xf416ec09499d9d19 {

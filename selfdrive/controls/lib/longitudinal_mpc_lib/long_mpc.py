@@ -41,6 +41,14 @@ A_CHANGE_COST = 200.
 DANGER_ZONE_COST = 100.
 CRASH_DISTANCE = .25
 LEAD_DANGER_FACTOR = 0.75
+# Stopped-lead braking enhancement: when the lead car is stationary and ego speed is
+# above the threshold, track the gap harder and push the danger zone farther out so
+# braking starts earlier and ramps stronger (vision-only leads at high speed).
+STOPPED_LEAD_ENHANCE_V = 2.0      # m/s: applies at any driving speed (not tied to a 70 km/h gate)
+STOPPED_LEAD_T_FOLLOW = 2.2       # s: extra headway for pre-deceleration vs stock follow gap
+STOPPED_LEAD_OBSTACLE_COST = 8.0  # stronger gap tracking vs X_EGO_OBSTACLE_COST=3
+STOPPED_LEAD_DANGER_COST = 250.0  # harder danger-zone slack vs DANGER_ZONE_COST=100
+STOPPED_LEAD_DANGER_FACTOR = 0.85 # farther danger zone vs LEAD_DANGER_FACTOR=0.75
 LIMIT_COST = 1e6
 ACADOS_SOLVER_TYPE = 'SQP_RTI'
 
@@ -752,11 +760,14 @@ class LongitudinalMpc:
     for i in range(N):
       self.solver.cost_set(i, 'Zl', Zl)
 
-  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
+  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard,
+                  obstacle_cost=X_EGO_OBSTACLE_COST, danger_cost=DANGER_ZONE_COST):
+    self._prev_accel_constraint = prev_accel_constraint
+    self._personality = personality
     jerk_factor = get_jerk_factor(personality)
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
-    cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
-    constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
+    cost_weights = [obstacle_cost, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
+    constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, danger_cost]
     self.set_cost_weights(cost_weights, constraint_cost_weights)
 
   def set_cur_state(self, v, a):
@@ -810,6 +821,21 @@ class LongitudinalMpc:
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)
 
+    # Stopped lead at speed: brake earlier and harder (vision-only leads otherwise
+    # start braking late for stationary cars detected at close range).
+    lead_0 = radarstate.leadOne
+    stopped_lead = lead_0 is not None and lead_0.status and lead_0.vLead < 1.0
+    if stopped_lead and v_ego > STOPPED_LEAD_ENHANCE_V:
+      # Pre-deceleration for stationary cars: higher gap tracking, farther danger
+      # zone and a longer follow headway so braking starts early at ANY speed.
+      self.set_weights(self._prev_accel_constraint, self._personality,
+                       obstacle_cost=STOPPED_LEAD_OBSTACLE_COST,
+                       danger_cost=STOPPED_LEAD_DANGER_COST)
+      danger_factor = STOPPED_LEAD_DANGER_FACTOR
+      t_follow = max(t_follow, STOPPED_LEAD_T_FOLLOW)
+    else:
+      danger_factor = LEAD_DANGER_FACTOR
+
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
@@ -839,7 +865,7 @@ class LongitudinalMpc:
     self.params[:,2] = np.min(x_obstacles, axis=1)
     self.params[:,3] = np.copy(self.a_prev)
     self.params[:,4] = t_follow
-    self.params[:,5] = LEAD_DANGER_FACTOR
+    self.params[:,5] = danger_factor
 
     self.run()
     # FCW gate: high vision confidence, or a *moving* radar lead.

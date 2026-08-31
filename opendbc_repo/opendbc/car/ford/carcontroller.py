@@ -23,8 +23,10 @@ MAX_LATERAL_ACCEL = ISO_LATERAL_ACCEL - (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_R
 FUSION_ACCEL_SOFT_MAX = 1.2
 # Ford stock ACC typically cannot *initially* set/enable below ~20 mph
 FUSION_STOCK_MIN_V = 20.0 * CV.MPH_TO_MS  # ~8.94 m/s
-# Above this speed, ignore stock braking — OP owns decel (stock false brakes off-highway)
-FUSION_OP_BRAKE_ONLY_V = 40.0 * CV.KPH_TO_MS  # ~11.11 m/s
+# OP-owned longitudinal latch (hysteresis): >45 km/h OP takes over longitudinal;
+# back to pure stock control only at/below 40 km/h.
+FUSION_OP_LONG_ON_V = 45.0 * CV.KPH_TO_MS
+FUSION_OP_LONG_OFF_V = 40.0 * CV.KPH_TO_MS
 # After a follow-stop, hand back from OP pullaway once moving (session already active)
 FUSION_STOP_GO_RELEASE_V = 3.0  # m/s
 # Min stock accel to count as pullaway (filters resume noise below ~0.12 m/s^2)
@@ -33,14 +35,8 @@ FUSION_STOCK_PULLAWAY_THRESH = 0.12  # m/s^2
 FUSION_STOCK_GO_DEBOUNCE_CYCLES = 15
 # stock v_trg below cruise by this margin => lead moving, not spurious resume
 FUSION_LEAD_MOVING_V_TRG_MARGIN_KPH = 5.0
-# Stock intent-brake at/above this magnitude + lead detected => trust stock above 40 km/h
-FUSION_STOCK_HARD_BRAKE = 1.0  # m/s^2
 # Floor accel when planner wants go but LongControl is still in stopping hold (-2 m/s^2)
 FUSION_OP_PULLAWAY_ACCEL = 0.4  # m/s^2
-# Vision-only latch (A): above the high threshold, drop all stock fusion accel and use pure OP
-# vision accel; hysteresis re-enables fusion only once speed falls below the low threshold.
-FUSION_VISION_ONLY_HIGH_V = 70.0 * CV.KPH_TO_MS  # enable A above 70 km/h
-FUSION_VISION_ONLY_LOW_V = 65.0 * CV.KPH_TO_MS  # disable A below 65 km/h
 PARAMS_UPDATE_FRAMES = 100  # ~1s at 100Hz
 
 # Pulse stock GAP so IPMA's AccTGap_D_Dsply matches speed-based 1–4 bars
@@ -105,16 +101,19 @@ def get_stock_acc_accel(CS, *, session_active: bool = False, v_ego: float = 0.0)
 
 
 def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool = False,
-                        stock_auto_resume: bool = False, v_ego: float = 0.0,
-                        stock_lead_detected: bool = False) -> tuple[float, str]:
+                        stock_auto_resume: bool = False, op_long: bool = False,
+                        pure_stock: bool = False) -> tuple[float, str]:
   """
   Fuse stock ACC with OP (vision follow / SCC curve / planner / stop-go).
 
   Before stock session: below ~20 mph → stock_a None → OP only.
   After stock session: stock usable down to stop; OP still wins on earlier brake/curve.
-  Above FUSION_OP_BRAKE_ONLY_V (~40 km/h): stock braking is ignored — OP owns decel
-  (avoids stock false brakes on non-highways); exception: hard stock brake intent while
-  a lead is confirmed is kept (stock_brake_keep) so real threats are not dropped.
+  op_long False: pure stock longitudinal (pass-through, no min() mixing) outside the
+  stop-go window — low-speed follow jerks when OP vision and stock alternate.
+  op_long True: stock braking is fully ignored — OP owns decel. The old late hard-brake
+  fallback (stock_brake_keep) was removed: it fired only when very close and caused
+  high-speed jerk; OP vision pre-deceleration covers stationary threats instead.
+  The caller latches op_long with hysteresis: >45 km/h on, ≤40 km/h off.
   Stop-go pullaway: if stock AccPrpl requests go, follow stock (stock_go) / induce resume.
   Do not let OP stopping-hold brake override stock go — that deadlocks AccStopMde.
   If stock will not pull away, prefer OP vision/start (op_go).
@@ -127,13 +126,9 @@ def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool 
 
   stock_a = float(stock_a)
 
-  # Above 40 km/h: discard stock brake requests entirely (OP owns longitudinal braking).
+  # OP-owned longitudinal: discard stock brake requests entirely (OP owns braking).
   # Do not clamp to 0 — that would incorrectly zero OP accel when stock was falsely braking.
-  # Exception: if stock confirms a lead (target speed well below cruise) and wants hard
-  # braking, trust it — a real threat beats the false-brake filter.
-  if v_ego > FUSION_OP_BRAKE_ONLY_V and stock_a < -0.05:
-    if stock_lead_detected and stock_a < -FUSION_STOCK_HARD_BRAKE:
-      return float(min(op_a, stock_a)), "stock_brake_keep"
+  if op_long and stock_a < -0.05:
     if stop_go_op:
       return float(min(max(op_a, FUSION_OP_PULLAWAY_ACCEL), FUSION_ACCEL_SOFT_MAX)), "op_go"
     return op_a, "op_brake_only"
@@ -147,6 +142,12 @@ def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool 
   if stop_go_op and op_a > stock_a + 1e-3:
     fused = min(max(op_a, FUSION_OP_PULLAWAY_ACCEL), FUSION_ACCEL_SOFT_MAX)
     return float(fused), "op_go"
+
+  # Stock-owned longitudinal (hysteresis off): pure stock pass-through — avoids
+  # follow jerk. Stop-go window keeps the old logic so OP hold and debounced stock
+  # pullaway still work.
+  if (not op_long) and pure_stock:
+    return float(stock_a), "stock_only"
 
   fused = min(op_a, stock_a, FUSION_ACCEL_SOFT_MAX)
   if fused < op_a - 1e-3 and fused < stock_a - 1e-3:
@@ -270,8 +271,8 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt):
     self._params = None
     self._fusion_enabled = False
     self._fusion_stop_go = False
-    # Vision-only latch (A): >70 km/h pure OP vision accel, <65 km/h back to stock/OP fusion
-    self._vision_only_high_v = False
+    # OP-owned longitudinal latch (hysteresis: >45 km/h on, ≤40 km/h off)
+    self._op_long_high_v = False
     # Latched once stock ACC has successfully been active above min engage speed
     self._stock_acc_session = False
     self._standstill_since: float | None = None
@@ -308,7 +309,7 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt):
       return False
     if now < self._stock_gap_driver_until:
       return False
-    if not self._fusion_enabled or self._vision_only_high_v or not CS.out.cruiseState.available:
+    if not self._fusion_enabled or not CS.out.cruiseState.available:
       self._stock_gap_presses = 0
       return False
 
@@ -350,14 +351,14 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt):
       # Keep last known values if params unavailable
       pass
 
-  def _update_vision_only_latch(self, v_ego: float, allowed: bool) -> None:
-    """A-latch: >70 km/h enable pure-OP-vision (stock fusion accel off); <65 km/h re-enable fusion."""
+  def _update_op_long_latch(self, v_ego: float, allowed: bool) -> None:
+    """Hysteresis: >45 km/h OP takes over longitudinal; back to stock at ≤40 km/h."""
     if not allowed:
-      self._vision_only_high_v = False
-    elif not self._vision_only_high_v and v_ego > FUSION_VISION_ONLY_HIGH_V:
-      self._vision_only_high_v = True
-    elif self._vision_only_high_v and v_ego < FUSION_VISION_ONLY_LOW_V:
-      self._vision_only_high_v = False
+      self._op_long_high_v = False
+    elif not self._op_long_high_v and v_ego > FUSION_OP_LONG_ON_V:
+      self._op_long_high_v = True
+    elif self._op_long_high_v and v_ego <= FUSION_OP_LONG_OFF_V:
+      self._op_long_high_v = False
 
   def _update_lateral_params(self):
     """Refresh BluePilot lateral strategy params (mode selection + tuning) roughly once per second."""
@@ -400,22 +401,20 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt):
 
     long_state = actuators.longControlState
     op_accel = float(actuators.accel)
-    self._update_vision_only_latch(CS.out.vEgo, self._fusion_enabled and CC.longActive)
+    self._update_op_long_latch(CS.out.vEgo, self._fusion_enabled and CC.longActive)
     pullaway_ctx = (
-      self._fusion_enabled and not self._vision_only_high_v and self._fusion_stop_go and
+      self._fusion_enabled and self._fusion_stop_go and
       _stock_pullaway_context(CC, CS, long_state, op_accel)
     )
-    stock_a_fusion = (
-      None if self._vision_only_high_v else
-      get_stock_acc_accel(CS, session_active=self._stock_acc_session, v_ego=CS.out.vEgo)
+    stock_a_fusion = get_stock_acc_accel(
+      CS, session_active=self._stock_acc_session, v_ego=CS.out.vEgo,
     ) if self._fusion_enabled else None
     self._update_stock_go_confirm(stock_a_fusion, pullaway_ctx)
     stock_pullaway_ready = self._stock_pullaway_ready(stock_a_fusion, pullaway_ctx)
 
     # Resume only when pullaway is debounced and context-valid (planner go / lead moving / starting)
     induce_stock_resume = (
-      self._fusion_enabled and not self._vision_only_high_v and
-      self._stock_acc_session and stock_pullaway_ready
+      self._fusion_enabled and self._stock_acc_session and stock_pullaway_ready
     )
     want_stock_gap = self._update_stock_gap_request(CS, hud_control.leadDistanceBars)
 
@@ -513,41 +512,32 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt):
       # Stock ACC + OP fusion
       stock_pullaway = False
       if self._fusion_enabled and CC.longActive:
-        if self._vision_only_high_v:
-          # A-latch: pure OP vision accel, stock fusion requests fully ignored
-          accel = op_accel
-          fusion_mode = "vision_only_high_v"
-          gas = accel
-        else:
-          below_stock_min = CS.out.vEgo < FUSION_STOCK_MIN_V
-          stock_a = stock_a_fusion
-          # Debounced stock pullaway — avoids resume-noise stock_go ↔ op_more_brake jerk at standstill
-          stock_pullaway = stock_pullaway_ready
-          # Planner cleared shouldStop → controlsd sets resume. LongControl may still output
-          # stopping hold (-2) while cruiseState.standstill is latched — floor a pullaway accel.
-          planner_wants_go = bool(CC.cruiseControl.resume)
-          stop_go_op = (
-            self._fusion_stop_go and
-            (not stock_pullaway) and
-            (long_state == LongCtrlState.starting or op_accel > 0.05 or planner_wants_go)
-          )
-          op_for_fuse = op_accel
-          if stop_go_op and op_for_fuse < FUSION_OP_PULLAWAY_ACCEL:
-            op_for_fuse = FUSION_OP_PULLAWAY_ACCEL
-          # Stock confirms a lead when its own target speed drops well below cruise.
-          cruise_kph = float(CS.out.cruiseState.speed) * CV.MS_TO_KPH
-          stock_lead_detected = _stock_lead_moving(CS, cruise_kph)
-          accel, fusion_mode = fuse_stock_op_accel(
-            op_for_fuse, stock_a,
-            stop_go_op=stop_go_op,
-            stock_auto_resume=stock_pullaway,
-            v_ego=CS.out.vEgo,
-            stock_lead_detected=stock_lead_detected,
-          )
-          # Clarify log mode: OP used because session not yet latched below min speed
-          if (not self._stock_acc_session) and below_stock_min and fusion_mode == "op_only":
-            fusion_mode = "op_below_stock_min"
-          gas = accel
+        below_stock_min = CS.out.vEgo < FUSION_STOCK_MIN_V
+        stock_a = stock_a_fusion
+        # Debounced stock pullaway — avoids resume-noise stock_go ↔ op_more_brake jerk at standstill
+        stock_pullaway = stock_pullaway_ready
+        # Planner cleared shouldStop → controlsd sets resume. LongControl may still output
+        # stopping hold (-2) while cruiseState.standstill is latched — floor a pullaway accel.
+        planner_wants_go = bool(CC.cruiseControl.resume)
+        stop_go_op = (
+          self._fusion_stop_go and
+          (not stock_pullaway) and
+          (long_state == LongCtrlState.starting or op_accel > 0.05 or planner_wants_go)
+        )
+        op_for_fuse = op_accel
+        if stop_go_op and op_for_fuse < FUSION_OP_PULLAWAY_ACCEL:
+          op_for_fuse = FUSION_OP_PULLAWAY_ACCEL
+        accel, fusion_mode = fuse_stock_op_accel(
+          op_for_fuse, stock_a,
+          stop_go_op=stop_go_op,
+          stock_auto_resume=stock_pullaway,
+          op_long=self._op_long_high_v,
+          pure_stock=not self._fusion_stop_go,
+        )
+        # Clarify log mode: OP used because session not yet latched below min speed
+        if (not self._stock_acc_session) and below_stock_min and fusion_mode == "op_only":
+          fusion_mode = "op_below_stock_min"
+        gas = accel
       else:
         self._stock_acc_session = False
 
@@ -593,7 +583,7 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt):
         stopping = False
 
       # With fusion: send real cruise / stock target speed (helps TCM upshift). Else keep legacy max.
-      if self._fusion_enabled and CC.longActive and not self._vision_only_high_v:
+      if self._fusion_enabled and CC.longActive:
         v_cruise_kph = float(CS.out.cruiseState.speed) * CV.MS_TO_KPH
         stock_v_trg = float(getattr(CS, "stock_acc_v_trg", 0.0))
         v_trg_kph = stock_v_trg if stock_v_trg > 1.0 else v_cruise_kph
