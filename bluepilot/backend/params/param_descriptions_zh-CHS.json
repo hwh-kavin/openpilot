@@ -63,7 +63,6 @@
   "RoadNameToggle": "显示车辆当前行驶道路名称。需下载该位置的 OpenStreetMap 数据库。",
   "RocketFuel": "在屏幕左侧显示实时加减速指示，展示车辆当前实际动作，而非规划请求。",
   "ShowAdvancedControls": "切换高级 sunnypilot 控件的显示/隐藏。仅影响可见性，不改变实际开关状态。",
-  "FordStockAccFusion": "融合原车 ACC 与 openpilot 纵向：原车约需 20 mph 首次启用，启用后可跟到停车；停车后约 2 秒内前车起步则跟随原车自动起步（并发送 resume）；超时则由 OP 视觉起步。车速大于 40 km/h 时忽略原车刹车、改用 OP 刹车（减少非高速误刹车）。OP 另负责视觉预减速与 SCC 弯道。需开启 openpilot 纵向控制。",
   "UiAlertLogEnable": "开启后，行驶过程中的报警与错误会写入错误日志，可在错误日志中查看。",
   "ShowTurnSignals": "启用后，在 HUD 上绘制视觉转向灯指示。",
   "SmartCruiseControlMap": "使用地图数据估算前方弯道的合适行驶速度。",

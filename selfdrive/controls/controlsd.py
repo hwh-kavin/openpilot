@@ -141,7 +141,7 @@ class Controls(ControlsExt):
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
     personality = self.sm['selfdriveState'].personality
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop,
-                                             pid_accel_limits, personality=personality))
+                                             pid_accel_limits))
 
     # Steering PID loop and lateral MPC
     # When lat inactive (incl. HTD pause): snap desired to current wheel curvature so

@@ -10,8 +10,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_contro
 
 
 class SmartCruiseControl:
-  def __init__(self, CP=None):
-    self.vision = SmartCruiseControlVision(CP)
+  def __init__(self):
+    self.vision = SmartCruiseControlVision()
     self.map = SmartCruiseControlMap()
 
   def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise: float) -> None:

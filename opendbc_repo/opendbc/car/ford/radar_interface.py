@@ -1,3 +1,5 @@
+# BluePilot: collections used by STEER_ASSIST_DATA radar tracking
+import collections
 import numpy as np
 from typing import cast
 from collections import defaultdict
@@ -15,27 +17,14 @@ DELPHI_ESR_RADAR_MSGS = list(range(0x500, 0x540))
 DELPHI_MRR_RADAR_START_ADDR = 0x120
 DELPHI_MRR_RADAR_HEADER_ADDR = 0x174  # MRR_Header_SensorCoverage
 DELPHI_MRR_RADAR_MSG_COUNT = 64
+# BluePilot: DELPHI_MRR_64 / STEER_ASSIST_DATA radar constants
+DELPHI_MRR_RADAR_MSG_COUNT_64 = 22  # 22 messages in CANFD
 
 DELPHI_MRR_RADAR_RANGE_COVERAGE = {0: 42, 1: 164, 2: 45, 3: 175}  # scan index to detection range (m)
 DELPHI_MRR_MIN_LONG_RANGE_DIST = 30  # meters
 DELPHI_MRR_CLUSTER_THRESHOLD = 5  # meters, lateral distance and relative velocity are weighted
-# Scan index should step 0→1→2→3→0. Treat stuck (R/P repeat) vs skip (missed header) separately.
-DELPHI_MRR_STUCK_THRESHOLD = 15  # same index repeated (typical in reverse)
-DELPHI_MRR_SKIP_THRESHOLD = 10   # non-sequential jumps while driving; ignore brief blips
 
-# Temporal / kinematic clutter filter (one publish cycle ≈ full 0→3 scan rotation)
-DELPHI_MRR_CONFIRM_CYCLES = 3          # new tracks must persist this many cycles before publish
-DELPHI_MRR_MAX_DREL_JUMP = 10.0        # m — reject single-cycle range spikes
-DELPHI_MRR_MAX_VREL_JUMP = 10.0        # m/s — reject Doppler spikes
-DELPHI_MRR_MAX_YREL_JUMP = 3.0         # m — reject lateral teleport
-
-MRR_FAULT_SIGNALS = (
-  'CAN_RADAR_NOT_OP',
-  'CAN_RADAR_OVERHEAT_ERROR',
-  'CAN_RADAR_EXT_COND_NOK',
-  'CAN_RADAR_ALIGN_OUT_RANGE',
-)
-
+STEER_ASSIST_DATA_MSGS = 0x3d7
 
 @dataclass
 class Cluster:
@@ -43,16 +32,6 @@ class Cluster:
   yRel: float = 0.0
   vRel: float = 0.0
   trackId: int = 0
-
-
-@dataclass
-class _TrackFilter:
-  """Per-track state for MRR publish gating (association still uses Cluster)."""
-  dRel: float
-  yRel: float
-  vRel: float
-  confirm_cnt: int = 0
-  published: bool = False
 
 
 def cluster_points(pts_l: list[list[float]], pts2_l: list[list[float]], max_dist: float) -> list[int]:
@@ -104,7 +83,6 @@ def _create_delphi_esr_radar_can_parser(CP) -> CANParser:
 
 def _create_delphi_mrr_radar_can_parser(CP) -> CANParser:
   messages = [
-    ("MRR_Status_Radar", 30),
     ("MRR_Header_InformationDetections", 33),
     ("MRR_Header_SensorCoverage", 33),
   ]
@@ -116,22 +94,36 @@ def _create_delphi_mrr_radar_can_parser(CP) -> CANParser:
   return CANParser(RADAR.DELPHI_MRR, messages, CanBus(CP).radar)
 
 
+# BluePilot: CAN-FD 64-message MRR (DELPHI_MRR_64) radar parser
+def _create_delphi_mrr_radar_can_parser_64(CP) -> CANParser:
+  messages = []
+
+  for i in range(1, DELPHI_MRR_RADAR_MSG_COUNT_64 + 1):
+    msg = f"MRR_Detection_{i:03d}"
+    messages += [(msg, 20)]
+
+  return CANParser(RADAR.DELPHI_MRR_64, messages, CanBus(CP).radar)
+
+# BluePilot: Steer_Assist_Data (Cmbb) pseudo-radar parser
+def _create_steer_assist_data(CP) -> CANParser:
+  messages = [("Steer_Assist_Data", 20)]
+  return CANParser(RADAR.STEER_ASSIST_DATA, messages, CanBus(CP).camera)
+
 class RadarInterface(RadarInterfaceBase):
   def __init__(self, CP, CP_SP):
     super().__init__(CP, CP_SP)
 
     self.points: list[list[float]] = []
     self.clusters: list[Cluster] = []
-    self._track_filters: dict[int, _TrackFilter] = {}
+    # BluePilot: vRel history buffer for STEER_ASSIST_DATA
+    self.vRelCol = {}
 
     self.updated_messages = set()
     self.track_id = 0
     self.radar = DBC[CP.carFingerprint].get(Bus.radar)
     self.scan_index_invalid_cnt = 0
-    self.radar_stuck_cnt = 0
-    self.radar_skip_cnt = 0
+    self.radar_unavailable_cnt = 0
     self.prev_headerScanIndex = 0
-    self._header_scan_initialized = False
     if CP.radarUnavailable:
       self.rcp = None
     elif self.radar == RADAR.DELPHI_ESR:
@@ -141,36 +133,15 @@ class RadarInterface(RadarInterfaceBase):
     elif self.radar == RADAR.DELPHI_MRR:
       self.rcp = _create_delphi_mrr_radar_can_parser(CP)
       self.trigger_msg = DELPHI_MRR_RADAR_HEADER_ADDR
+    # BluePilot: DELPHI_MRR_64 / STEER_ASSIST_DATA radar setup branches
+    elif self.radar == RADAR.DELPHI_MRR_64:
+      self.rcp = _create_delphi_mrr_radar_can_parser_64(CP)
+      self.trigger_msg = DELPHI_MRR_RADAR_START_ADDR + DELPHI_MRR_RADAR_MSG_COUNT_64 - 1
+    elif self.radar == RADAR.STEER_ASSIST_DATA:
+      self.rcp = _create_steer_assist_data(CP)
+      self.trigger_msg = STEER_ASSIST_DATA_MSGS
     else:
       raise ValueError(f"Unsupported radar: {self.radar}")
-
-  def _reset_mrr_tracks(self) -> None:
-    self.pts.clear()
-    self.points.clear()
-    self.clusters.clear()
-    self._track_filters.clear()
-
-  @staticmethod
-  def _mrr_kinematic_jump(prev: _TrackFilter, d_rel: float, y_rel: float, v_rel: float) -> bool:
-    return (abs(d_rel - prev.dRel) > DELPHI_MRR_MAX_DREL_JUMP or
-            abs(y_rel - prev.yRel) > DELPHI_MRR_MAX_YREL_JUMP or
-            abs(v_rel - prev.vRel) > DELPHI_MRR_MAX_VREL_JUMP)
-
-  def _build_ret(self) -> structs.RadarData:
-    ret = structs.RadarData()
-    if not self.rcp.can_valid:
-      ret.errors.canError = True
-    if self.radar == RADAR.DELPHI_MRR:
-      self._check_mrr_faults(ret)
-    ret.points = list(self.pts.values())
-    return ret
-
-  def _check_mrr_faults(self, ret: structs.RadarData) -> None:
-    status = self.rcp.vl.get("MRR_Status_Radar")
-    if status is None:
-      return
-    if any(status[sig] for sig in MRR_FAULT_SIGNALS):
-      ret.errors.radarFault = True
 
   def update(self, can_strings):
     if self.rcp is None:
@@ -180,12 +151,7 @@ class RadarInterface(RadarInterfaceBase):
     self.updated_messages.update(vls)
 
     if self.trigger_msg not in self.updated_messages:
-      # Keep publishing the last cluster set between MRR scan cycles
-      if self.radar == RADAR.DELPHI_MRR and self.pts:
-        return self._build_ret()
       return None
-
-    updated_messages = set(self.updated_messages)
     self.updated_messages.clear()
 
     ret = structs.RadarData()
@@ -193,31 +159,91 @@ class RadarInterface(RadarInterfaceBase):
       ret.errors.canError = True
 
     if self.radar == RADAR.DELPHI_ESR:
-      self._update_delphi_esr(updated_messages)
+      self._update_delphi_esr()
     elif self.radar == RADAR.DELPHI_MRR:
-      self._check_mrr_faults(ret)
       _update = self._update_delphi_mrr(ret)
       if not _update:
-        if self.pts:
-          ret.points = list(self.pts.values())
-          return ret
+        return None
+    # BluePilot: DELPHI_MRR_64 / STEER_ASSIST_DATA radar update branches
+    elif self.radar == RADAR.DELPHI_MRR_64:
+      _update = self._update_delphi_mrr_64(ret)
+      if not _update:
+        return None
+    elif self.radar == RADAR.STEER_ASSIST_DATA:
+      _update = self._update_steer_assist_data()
+      if not _update:
         return None
 
     ret.points = list(self.pts.values())
     return ret
 
-  def _update_delphi_esr(self, updated_messages: set[int]):
-    del updated_messages  # trigger frame: refresh all slots from latest CAN parse
-    for ii in DELPHI_ESR_RADAR_MSGS:
-      if ii not in self.rcp.vl:
-        continue
+  # BluePilot: Steer_Assist_Data (Cmbb) radar point update
+  def _update_steer_assist_data(self):
+    msg = self.rcp.vl["Steer_Assist_Data"]
+
+    dRel = msg['CmbbObjDistLong_L_Actl']
+    confidence = msg['CmbbObjConfdnc_D_Stat']
+    new_track = False
+
+    # if dRel < 1022:
+    if confidence > 0:
+      if 0 not in self.pts:
+        self.pts[0] = structs.RadarData.RadarPoint()
+        self.pts[0].trackId = self.track_id
+        self.vRelCol[0] = collections.deque(maxlen=20)
+        self.track_id += 1
+        new_track = True
+
+      yRel = msg['CmbbObjDistLat_L_Actl']
+      vRel = msg['CmbbObjRelLong_V_Actl']
+      yvRel = msg['CmbbObjRelLat_V_Actl']
+      if not new_track:
+        # if this is a newly created track - we don't have historical data so skip it
+        # if we are on the same track
+        # Let's see if we are moving:
+        #   positive gap - lead is moving faster than us
+        #   negative gap - lead is moving slower than us
+        dDiff = dRel - self.pts[0].dRel
+        if (abs(vRel) < 1.0e-2):
+          self.vRelCol[0].append(dDiff)
+          vRel = sum(self.vRelCol[0])
+          calc = 1
+        else:
+          if len(self.vRelCol[0]) > 0:
+            self.vRelCol[0].clear()
+
+        if abs(self.pts[0].vRel - vRel) > 2 or abs(self.pts[0].dRel - dRel) > 5:
+          self.pts[0].trackId = self.track_id
+          if len(self.vRelCol[0]) > 0:
+            self.vRelCol[0].clear()
+          self.track_id += 1
+
+      self.pts[0].dRel = dRel  # from front of car
+      self.pts[0].yRel = yRel  # in car frame's y axis, left is positive
+      self.pts[0].vRel = vRel
+      self.pts[0].aRel = float('nan')
+      self.pts[0].yvRel = yvRel
+      self.pts[0].measured = True
+    else:
+      if 0 in self.pts:
+        del self.pts[0]
+        del self.vRelCol[0]
+    return True
+
+  def _update_delphi_esr(self):
+    for ii in sorted(self.updated_messages):
       cpt = self.rcp.vl[ii]
 
       if cpt['X_Rel'] > 0.00001:
-        self.valid_cnt[ii] = min(self.valid_cnt[ii] + 1, 10)
+        self.valid_cnt[ii] = 0    # reset counter
+
+      if cpt['X_Rel'] > 0.00001:
+        self.valid_cnt[ii] += 1
       else:
         self.valid_cnt[ii] = max(self.valid_cnt[ii] - 1, 0)
+      #print ii, self.valid_cnt[ii], cpt['VALID'], cpt['X_Rel'], cpt['Angle']
 
+      # radar point only valid if there have been enough valid measurements
       if self.valid_cnt[ii] > 0:
         if ii not in self.pts:
           self.pts[ii] = structs.RadarData.RadarPoint()
@@ -236,35 +262,22 @@ class RadarInterface(RadarInterfaceBase):
   def _update_delphi_mrr(self, ret: structs.RadarData):
     headerScanIndex = int(self.rcp.vl["MRR_Header_InformationDetections"]['CAN_SCAN_INDEX']) & 0b11
 
-    # Scan index should advance by 1 each header. Reverse often repeats the same index (stuck);
-    # driving more often drops a header (skip). Require sustained faults before failing out.
-    if not self._header_scan_initialized:
-      self.prev_headerScanIndex = headerScanIndex
-      self._header_scan_initialized = True
+    # In reverse, the radar continually sends the last messages. Mark this as invalid
+    if (self.prev_headerScanIndex + 1) % 4 != headerScanIndex:
+      self.radar_unavailable_cnt += 1
     else:
-      expected = (self.prev_headerScanIndex + 1) % 4
-      if headerScanIndex == expected:
-        self.radar_stuck_cnt = 0
-        self.radar_skip_cnt = 0
-      elif headerScanIndex == self.prev_headerScanIndex:
-        self.radar_stuck_cnt += 1
-        self.radar_skip_cnt = 0
-      else:
-        self.radar_skip_cnt += 1
-        self.radar_stuck_cnt = 0
-      self.prev_headerScanIndex = headerScanIndex
+      self.radar_unavailable_cnt = 0
+    self.prev_headerScanIndex = headerScanIndex
 
-    if self.radar_stuck_cnt >= DELPHI_MRR_STUCK_THRESHOLD or self.radar_skip_cnt >= DELPHI_MRR_SKIP_THRESHOLD:
-      self._reset_mrr_tracks()
+    if self.radar_unavailable_cnt >= 5:
+      self.pts.clear()
+      self.points.clear()
+      self.clusters.clear()
       ret.errors.radarUnavailableTemporary = True
       return True
 
-    # Brief stuck/skip: keep last tracks, do not ingest this cycle
-    if self.radar_stuck_cnt > 0 or self.radar_skip_cnt > 0:
-      return False
-
-    # Use short-range scan 0 (~42 m) plus scan 2/3 for close stationary leads; scan 2/3 have +-60 m/s Doppler
-    if headerScanIndex not in (0, 2, 3):
+    # Use points with Doppler coverage of +-60 m/s, reduces similar points
+    if headerScanIndex not in (2, 3):
       return False
 
     if DELPHI_MRR_RADAR_RANGE_COVERAGE[headerScanIndex] != int(self.rcp.vl["MRR_Header_SensorCoverage"]["CAN_RANGE_COVERAGE"]):
@@ -290,6 +303,7 @@ class RadarInterface(RadarInterfaceBase):
 
       valid = bool(msg[f"CAN_DET_VALID_LEVEL_{ii:02d}"])
 
+      # TODO: verify this is correct for CANFD as well - copied from CAN version
       # Long range measurement mode is more sensitive and can detect the road surface
       dist = msg[f"CAN_DET_RANGE_{ii:02d}"]  # m [0|255.984]
       if scanIndex in (1, 3) and dist < DELPHI_MRR_MIN_LONG_RANGE_DIST:
@@ -307,6 +321,60 @@ class RadarInterface(RadarInterfaceBase):
     if headerScanIndex != 3:
       return False
 
+    self.do_clustering()
+    return True
+
+  # BluePilot: DELPHI_MRR_64 radar update
+  def _update_delphi_mrr_64(self, ret: structs.RadarData):
+    # Ensure all point IDs match. Note that this message is sent first, but trigger_msg waits for the last message to come in
+    headerScanIndex = int(self.rcp.vl["MRR_Detection_001"]['CAN_SCAN_INDEX_2LSB_01_01'])
+
+    # TODO: Verify the below is correct for CANFD as well - copied from CAN version
+    #       Use points with Doppler coverage of +-60 m/s, reduces similar points
+    if headerScanIndex in (0, 1):
+      return False
+
+    for ii in range(1, DELPHI_MRR_RADAR_MSG_COUNT_64 + 1):
+      msg = self.rcp.vl[f"MRR_Detection_{ii:03d}"]
+
+      # all messages have 6 points except the last one
+      maxRangeID = 6 if ii < DELPHI_MRR_RADAR_MSG_COUNT_64 else 3
+      for iii in range(1, maxRangeID + 1):
+
+        # SCAN_INDEX rotates through 0..3
+        # TODO: Verify the below is correct for CANFD as well - copied from CAN version
+        #       Indexes 0 and 2 have a max range of ~40m, 1 and 3 are ~170m (MRR_Header_SensorCoverage->CAN_RANGE_COVERAGE)
+        #       Indexes 0 and 1 have a Doppler coverage of +-71 m/s, 2 and 3 have +-60 m/s
+        scanIndex = msg[f"CAN_SCAN_INDEX_2LSB_{ii:02d}_{iii:02d}"]
+
+        # Throw out old measurements. Very unlikely to happen, but is proper behavior
+        if scanIndex != headerScanIndex:
+          continue
+
+        valid = bool(msg[f"CAN_DET_VALID_LEVEL_{ii:02d}_{iii:02d}"])
+
+        # Long range measurement mode is more sensitive and can detect the road surface
+        dist = msg[f"CAN_DET_RANGE_{ii:02d}_{iii:02d}"]  # m [0|255.984]
+        if scanIndex in (1, 3) and dist < DELPHI_MRR_MIN_LONG_RANGE_DIST:
+          valid = False
+
+        if valid:
+          azimuth = msg[f"CAN_DET_AZIMUTH_{ii:02d}_{iii:02d}"]              # rad [-3.1416|3.13964]
+          distRate = msg[f"CAN_DET_RANGE_RATE_{ii:02d}_{iii:02d}"]          # m/s [-128|127.984]
+          dRel = cos(azimuth) * dist                                        # m from front of car
+          yRel = sin(azimuth) * dist                                        # in car frame's y axis, right is positive
+
+          self.points.append([dRel, yRel * 2, distRate * 2])
+
+    if headerScanIndex != 3:
+      return True
+
+    # Update the points once we've cycled through all 4 scan modes
+    self.do_clustering()
+    return True
+
+  # Do the common work for CAN and CANFD clustering and prepare the points to be used for liveTracks
+  def do_clustering(self):
     # Cluster points from this cycle against the centroids from the previous cycle
     prev_keys = [[p.dRel, p.yRel * 2, p.vRel * 2] for p in self.clusters]
     labels = cluster_points(prev_keys, self.points, DELPHI_MRR_CLUSTER_THRESHOLD)
@@ -319,14 +387,11 @@ class RadarInterface(RadarInterfaceBase):
         points_by_track_id[self.track_id].append(self.points[idx])
         self.track_id += 1
 
-    new_pts: dict[int, structs.RadarData.RadarPoint] = {}
     self.clusters = []
-    alive_ids: set[int] = set()
-
-    for track_id, pts in points_by_track_id.items():
-      dRel_vals = [p[0] for p in pts]
-      min_dRel = min(dRel_vals)
-      dRel = sum(dRel_vals) / len(dRel_vals)
+    for idx, (track_id, pts) in enumerate(points_by_track_id.items()):
+      dRel = [p[0] for p in pts]
+      min_dRel = min(dRel)
+      dRel = sum(dRel) / len(dRel)
 
       yRel = [p[1] for p in pts]
       yRel = sum(yRel) / len(yRel) / 2
@@ -334,54 +399,18 @@ class RadarInterface(RadarInterfaceBase):
       vRel = [p[2] for p in pts]
       vRel = sum(vRel) / len(vRel) / 2
 
-      # Always keep cluster for next-cycle association (even if not yet published)
+      # FIXME: creating capnp RadarPoint and accessing attributes are both expensive, so we store a dataclass and reuse the RadarPoint
       self.clusters.append(Cluster(dRel=dRel, yRel=yRel, vRel=vRel, trackId=track_id))
-      alive_ids.add(track_id)
 
-      prev = self._track_filters.get(track_id)
-      pub_dRel, pub_yRel, pub_vRel = min_dRel, yRel, vRel
+      if idx not in self.pts:
+        self.pts[idx] = structs.RadarData.RadarPoint(measured=True, aRel=float('nan'), yvRel=float('nan'))
 
-      if prev is None:
-        # New track: start confirmation, do not publish single-frame clutter
-        self._track_filters[track_id] = _TrackFilter(dRel=min_dRel, yRel=yRel, vRel=vRel, confirm_cnt=1)
-        continue
+      self.pts[idx].dRel = min_dRel
+      self.pts[idx].yRel = yRel
+      self.pts[idx].vRel = vRel
+      self.pts[idx].trackId = track_id
 
-      if self._mrr_kinematic_jump(prev, min_dRel, yRel, vRel):
-        if prev.published:
-          # Hold last good measurement for one cycle (reject spike)
-          pub_dRel, pub_yRel, pub_vRel = prev.dRel, prev.yRel, prev.vRel
-        else:
-          # Unconfirmed + unstable → restart confirmation
-          self._track_filters[track_id] = _TrackFilter(dRel=min_dRel, yRel=yRel, vRel=vRel, confirm_cnt=1)
-          continue
-      else:
-        prev.dRel = min_dRel
-        prev.yRel = yRel
-        prev.vRel = vRel
-        prev.confirm_cnt += 1
-        if prev.confirm_cnt >= DELPHI_MRR_CONFIRM_CYCLES:
-          prev.published = True
-        pub_dRel, pub_yRel, pub_vRel = prev.dRel, prev.yRel, prev.vRel
+    for idx in range(len(points_by_track_id), len(self.pts)):
+      del self.pts[idx]
 
-      if not self._track_filters[track_id].published:
-        continue
-
-      if track_id not in self.pts:
-        self.pts[track_id] = structs.RadarData.RadarPoint(measured=True, aRel=float('nan'), yvRel=float('nan'))
-
-      pt = self.pts[track_id]
-      pt.dRel = pub_dRel
-      pt.yRel = pub_yRel
-      pt.vRel = pub_vRel
-      pt.trackId = track_id
-      new_pts[track_id] = pt
-
-    # Drop filters for tracks that disappeared this cycle
-    for tid in list(self._track_filters.keys()):
-      if tid not in alive_ids:
-        self._track_filters.pop(tid, None)
-
-    self.pts = new_pts
     self.points = []
-
-    return True

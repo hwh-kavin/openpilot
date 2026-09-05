@@ -20,9 +20,14 @@ ECU_ADDRESSES = {
   Ecu.engine: 0x7E0,       # Powertrain Control Module (PCM)
   Ecu.shiftByWire: 0x732,  # Gear Shift Module (GSM)
   Ecu.debug: 0x7D0,        # Accessory Protocol Interface Module (APIM)
+  Ecu.hud: 0x720,          # Instrument Cluster Module (ICM)
 }
 
 
+# ECUs whose FW follows Ford's VIN-style <model_year_hint><platform_hint>-<part_number>-<revision>
+# scheme (FW_PATTERN below) and are used for platform-code fuzzy matching. Other ECUs in
+# ECU_ADDRESSES (engine, shiftByWire, debug, hud, adas) are queried for exact-match identification
+# only and aren't expected to conform to this pattern.
 ECU_PART_NUMBER = {
   Ecu.eps: [
     b"14D003",
@@ -50,9 +55,12 @@ class TestFordFW(unittest.TestCase):
   @parameterized("car_model, fw_versions", FW_VERSIONS.items())
   def test_fw_versions(self, car_model, fw_versions):
     for (ecu, addr, subaddr), fws in fw_versions.items():
-      assert ecu in ECU_PART_NUMBER, "Unexpected ECU"
+      assert ecu in ECU_ADDRESSES, "Unknown ECU"
       assert addr == ECU_ADDRESSES[ecu], "ECU address mismatch"
       assert subaddr is None, "Unexpected ECU subaddress"
+
+      if ecu not in ECU_PART_NUMBER:
+        continue  # auxiliary ECU, not part of the VIN-style pattern used for fuzzy matching
 
       for fw in fws:
         assert len(fw) == 24, "Expected ECU response to be 24 bytes"

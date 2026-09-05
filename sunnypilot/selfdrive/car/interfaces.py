@@ -20,7 +20,7 @@ from openpilot.sunnypilot.sunnylink.statsd import STATSLOGSP
 
 def log_fingerprint(CP: structs.CarParams) -> None:
   if CP.carFingerprint == "MOCK":
-    sentry.capture_fingerprint_mock()
+    sentry.capture_fingerprint_mock(CP.carVin)  # BluePilot: pass vin for diagnosability
   else:
     sentry.capture_fingerprint(CP.carFingerprint, CP.brand)
 

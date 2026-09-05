@@ -192,11 +192,6 @@ class SteeringLayout(Widget):
       button_width=350,
       inline=False,
     )
-    self._ford_bypass_toggle = toggle_item_sp(
-      param="disable_BP_lat_UI",
-      title=lambda: tr("Bypass BluePilot Lateral"),
-      description=lambda: tr("Use the stock curvature-only steering path instead of BluePilot lateral strategies."),
-    )
     self._ford_pinion_toggle = toggle_item_sp(
       param="FordPrefSteerAngleCurvature",
       title=lambda: tr("Steering-Angle Curvature Measurement"),
@@ -311,7 +306,6 @@ class SteeringLayout(Widget):
       self._nnlc_toggle,
       LineSeparatorSP(40),
       self._ford_lateral_method,
-      self._ford_bypass_toggle,
       self._ford_pinion_toggle,
       self._ford_angle_low_speed,
       self._ford_angle_high_speed,
@@ -387,7 +381,6 @@ class SteeringLayout(Widget):
     self._htd_curve_latch_distance.set_visible(curve_exit_enabled)
 
     self._ford_lateral_method.set_visible(is_ford)
-    self._ford_bypass_toggle.set_visible(is_ford)
     self._ford_pinion_toggle.set_visible(is_ford)
     self._ford_angle_low_speed.set_visible(ford_angle_mode)
     self._ford_angle_high_speed.set_visible(ford_angle_mode)

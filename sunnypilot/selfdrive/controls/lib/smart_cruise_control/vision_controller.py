@@ -8,54 +8,40 @@ import numpy as np
 
 import cereal.messaging as messaging
 from cereal import custom
-from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
-from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
-from opendbc.car import structs
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
-  apply_lat_capability_v_cap,
-  build_plan_kappa_traj,
-  cap_vel_plan_for_scc,
-  compute_actual_lat_accel,
-  get_scc_accel_scale,
-  kappa_from_steer_angle,
-  plan_curve_speed_from_kappa_traj,
-)
 
 VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
 
 ACTIVE_STATES = (VisionState.entering, VisionState.turning, VisionState.leaving)
 ENABLED_STATES = (VisionState.enabled, VisionState.overriding, *ACTIVE_STATES)
 
-_TURNING_LAT_ACC_TH = 1.6
-_LEAVING_LAT_ACC_TH = 1.2  # wider gap vs turning re-entry (1.6) to reduce mid-curve flap
-_FINISH_LAT_ACC_TH = 1.0
+_ENTERING_PRED_LAT_ACC_TH = 1.3  # Predicted Lat Acc threshold to trigger entering turn state.
+_ABORT_ENTERING_PRED_LAT_ACC_TH = 1.1  # Predicted Lat Acc threshold to abort entering state if speed drops.
 
-# Inflates cruise setpoint for MPC anti-overshoot; keep modest so a noise
-# does not continuously pump v_cruise mid-curve (Δa * horizon).
-_NO_OVERSHOOT_TIME_HORIZON = 2.5  # s
+_TURNING_LAT_ACC_TH = 1.6  # Lat Acc threshold to trigger turning state.
 
-_A_TARGET_FILTER_RC = 0.70
-_V_TARGET_FILTER_RC = 0.55       # allow slowing when κ demand rises
-_V_TARGET_RISE_RC = 0.18         # leaving only: snappy cruise recovery
-_V_TARGET_HOLD_RISE_RC = 1.40    # entering/turning: reject momentary κ dips
-_KAPPA_NOW_FILTER_RC = 0.40
+_LEAVING_LAT_ACC_TH = 1.3  # Lat Acc threshold to trigger leaving turn state.
+_FINISH_LAT_ACC_TH = 1.1  # Lat Acc threshold to trigger the end of the turn cycle.
 
-# Rate-limit the cruise setpoint published to MPC (m/s² equivalent on v)
-_OUTPUT_V_RATE_UP = 0.6
-_OUTPUT_V_RATE_DOWN = 2.5
+_A_LAT_REG_MAX = 2.  # Maximum lateral acceleration
 
-_LEAVING_ACC = 0.6
+_NO_OVERSHOOT_TIME_HORIZON = 4.  # s. Time to use for velocity desired based on a_target when not overshooting.
 
-_ENTER_SPEED_MARGIN = 1.025
-_EXIT_SPEED_MARGIN = 1.008
+# Lookup table for the minimum smooth deceleration during the ENTERING state
+# depending on the actual maximum absolute lateral acceleration predicted on the turn ahead.
+_ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]  # min decel value allowed on ENTERING state
+_ENTERING_SMOOTH_DECEL_BP = [1.3, 3.]  # absolute value of lat acc ahead
 
-# Past-apex: peak κ within this horizon and falling ahead → leaving
-_EXIT_PEAK_T_MAX = 1.5  # s
+# Lookup table for the acceleration for the TURNING state
+# depending on the current lateral acceleration of the vehicle.
+_TURNING_ACC_V = [0.5, 0., -0.4]  # acc value
+_TURNING_ACC_BP = [1.5, 2.3, 3.]  # absolute value of current lat acc
+
+_LEAVING_ACC = 0.5  # Conformable acceleration to regain speed while leaving a turn.
 
 
 class SmartCruiseControlVision:
@@ -66,9 +52,8 @@ class SmartCruiseControlVision:
   output_v_target: float = V_CRUISE_UNSET
   output_a_target: float = 0.
 
-  def __init__(self, CP=None):
+  def __init__(self):
     self.params = Params()
-    self.CP = CP if CP is not None else structs.CarParams()
     self.frame = -1
     self.long_enabled = False
     self.long_override = False
@@ -80,166 +65,89 @@ class SmartCruiseControlVision:
     self.state = VisionState.disabled
     self.current_lat_acc = 0.
     self.max_pred_lat_acc = 0.
-    self.actual_lat_acc = 0.
-    self.kappa_now = 0.
-    self.peak_kappa = 0.
-    self.peak_kappa_t = 0.
-    self.kappa_ahead_falling = False
-    self.has_curve_constraint = False
-    self.planned_a_target = 0.
-    self.v_passable = 0.
-    self._a_target_filter = FirstOrderFilter(0.0, _A_TARGET_FILTER_RC, DT_MDL, initialized=False)
-    self._v_target_filter = FirstOrderFilter(0.0, _V_TARGET_FILTER_RC, DT_MDL, initialized=False)
-    self._kappa_now_filter = FirstOrderFilter(0.0, _KAPPA_NOW_FILTER_RC, DT_MDL, initialized=False)
-    self._output_v_target = V_CRUISE_UNSET
-    self._output_v_initialized = False
-
-  @staticmethod
-  def _lateral_saturated(controls_state) -> bool:
-    try:
-      which = controls_state.lateralControlState.which()
-      lac = getattr(controls_state.lateralControlState, which)
-      return bool(getattr(lac, 'saturated', False))
-    except Exception:
-      return False
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
-      # Use filtered v_target only. v_passable is the raw plan and would bypass
-      # mid-curve hold-rise filtering whenever κ momentarily eases.
-      v_turn = max(self.v_target, MIN_V)
-      return v_turn + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
+      return max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
 
     return V_CRUISE_UNSET
-
-  def _slew_output_v_target(self, v_raw: float) -> float:
-    """Limit frame-to-frame cruise setpoint changes while vision SCC is active."""
-    if not self.is_active or v_raw >= V_CRUISE_UNSET:
-      self._output_v_initialized = False
-      self._output_v_target = V_CRUISE_UNSET
-      return V_CRUISE_UNSET
-
-    if not self._output_v_initialized:
-      self._output_v_target = v_raw
-      self._output_v_initialized = True
-      return self._output_v_target
-
-    max_up = _OUTPUT_V_RATE_UP * DT_MDL
-    max_down = _OUTPUT_V_RATE_DOWN * DT_MDL
-    dv = float(np.clip(v_raw - self._output_v_target, -max_down, max_up))
-    self._output_v_target += dv
-    return self._output_v_target
 
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlVision")
 
-  def _update_calculations(self, sm: messaging.SubMaster, personality) -> None:
+  def _update_calculations(self, sm: messaging.SubMaster) -> None:
     if not self.long_enabled:
       return
-
-    vel_plan = cap_vel_plan_for_scc(np.array(sm['modelV2'].velocity.x), self.v_ego)
-    pos_plan = np.array(sm['modelV2'].position.x)
-    yaw_rate = np.array(sm['modelV2'].orientationRate.z)
-    n = min(len(yaw_rate), len(vel_plan), len(pos_plan), len(ModelConstants.T_IDXS))
-    t_idxs = np.array(ModelConstants.T_IDXS[:n])
-    kappa_traj = build_plan_kappa_traj(yaw_rate[:n], vel_plan[:n])
-
-    cs = sm['controlsState']
-    kappa_meas = kappa_from_steer_angle(
-      sm['carState'].steeringAngleDeg,
-      sm['liveParameters'].angleOffsetDeg,
-      self.CP.steerRatio,
-      self.CP.wheelbase,
-    )
-    kappa_des = abs(float(cs.desiredCurvature))
-    kappa_path = abs(float(cs.curvature))
-    # Filter current κ so steer/path chatter does not pump v_corner mid-curve.
-    self.kappa_now = self._kappa_now_filter.update(max(kappa_des, kappa_meas, kappa_path))
-
-    self.current_lat_acc = compute_actual_lat_accel(self.v_ego, cs.curvature)
-    self.actual_lat_acc = max(
-      self.current_lat_acc,
-      self.v_ego ** 2 * kappa_meas,
-    )
-
-    v_plan, a_plan, peak_kappa, peak_idx, has_constraint = plan_curve_speed_from_kappa_traj(
-      self.v_ego, self.a_ego, kappa_traj, pos_plan[:n], t_idxs,
-      self.kappa_now, personality, MIN_V,
-    )
-    self.peak_kappa = peak_kappa
-    self.peak_kappa_t = float(t_idxs[peak_idx]) if n > 0 else 0.0
-    self.has_curve_constraint = has_constraint
-    # Cereal field: predicted lateral accel ≈ peak κ · v²
-    self.max_pred_lat_acc = float(peak_kappa * (self.v_ego ** 2))
-
-    # Past apex: peak early and κ ahead of peak is below peak (falling demand)
-    if n > 0 and peak_idx < n - 1:
-      ahead = kappa_traj[peak_idx + 1:n]
-      self.kappa_ahead_falling = (
-        self.peak_kappa_t <= _EXIT_PEAK_T_MAX and
-        len(ahead) > 0 and
-        float(np.max(ahead)) < peak_kappa * 0.85
-      )
     else:
-      self.kappa_ahead_falling = False
+      rate_plan = np.array(np.abs(sm['modelV2'].orientationRate.z))
+      vel_plan = np.array(sm['modelV2'].velocity.x)
 
-    self.v_target = apply_lat_capability_v_cap(
-      v_plan, self.v_ego, cs.desiredCurvature, cs.curvature,
-      self._lateral_saturated(cs), personality, MIN_V)
-    self.v_passable = self.v_target
-    self.planned_a_target = a_plan
+      self.current_lat_acc = self.v_ego ** 2 * abs(sm['controlsState'].curvature)
 
-  def _update_state_machine(self, personality) -> tuple[bool, bool]:
-    del personality  # thresholds are κ/speed based now
+      # get the maximum lat accel from the model
+      predicted_lat_accels = rate_plan * vel_plan
+      self.max_pred_lat_acc = np.percentile(predicted_lat_accels, 97)
 
+      # get the maximum curve based on the current velocity
+      v_ego = max(self.v_ego, 0.1)  # ensure a value greater than 0 for calculations
+      max_curve = self.max_pred_lat_acc / (v_ego**2)
+
+      # Get the target velocity for the maximum curve
+      self.v_target = (_A_LAT_REG_MAX / max_curve) ** 0.5
+
+  def _update_state_machine(self) -> tuple[bool, bool]:
+    # ENABLED, ENTERING, TURNING, LEAVING, OVERRIDING
     if self.state != VisionState.disabled:
+      # longitudinal and feature disable always have priority in a non-disabled state
       if not self.long_enabled or not self.enabled:
         self.state = VisionState.disabled
       elif self.long_override:
         self.state = VisionState.overriding
 
       else:
-        need_slow = (
-          self.has_curve_constraint and
-          self.v_ego > MIN_V and
-          self.v_ego > self.v_passable * _ENTER_SPEED_MARGIN
-        )
-
+        # ENABLED
         if self.state == VisionState.enabled:
-          if need_slow:
+          # Do not enter a turn control cycle if the speed is low.
+          if self.v_ego <= MIN_V:
+            pass
+          # If significant lateral acceleration is predicted ahead, then move to Entering turn state.
+          elif self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
             self.state = VisionState.entering
 
+        # OVERRIDING
         elif self.state == VisionState.overriding:
           if not self.long_override:
             self.state = VisionState.enabled
 
+        # ENTERING
         elif self.state == VisionState.entering:
-          if self.current_lat_acc >= _TURNING_LAT_ACC_TH or self.actual_lat_acc >= _TURNING_LAT_ACC_TH:
-            self.state = VisionState.turning
-          elif self.kappa_ahead_falling and self.current_lat_acc >= _LEAVING_LAT_ACC_TH:
-            self.state = VisionState.leaving
-          elif not need_slow:
-            self.state = VisionState.enabled
-
-        elif self.state == VisionState.turning:
-          if self.current_lat_acc <= _LEAVING_LAT_ACC_TH and self.kappa_ahead_falling:
-            self.state = VisionState.leaving
-          elif self.current_lat_acc <= _LEAVING_LAT_ACC_TH and not need_slow:
-            self.state = VisionState.enabled
-
-        elif self.state == VisionState.leaving:
+          # Transition to Turning if current lateral acceleration is over the threshold.
           if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
             self.state = VisionState.turning
-          elif self.current_lat_acc < _FINISH_LAT_ACC_TH or not need_slow:
+          # Abort if the predicted lateral acceleration drops
+          elif self.max_pred_lat_acc < _ABORT_ENTERING_PRED_LAT_ACC_TH:
             self.state = VisionState.enabled
 
-        if self.state in ACTIVE_STATES and self.v_ego <= self.v_passable * _EXIT_SPEED_MARGIN:
-          self.state = VisionState.enabled
+        # TURNING
+        elif self.state == VisionState.turning:
+          # Transition to Leaving if current lateral acceleration drops below a threshold.
+          if self.current_lat_acc <= _LEAVING_LAT_ACC_TH:
+            self.state = VisionState.leaving
 
+        # LEAVING
+        elif self.state == VisionState.leaving:
+          # Transition back to Turning if current lateral acceleration goes back over the threshold.
+          if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
+            self.state = VisionState.turning
+          # Finish if current lateral acceleration goes below a threshold.
+          elif self.current_lat_acc < _FINISH_LAT_ACC_TH:
+            self.state = VisionState.enabled
+
+    # DISABLED
     elif self.state == VisionState.disabled:
       if self.long_enabled and self.enabled:
         if self.long_override:
@@ -249,17 +157,31 @@ class SmartCruiseControlVision:
 
     enabled = self.state in ENABLED_STATES
     active = self.state in ACTIVE_STATES
+
     return enabled, active
 
-  def _update_solution(self, personality) -> float:
+  def _update_solution(self) -> float:
+    # DISABLED, ENABLED, OVERRIDING
     if self.state not in ACTIVE_STATES:
-      return float(self.a_ego)
-    if self.state == VisionState.leaving:
-      return float(_LEAVING_ACC * get_scc_accel_scale(personality))
-    if self.v_ego <= self.v_passable:
-      return float(max(0.0, self.a_ego))
-    # planned_a_target already includes personality brake scaling
-    return float(self.planned_a_target)
+      # when not overshooting, calculate v_turn as the speed at the prediction horizon when following
+      # the smooth deceleration.
+      a_target = self.a_ego
+    # ENTERING
+    elif self.state == VisionState.entering:
+      # when not overshooting, target a smooth deceleration in preparation for a sharp turn to come.
+      a_target = np.interp(self.max_pred_lat_acc, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V)
+    # TURNING
+    elif self.state == VisionState.turning:
+      # When turning, we provide a target acceleration that is comfortable for the lateral acceleration felt.
+      a_target = np.interp(self.current_lat_acc, _TURNING_ACC_BP, _TURNING_ACC_V)
+    # LEAVING
+    elif self.state == VisionState.leaving:
+      # When leaving, we provide a comfortable acceleration to regain speed.
+      a_target = _LEAVING_ACC
+    else:
+      raise NotImplementedError(f"SCC-V state not supported: {self.state}")
+
+    return a_target
 
   def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float,
              v_cruise_setpoint: float) -> None:
@@ -269,30 +191,13 @@ class SmartCruiseControlVision:
     self.a_ego = a_ego
     self.v_cruise_setpoint = v_cruise_setpoint
 
-    personality = sm['selfdriveState'].personality
-
     self._update_params()
-    self._update_calculations(sm, personality)
+    self._update_calculations(sm)
 
-    self.is_enabled, self.is_active = self._update_state_machine(personality)
-    raw_a_target = self._update_solution(personality)
-    self.a_target = self._a_target_filter.update(raw_a_target)
+    self.is_enabled, self.is_active = self._update_state_machine()
+    self.a_target = self._update_solution()
 
-    if self.is_active:
-      v_turn = max(self.v_target, self.v_passable, MIN_V)
-      if v_turn > self._v_target_filter.x:
-        # Mid-curve: rise slowly so κ noise cannot ratchet speed up/down.
-        # Leaving: allow fast rise so cruise recovers after apex.
-        rise_rc = _V_TARGET_RISE_RC if self.state == VisionState.leaving else _V_TARGET_HOLD_RISE_RC
-        self._v_target_filter.update_alpha(rise_rc)
-      else:
-        self._v_target_filter.update_alpha(_V_TARGET_FILTER_RC)
-      self._v_target_filter.update(v_turn)
-      self.v_target = self._v_target_filter.x
-    elif not self._v_target_filter.initialized:
-      self._v_target_filter.update(max(self.v_ego, MIN_V))
-
-    self.output_v_target = self._slew_output_v_target(self.get_v_target_from_control())
+    self.output_v_target = self.get_v_target_from_control()
     self.output_a_target = self.get_a_target_from_control()
 
     self.frame += 1

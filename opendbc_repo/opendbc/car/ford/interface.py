@@ -8,6 +8,7 @@ from opendbc.car.ford.fordcan import CanBus
 from opendbc.car.ford.radar_interface import RadarInterface
 from opendbc.car.ford.values import CarControllerParams, DBC, Ecu, FordFlags, RADAR, FordSafetyFlags
 from opendbc.car.interfaces import CarInterfaceBase
+from opendbc.sunnypilot.car.ford.interfaces_ext import apply_ford_ext_params, apply_ford_ext_params_sp
 
 TransmissionType = structs.CarParams.TransmissionType
 
@@ -32,6 +33,7 @@ class CarInterface(CarInterfaceBase):
     ret.brand = "ford"
 
     ret.radarUnavailable = Bus.radar not in DBC[candidate]
+
     ret.steerControlType = structs.CarParams.SteerControlType.angle
     ret.steerActuatorDelay = 0.2
     ret.steerLimitTimer = 1.0
@@ -44,8 +46,6 @@ class CarInterface(CarInterfaceBase):
       # average of 33.3 Hz radar timestep / 4 scan modes = 60 ms
       # MRR_Header_Timestamps->CAN_DET_TIME_SINCE_MEAS reports 61.3 ms
       ret.radarDelay = 0.06
-    elif not ret.radarUnavailable and DBC[candidate][Bus.radar] == RADAR.DELPHI_ESR:
-      ret.radarDelay = 0.05  # 20 Hz ESR
 
     CAN = CanBus(fingerprint=fingerprint)
     cfgs = [get_safety_config(structs.CarParams.SafetyModel.ford)]
@@ -54,6 +54,7 @@ class CarInterface(CarInterfaceBase):
     ret.safetyConfigs = cfgs
 
     ret.alphaLongitudinalAvailable = ret.radarUnavailable
+
     if alpha_long or not ret.radarUnavailable:
       ret.safetyConfigs[-1].safetyParam |= FordSafetyFlags.LONG_CONTROL.value
       ret.openpilotLongitudinalControl = True
@@ -99,4 +100,16 @@ class CarInterface(CarInterfaceBase):
 
     ret.autoResumeSng = ret.minEnableSpeed == -1.
     ret.centerToFront = ret.wheelbase * 0.44
+
+    # BluePilot: apply extension params (HEV detection, tuning, alpha long, radar config)
+    apply_ford_ext_params(ret, ret, car_fw, fingerprint, alpha_long)
+
+    return ret
+
+  @staticmethod
+  def _get_params_sp(stock_cp: structs.CarParams, ret: structs.CarParamsSP, candidate, fingerprint: dict[int, dict[int, int]],
+                     car_fw: list[structs.CarParams.CarFw], alpha_long: bool, is_release_sp: bool, docs: bool) -> structs.CarParamsSP:
+    # BluePilot: apply extension SP params (ICBM availability)
+    apply_ford_ext_params_sp(ret)
+
     return ret

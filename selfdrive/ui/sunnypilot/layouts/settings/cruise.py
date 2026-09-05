@@ -52,16 +52,17 @@ class CruiseLayout(Widget):
       description="",
       param="IntelligentCruiseButtonManagement")
 
-    self.ford_stock_acc_fusion_toggle = toggle_item_sp(
-      title=tr("Ford Stock ACC Fusion"),
-      description=tr("Fuse stock ACC with openpilot longitudinal: stock needs ~20 mph to first enable, then can "
-                     "follow down to a stop; during stop-go, follow stock pullaway when AccPrpl requests go "
-                     "(and send resume); if stock will not go, OP vision pulls away. Above 40 km/h, stock "
-                     "braking is ignored and OP owns decel (fewer false brakes off-highway). OP also handles "
-                     "SCC / earlier braking. Stock follow gap is set from speed (<40 km/h: 1 bar, <70: 2, "
-                     "<90: 3, else 4). While enabled, OP lead detection is vision-only (stock ACC already "
-                     "uses the car radar). Requires openpilot longitudinal."),
-      param="FordStockAccFusion")
+    self.bp_long_bypass_toggle = toggle_item_sp(
+      title=tr("Bypass BP Longitudinal Control"),
+      description=tr("Disable BluePilot's follow-aware longitudinal control (lead classification, gas/accel limits, "
+                     "brake/precharge hysteresis). Above ~50 mph with a lead it smooths following; disable to use "
+                     "stock openpilot longitudinal only."),
+      param="disable_BP_long_UI")
+
+    self.bp_downhill_comp_toggle = toggle_item_sp(
+      title=tr("Disable Downhill Compensation"),
+      description=tr("Ignore negative pitch compensation so downhill deceleration is not added."),
+      param="disable_downhill_comp_UI")
 
     self.scc_v_toggle = toggle_item_sp(
       title=tr("Smart Cruise Control - Vision"),
@@ -103,20 +104,11 @@ class CruiseLayout(Widget):
       description=tr("Enable toggle to allow the model to determine when to use sunnypilot ACC or sunnypilot End to End Longitudinal."),
       param="DynamicExperimentalControl")
 
-    self.acm_toggle = toggle_item_sp(
-      title=tr("启用自适应滑行模式(ACM)"),
-      description=tr("无前车时允许轻微超速滑行（设定速度～设定+附加），少刹车、降油门以节油。"
-                     "有前车且距离/TTC 足够安全时优先关油门滑行；约 40 km/h 以上跟车落在目标车距中带时也会关油门滑行（不挡刹车）。"
-                     "过近或危险时自动退出。低于设定速度时恢复正常加速。"
-                     "经典 ACC 与实验模式均可用；SCC 弯道降速激活时自动暂停。"),
-      param="dp_acm_enabled",
-    )
-
     items = [
       self.icbm_toggle,
       self.dec_toggle,
-      self.acm_toggle,
-      self.ford_stock_acc_fusion_toggle,
+      self.bp_long_bypass_toggle,
+      self.bp_downhill_comp_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
       self.custom_acc_toggle,
@@ -203,25 +195,30 @@ class CruiseLayout(Widget):
           self.icbm_toggle.show_description(True)
 
       is_ford = ui_state.CP.brand == "ford"
-      self.ford_stock_acc_fusion_toggle.set_visible(is_ford)
+      self.bp_long_bypass_toggle.set_visible(is_ford)
+      self.bp_downhill_comp_toggle.set_visible(is_ford)
 
       if has_long or has_icbm:
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.dec_toggle.action_item.set_enabled(has_long)
-        self.ford_stock_acc_fusion_toggle.action_item.set_enabled(has_long and is_ford)
+        self.bp_long_bypass_toggle.action_item.set_enabled(has_long and is_ford)
+        self.bp_downhill_comp_toggle.action_item.set_enabled(has_long and is_ford)
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(True)
       else:
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_toggle.action_item.set_enabled(False)
-        self.ford_stock_acc_fusion_toggle.action_item.set_enabled(False)
+        self.bp_long_bypass_toggle.action_item.set_enabled(False)
+        self.bp_downhill_comp_toggle.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)
     else:
       self.icbm_toggle.action_item.set_enabled(False)
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
-      self.ford_stock_acc_fusion_toggle.set_visible(False)
-      self.ford_stock_acc_fusion_toggle.action_item.set_enabled(False)
+      self.bp_long_bypass_toggle.set_visible(False)
+      self.bp_long_bypass_toggle.action_item.set_enabled(False)
+      self.bp_downhill_comp_toggle.set_visible(False)
+      self.bp_downhill_comp_toggle.action_item.set_enabled(False)
 
   def _apply_custom_acc_description(self, has_long: bool, has_icbm: bool):
     show_custom_acc_desc = False

@@ -27,54 +27,7 @@ SPEED, ACCEL = 0, 1     # Kalman filter states enum
 V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 
 RADAR_TO_CENTER = 2.7   # (deprecated) RADAR is ~ 2.7m ahead from center of car
-RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame (default / Toyota)
-
-# Ford Delphi radar reports dRel from the front bumper; vision uses the camera origin.
-# With FordStockAccFusion, stock ACC already uses the car radar — OP leads stay vision-only
-# to avoid adjacent-lane radar false associates causing OP brake jerk.
-FORD_RADAR_TO_CAMERA = 1.35
-FORD_LATERAL_MATCH_GATE = 2.0
-FORD_LOW_SPEED_MIN_DREL = 0.5
-FORD_LOW_SPEED_MAX_DREL = 25.0
-FORD_V_EGO_STATIONARY = 6.0
-FORD_LOW_SPEED_LATERAL = 1.5
-PARAMS_UPDATE_FRAMES = 50  # ~1s at model rate
-
-
-def get_radar_to_camera(CP: structs.CarParams) -> float:
-  if CP.brand == "ford":
-    return FORD_RADAR_TO_CAMERA
-  return RADAR_TO_CAMERA
-
-
-def get_lateral_match_gate(CP: structs.CarParams) -> float:
-  if CP.brand == "ford":
-    return FORD_LATERAL_MATCH_GATE
-  return 2.5
-
-
-def get_low_speed_min_drel(CP: structs.CarParams) -> float:
-  if CP.brand == "ford":
-    return FORD_LOW_SPEED_MIN_DREL
-  return 0.75
-
-
-def get_low_speed_max_drel(CP: structs.CarParams) -> float:
-  if CP.brand == "ford":
-    return FORD_LOW_SPEED_MAX_DREL
-  return 25.0
-
-
-def get_v_ego_stationary(CP: structs.CarParams) -> float:
-  if CP.brand == "ford":
-    return FORD_V_EGO_STATIONARY
-  return V_EGO_STATIONARY
-
-
-def get_low_speed_lateral(CP: structs.CarParams) -> float:
-  if CP.brand == "ford":
-    return FORD_LOW_SPEED_LATERAL
-  return 1.0
+RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame
 
 
 class KalmanParams:
@@ -148,12 +101,10 @@ class Track:
       "radarTrackId": self.identifier,
     }
 
-  def potential_low_speed_lead(self, v_ego: float, min_d_rel: float = 0.75, max_d_rel: float = 25.0,
-                               lateral_max: float = 1.0, v_ego_stationary: float = V_EGO_STATIONARY):
+  def potential_low_speed_lead(self, v_ego: float):
     # stop for stuff in front of you and low speed, even without model confirmation
-    # Radar points closer than min_d_rel are often glitches (0.75m on Toyota, 0.5m on Ford MRR)
-    return (abs(self.yRel) < lateral_max and (v_ego < v_ego_stationary) and
-            (min_d_rel < self.dRel < max_d_rel))
+    # Radar points closer than 0.75, are almost always glitches on toyota radars
+    return abs(self.yRel) < 1.0 and (v_ego < V_EGO_STATIONARY) and (0.75 < self.dRel < 25)
 
   def is_potential_fcw(self, model_prob: float):
     return model_prob > .9
@@ -168,42 +119,33 @@ def laplacian_pdf(x: float, mu: float, b: float):
   return math.exp(-abs(x-mu)/b)
 
 
-def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
-                          radar_to_camera: float = RADAR_TO_CAMERA, lateral_gate: float = 2.5,
-                          dist_sane_min: float = 5.0, vel_sane_max: float = 10.0):
-  offset_vision_dist = lead.x[0] - radar_to_camera
-  vision_y = -lead.y[0]
-
-  # Pre-filter by lane proximity before scoring
-  candidates = [c for c in tracks.values() if abs(c.yRel - vision_y) < lateral_gate]
-  if not candidates:
-    candidates = list(tracks.values())
+def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track]):
+  offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
 
   def prob(c):
     prob_d = laplacian_pdf(c.dRel, offset_vision_dist, lead.xStd[0])
-    prob_y = laplacian_pdf(c.yRel, vision_y, lead.yStd[0])
+    prob_y = laplacian_pdf(c.yRel, -lead.y[0], lead.yStd[0])
     prob_v = laplacian_pdf(c.vRel + v_ego, lead.v[0], lead.vStd[0])
 
     # This isn't exactly right, but it's a good heuristic
     return prob_d * prob_y * prob_v
 
-  track = max(candidates, key=prob)
+  track = max(tracks.values(), key=prob)
 
   # if no 'sane' match is found return -1
   # stationary radar points can be false positives
-  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.25, dist_sane_min])
-  vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < vel_sane_max) or (v_ego + track.vRel > 3)
+  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.25, 5.0])
+  vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
     return track
   else:
     return None
 
 
-def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float,
-                               lead_prob: float, radar_to_camera: float = RADAR_TO_CAMERA):
+def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float, lead_prob: float):
   lead_v_rel_pred = lead_msg.v[0] - model_v_ego
   return {
-    "dRel": float(lead_msg.x[0] - radar_to_camera),
+    "dRel": float(lead_msg.x[0] - RADAR_TO_CAMERA),
     "yRel": float(-lead_msg.y[0]),
     "vRel": float(lead_v_rel_pred),
     "vLead": float(v_ego + lead_v_rel_pred),
@@ -218,45 +160,24 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
   }
 
 
-def _vision_matched_track(v_ego: float, ready: bool, tracks: dict[int, Track],
-                          lead_msg: capnp._DynamicStructReader, lead_prob: float,
-                          radar_to_camera: float, lateral_gate: float) -> Track | None:
-  if len(tracks) > 0 and ready and lead_prob > .5:
-    return match_vision_to_track(v_ego, lead_msg, tracks, radar_to_camera, lateral_gate)
-  return None
-
-
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, lead_prob: float, CP: structs.CarParams, CP_SP: structs.CarParamsSP,
-             low_speed_override: bool = True, vision_only: bool = False) -> dict[str, Any]:
-  radar_to_camera = get_radar_to_camera(CP)
-
-  # Vision-only: skip radar track association / low-speed radar override
-  if vision_only:
-    if ready and (lead_prob > .5):
-      return get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob, radar_to_camera)
-    return {'status': False}
-
-  lateral_gate = get_lateral_match_gate(CP)
-  low_speed_min_drel = get_low_speed_min_drel(CP)
-  low_speed_max_drel = get_low_speed_max_drel(CP)
-  v_ego_stationary = get_v_ego_stationary(CP)
-  low_speed_lateral = get_low_speed_lateral(CP)
-
+             low_speed_override: bool = True) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
-  track = _vision_matched_track(v_ego, ready, tracks, lead_msg, lead_prob, radar_to_camera, lateral_gate)
+  if len(tracks) > 0 and ready and lead_prob > .5:
+    track = match_vision_to_track(v_ego, lead_msg, tracks)
+  else:
+    track = None
 
   lead_dict = {'status': False}
   if track is not None:
     lead_dict = track.get_RadarState(lead_prob)
     lead_dict = get_custom_yrel(CP, CP_SP, lead_dict, lead_msg)
   elif (track is None) and ready and (lead_prob > .5):
-    lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob, radar_to_camera)
+    lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob)
 
   if low_speed_override:
-    low_speed_tracks = [c for c in tracks.values()
-                        if c.potential_low_speed_lead(v_ego, low_speed_min_drel, low_speed_max_drel,
-                                                      low_speed_lateral, v_ego_stationary)]
+    low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
     if len(low_speed_tracks) > 0:
       closest_track = min(low_speed_tracks, key=lambda c: c.dRel)
 
@@ -295,27 +216,10 @@ class RadarD:
     self.radar_state_valid = False
 
     self.ready = False
-    self._params = Params()
-    self._frame = 0
-    # Ford + stock ACC fusion: OP leads are vision-only (stock path already has radar)
-    self._vision_only_leads = self.CP.brand == "ford" and self._params.get_bool("FordStockAccFusion")
-
-  def _update_vision_only_leads(self):
-    if self.CP.brand != "ford":
-      self._vision_only_leads = False
-      return
-    if (self._frame % PARAMS_UPDATE_FRAMES) != 0:
-      return
-    try:
-      self._vision_only_leads = self._params.get_bool("FordStockAccFusion")
-    except Exception:
-      pass
 
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
     self.current_time = 1e-9*max(sm.logMonoTime.values())
-    self._frame += 1
-    self._update_vision_only_leads()
 
     if sm.recv_frame['carState'] != self.last_v_ego_frame:
       self.v_ego = sm['carState'].vEgo
@@ -362,15 +266,10 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      # With FordStockAccFusion: vision-only leads (stock ACC already uses car radar).
-      # Otherwise: shared vision+radar association.
-      vision_only = self._vision_only_leads
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
-                                          self.lead_prob_filters[0].x, self.CP, self.CP_SP,
-                                          low_speed_override=not vision_only, vision_only=vision_only)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
-                                          self.lead_prob_filters[1].x, self.CP, self.CP_SP,
-                                          low_speed_override=False, vision_only=vision_only)
+      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
+                                          self.CP, self.CP_SP, low_speed_override=True)
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
+                                          self.CP, self.CP_SP, low_speed_override=False)
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None

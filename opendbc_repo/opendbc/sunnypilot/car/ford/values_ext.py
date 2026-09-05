@@ -74,7 +74,7 @@ FORD_PINION_GEOMETRY_INDEX = {
   CAR.FORD_F_150_LIGHTNING_MK1: 7,
   CAR.FORD_F_150_MK14: 8,
   CAR.FORD_MAVERICK_MK1: 9,
-  "FORD_MONDEO_MK5": 10,  # reserved: platform absent in this fork; keeps index stability
+  CAR.FORD_MONDEO_MK5: 10,
   CAR.FORD_MUSTANG_MACH_E_MK1: 11,
   CAR.FORD_RANGER_MK2: 12,
 }
@@ -117,6 +117,7 @@ def apply_bp_device_mount(car_docs, CP):
     CAR.FORD_ESCAPE_MK4_5,
     CAR.FORD_MUSTANG_MACH_E_MK1,
     CAR.FORD_RANGER_MK2,
+    CAR.FORD_EDGE_MK2,
   ):
     car_docs.car_parts = CarParts([Device.threex_angled_mount, harness])
   else:

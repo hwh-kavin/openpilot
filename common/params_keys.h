@@ -192,7 +192,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // BluePilot Ford lateral control (curvature-primary / angle-primary)
     {"FordPrefLateralControl", {PERSISTENT | BACKUP, INT, "0"}},
-    {"disable_BP_lat_UI", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"enable_human_turn_detection_curv", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"lane_change_factor_high_curv", {PERSISTENT | BACKUP, FLOAT, "0.85"}},
     {"pc_blend_ratio_high_C_UI_curv", {PERSISTENT | BACKUP, FLOAT, "0.4"}},

@@ -2430,3 +2430,19 @@ msgstr "自訂"
 msgid "Curvature: Lane Centering PID Gain"
 msgstr "曲率：車道居中 PID 增益"
 
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
+msgid "Bypass BP Longitudinal Control"
+msgstr "繞過 BluePilot 縱向控制"
+
+msgid "Disable BluePilot's follow-aware longitudinal control (lead classification, gas/accel limits, brake/precharge hysteresis). Above ~50 mph with a lead it smooths following; disable to use stock openpilot longitudinal only."
+msgstr "停用 BluePilot 的跟車感知縱向控制（前車分類、油門/加速度限制、煞車/預充壓遲滯）。約 50 mph 以上有前車時讓跟車更平順；停用後僅使用 stock openpilot 縱向控制。"
+
+msgid "Disable Downhill Compensation"
+msgstr "停用下坡補償"
+
+msgid "Ignore negative pitch compensation so downhill deceleration is not added."
+msgstr "忽略負俯仰補償，使下坡時不額外減速。"
+
+msgid "When enabled, sunnypilot will attempt to manage the built-in cruise control buttons by emulating button presses for limited longitudinal control."
+msgstr "啟用後，sunnypilot 將嘗試透過模擬按鈕按壓來管理內建巡航控制按鍵，以提供有限的縱向控制。"
+

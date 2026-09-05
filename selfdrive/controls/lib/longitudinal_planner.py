@@ -11,16 +11,14 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import RoadPitchFilter, get_coast_accel, resolve_t_follow
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_max_accel, get_accel_slew_rate
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
-from openpilot.common.params import Params
 
-from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP, AcmComfortState
-from openpilot.sunnypilot.selfdrive.controls.lib.acm import ACM
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 
+A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
+A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
@@ -28,6 +26,12 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
+
+def get_max_accel(v_ego):
+  return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
+
+def get_coast_accel(pitch):
+  return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
 def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
   """
@@ -46,12 +50,8 @@ def limit_accel_in_turns(v_ego, angle_steers, a_target, CP):
 class LongitudinalPlanner(LongitudinalPlannerSP):
   def __init__(self, CP, CP_SP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
-    self.params = Params()
     self.mpc = LongitudinalMpc(dt=dt)
     LongitudinalPlannerSP.__init__(self, self.CP, CP_SP, self.mpc)
-    self.acm = ACM()
-    self.acm_comfort_state = AcmComfortState.off
-    self._road_pitch_filter = RoadPitchFilter()
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
@@ -110,8 +110,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
-    personality = sm['selfdriveState'].personality
-    accel_clip = [ACCEL_MIN, get_max_accel(v_ego, personality)]
+    accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
     steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
     accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
 
@@ -119,7 +118,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.v_desired_filter.x = v_ego
       # Clip aEgo to cruise limits to prevent large accelerations when becoming active
       self.a_desired = np.clip(sm['carState'].aEgo, accel_clip[0], accel_clip[1])
-      self._road_pitch_filter.reset()
 
     # Prevent divergence, smooth in current v_ego
     self.v_desired_filter.x = max(0.0, self.v_desired_filter.update(v_ego))
@@ -140,36 +138,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
-    acm_enabled = self.params.get_bool("dp_acm_enabled")
-    road_pitch = self._road_pitch_filter.update(sm['carControl'].orientationNED)
-    if road_pitch is None:
-      road_pitch = 0.0
-    at_standstill = sm['carState'].standstill or sm['carState'].cruiseState.standstill
-    t_follow = resolve_t_follow(v_ego, at_standstill, personality, self.params, self.CP)
-    self.mpc.update(sm['radarState'], v_cruise, personality=personality,
-                    pitch=road_pitch, t_follow=t_follow)
+    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
     self.j_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC[:-1], self.mpc.j_solution)
-
-    mode = 'e2e' if self.is_e2e(sm) else 'acc'
-    user_ctrl_lon = sm['carState'].gasPressed
-    scc_active = self.scc.vision.is_active or self.scc.map.is_active
-    personality_t_follow = t_follow
-    lead = sm['radarState'].leadOne if sm['radarState'].leadOne.status else None
-
-    self.acm.enabled = acm_enabled
-    self.acm.update_states(
-      sm['carControl'], sm['radarState'], user_ctrl_lon, v_ego, v_cruise,
-      mode=mode, personality=personality, dtsc_is_active=self.dec.active(),
-      scc_active=scc_active, road_pitch=road_pitch, t_follow=t_follow)
-    # ACM on MPC trajectory (ACC and Experimental); SCC active still bypasses inside ACM
-    self.a_desired_trajectory = self.acm.update_a_desired_trajectory(
-      self.a_desired_trajectory, v_ego, lead, personality_t_follow,
-      road_pitch=road_pitch)
-    self.v_desired_trajectory = self.acm.update_v_desired_trajectory(self.v_desired_trajectory, v_ego)
-    self.acm_comfort_state = self.acm.comfort_state_capnp
 
     # TODO counter is only needed because radar is glitchy, remove once radar is gone
     self.fcw = self.mpc.crash_cnt > 2 and not sm['carState'].standstill
@@ -196,20 +169,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
 
-    # Post-blend ACM: raise coast floor after min(e2e, mpc) so Experimental mode can coast
-    output_a_target = self.acm.apply_to_accel(
-      output_a_target, v_ego, lead, personality_t_follow, road_pitch=road_pitch)
-
     for idx in range(2):
-      slew = get_accel_slew_rate(personality)
-      accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - slew, self.prev_accel_clip[idx] + slew)
+      accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
     self.prev_accel_clip = accel_clip
 
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
 
-    plan_send.valid = sm.all_checks()
+    plan_send.valid = sm.all_checks(service_list=['carState', 'controlsState', 'selfdriveState', 'radarState'])
 
     longitudinalPlan = plan_send.longitudinalPlan
     longitudinalPlan.modelMonoTime = sm.logMonoTime['modelV2']

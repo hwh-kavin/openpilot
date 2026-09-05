@@ -11,7 +11,15 @@ from openpilot.selfdrive.modeld.constants import index_function
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 
 if __name__ == '__main__':  # generating code
-  from openpilot.third_party.acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+  try:
+    from acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+  except ImportError:
+    # scons runs the generator with only PATH in the environment; fall back to
+    # the vendored acados_template in third_party (same one the build links).
+    import sys
+    _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..'))
+    sys.path.insert(0, os.path.join(_repo_root, 'third_party', 'acados'))
+    from acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
 else:
   from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.c_generated_code.acados_ocp_solver_pyx import AcadosOcpSolverCython
 
@@ -41,14 +49,6 @@ A_CHANGE_COST = 200.
 DANGER_ZONE_COST = 100.
 CRASH_DISTANCE = .25
 LEAD_DANGER_FACTOR = 0.75
-# Stopped-lead braking enhancement: when the lead car is stationary and ego speed is
-# above the threshold, track the gap harder and push the danger zone farther out so
-# braking starts earlier and ramps stronger (vision-only leads at high speed).
-STOPPED_LEAD_ENHANCE_V = 2.0      # m/s: applies at any driving speed (not tied to a 70 km/h gate)
-STOPPED_LEAD_T_FOLLOW = 2.2       # s: extra headway for pre-deceleration vs stock follow gap
-STOPPED_LEAD_OBSTACLE_COST = 8.0  # stronger gap tracking vs X_EGO_OBSTACLE_COST=3
-STOPPED_LEAD_DANGER_COST = 250.0  # harder danger-zone slack vs DANGER_ZONE_COST=100
-STOPPED_LEAD_DANGER_FACTOR = 0.85 # farther danger zone vs LEAD_DANGER_FACTOR=0.75
 LIMIT_COST = 1e6
 ACADOS_SOLVER_TYPE = 'SQP_RTI'
 
@@ -62,22 +62,17 @@ T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
-STOP_DISTANCE = 6.0  # legacy default; flat stop gap uses STOP_DISTANCE_FLAT
-STOP_DISTANCE_FLAT = 4.0
-STANDSTILL_HEADWAY_SPEED = 0.3  # below this, use stop buffer only (no time-headway inflation)
-PITCH_SMOOTH_ALPHA_UP = 0.30
-PITCH_SMOOTH_ALPHA_DOWN = 0.05
+STOP_DISTANCE = 6.0
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
-A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 MIN_X_LEAD_FACTOR = 0.5
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 1.5
-  elif personality == log.LongitudinalPersonality.standard:
+  if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
-  elif personality == log.LongitudinalPersonality.aggressive:
+  elif personality==log.LongitudinalPersonality.standard:
+    return 1.0
+  elif personality==log.LongitudinalPersonality.aggressive:
     return 0.5
   else:
     raise NotImplementedError("Longitudinal personality not supported")
@@ -159,429 +154,11 @@ class FordFollowBarsDisplay:
     return self.bars
 
 
-def _personality_max_accel_vals(personality=log.LongitudinalPersonality.standard):
-  if personality == log.LongitudinalPersonality.relaxed:
-    return [1.0, 0.85, 0.65, 0.50]
-  if personality == log.LongitudinalPersonality.aggressive:
-    return [1.9, 1.45, 1.05, 0.75]
-  return [1.6, 1.2, 0.8, 0.6]
-
-
-def get_max_accel(v_ego, personality=log.LongitudinalPersonality.standard):
-  return float(np.interp(v_ego, A_CRUISE_MAX_BP, _personality_max_accel_vals(personality)))
-
-
-def get_cruise_max_accel(personality=log.LongitudinalPersonality.standard):
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 1.0
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 1.9
-  return CRUISE_MAX_ACCEL
-
-
-def get_cruise_min_accel(personality=log.LongitudinalPersonality.standard):
-  if personality == log.LongitudinalPersonality.relaxed:
-    return -1.0
-  if personality == log.LongitudinalPersonality.aggressive:
-    return -1.4
-  return CRUISE_MIN_ACCEL
-
-
-def get_accel_slew_rate(personality=log.LongitudinalPersonality.standard):
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 0.03
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 0.08
-  return 0.05
-
-
-def get_start_accel(personality, base_start_accel: float) -> float:
-  if personality == log.LongitudinalPersonality.relaxed:
-    factor = 0.55
-  elif personality == log.LongitudinalPersonality.aggressive:
-    factor = 1.25
-  else:
-    factor = 1.0
-  return float(base_start_accel * factor)
-
-
-def get_scc_accel_scale(personality=log.LongitudinalPersonality.standard):
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 0.75
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 1.15
-  return 1.0
-
-
-# Home SUV curve speed limits (m/s²). v_corner = sqrt(a_lat / curvature).
-def get_scc_lat_accel_max(personality=log.LongitudinalPersonality.standard) -> float:
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 1.35
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 2.05
-  return 1.65
-
-
-# Passable speed vs pure physics ( <1 = slightly deeper curve decel ).
-_SCC_PASSABLE_SPEED_FACTOR = 1.00
-
-
-def get_scc_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 1.05
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 1.40
-  return 1.25
-
-
-def get_scc_abort_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 0.90
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 1.22
-  return 1.08
-
-
-def get_scc_early_enter_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
-  """Lower threshold on the far lookahead window to start slowing earlier."""
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 0.95
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 1.25
-  return 1.10
-
-
-def get_scc_early_abort_lat_acc_th(personality=log.LongitudinalPersonality.standard) -> float:
-  if personality == log.LongitudinalPersonality.relaxed:
-    return 0.82
-  if personality == log.LongitudinalPersonality.aggressive:
-    return 1.10
-  return 0.98
-
-
-def cap_vel_plan_for_scc(vel_plan: np.ndarray, v_ego: float) -> np.ndarray:
-  """Cap model velocity so predicted lateral accel is not inflated above road speed."""
-  v_ego = max(float(v_ego), 0.1)
-  v_cap = v_ego * 1.08 + 1.5
-  return np.minimum(np.asarray(vel_plan, dtype=np.float64), v_cap)
-
-
-def compute_actual_lat_accel(v_ego: float, curvature: float) -> float:
-  """Lateral acceleration from measured path curvature (steering / yaw). a = v²κ."""
-  v_ego = max(float(v_ego), 0.1)
-  return v_ego ** 2 * abs(float(curvature))
-
-
-def compute_steer_angle_lat_accel(v_ego: float, steer_angle_deg: float, angle_offset_deg: float,
-                                  steer_ratio: float, wheelbase: float) -> float:
-  """Lateral accel from bicycle-model steering angle. Same form as limit_accel_in_turns."""
-  v_ego = max(float(v_ego), 0.1)
-  return v_ego ** 2 * kappa_from_steer_angle(steer_angle_deg, angle_offset_deg, steer_ratio, wheelbase)
-
-
-_SCC_KAPPA_VEL_MIN = 1.0  # m/s, floor when converting yaw-rate → κ
-_SCC_KAPPA_EPS = 1e-4
-_SCC_CURVE_TARGET_ACCEL = -1.2  # m/s² comfort brake (scaled by personality)
-_SCC_CURVE_DIST_OFFSET_S = 2.0  # s * v_corner extra distance margin (was 1.0; raised 2026-08-26 to start curve braking earlier)
-_SCC_CURVE_A_MIN = -1.2
-_SCC_CURVE_A_MAX = 0.6
-_SCC_CURVE_LOOKAHEAD_T = 10.0  # s, full model plan horizon
-
-
-def kappa_from_steer_angle(steer_angle_deg: float, angle_offset_deg: float,
-                           steer_ratio: float, wheelbase: float) -> float:
-  """Bicycle-model curvature from measured steering wheel angle. κ = |δ| / (SR · WB)."""
-  from openpilot.common.constants import CV
-  steer_ratio = max(float(steer_ratio), 1e-3)
-  wheelbase = max(float(wheelbase), 1e-3)
-  angle_rad = (float(steer_angle_deg) - float(angle_offset_deg)) * CV.DEG_TO_RAD
-  return abs(angle_rad) / (steer_ratio * wheelbase)
-
-
-def build_plan_kappa_traj(yaw_rate_z, vel_plan, min_v: float = _SCC_KAPPA_VEL_MIN) -> np.ndarray:
-  """Plan curvature trajectory. κ[i] = |yaw_rate[i]| / max(v[i], min_v) — same as curvature_lead."""
-  yaw = np.abs(np.asarray(yaw_rate_z, dtype=np.float64).reshape(-1))
-  vel = np.asarray(vel_plan, dtype=np.float64).reshape(-1)
-  n = min(len(yaw), len(vel))
-  if n == 0:
-    return np.zeros(0, dtype=np.float64)
-  return yaw[:n] / np.maximum(np.abs(vel[:n]), float(min_v))
-
-
-def _scc_curve_brake_accel(personality=log.LongitudinalPersonality.standard) -> float:
-  return float(_SCC_CURVE_TARGET_ACCEL * get_scc_accel_scale(personality))
-
-
-def _scc_decel_reach_distance(v_ego: float, v_corner: float, a_brake: float) -> float:
-  """Distance within which comfort braking must start to hit v_corner (plus time offset)."""
-  v_ego = max(float(v_ego), 0.1)
-  v_corner = max(float(v_corner), 0.0)
-  if v_ego <= v_corner:
-    return 0.0
-  a = min(float(a_brake), -0.1)
-  return (v_ego ** 2 - v_corner ** 2) / (2.0 * abs(a)) + v_corner * _SCC_CURVE_DIST_OFFSET_S
-
-
-def plan_curve_speed_from_kappa_traj(
-    v_ego: float,
-    a_ego: float,
-    kappa_traj,
-    position_x,
-    t_idxs,
-    kappa_now: float,
-    personality=log.LongitudinalPersonality.standard,
-    min_v: float = 0.0,
-    max_lookahead_t: float = _SCC_CURVE_LOOKAHEAD_T,
-) -> tuple[float, float, float, int, bool]:
-  """Plan curve speed from current + future curvature (κ-native, no steer-angle traj).
-
-  Returns (v_target, a_target, peak_kappa, peak_idx, has_constraint).
-  """
-  a_lat = get_scc_lat_accel_max(personality)
-  a_brake = _scc_curve_brake_accel(personality)
-  a_min = float(_SCC_CURVE_A_MIN * get_scc_accel_scale(personality))
-  v_ego = max(float(v_ego), 0.1)
-  kappa_th = get_scc_early_enter_lat_acc_th(personality) / (v_ego ** 2)
-
-  kappa = np.asarray(kappa_traj, dtype=np.float64).reshape(-1)
-  pos = np.asarray(position_x, dtype=np.float64).reshape(-1)
-  t = np.asarray(t_idxs, dtype=np.float64).reshape(-1)
-  n = int(min(len(kappa), len(pos), len(t)))
-
-  v_limit = v_ego
-  peak_kappa = 0.0
-  peak_idx = 0
-  has_constraint = False
-  binding_d = 0.0
-
-  kappa_now = max(float(kappa_now), 0.0)
-  if kappa_now > kappa_th:
-    v_now = max(float(min_v), float(np.sqrt(a_lat / max(kappa_now, _SCC_KAPPA_EPS))))
-    if v_now < v_limit:
-      v_limit = v_now
-      has_constraint = True
-      binding_d = 0.0
-
-  for i in range(n):
-    if float(t[i]) > float(max_lookahead_t):
-      break
-    k = float(kappa[i])
-    if k > peak_kappa:
-      peak_kappa = k
-      peak_idx = i
-    if k <= kappa_th:
-      continue
-    v_corner = max(float(min_v), float(np.sqrt(a_lat / max(k, _SCC_KAPPA_EPS))))
-    d = max(float(pos[i]), 0.0)
-    if v_ego > v_corner and d <= _scc_decel_reach_distance(v_ego, v_corner, a_brake):
-      if v_corner < v_limit:
-        v_limit = v_corner
-        has_constraint = True
-        binding_d = d
-
-  if not has_constraint:
-    return v_ego, max(0.0, float(a_ego)), peak_kappa, peak_idx, False
-
-  v_target = max(float(min_v), min(v_ego, v_limit))
-  if v_ego <= v_target:
-    a_cmd = min(float(_SCC_CURVE_A_MAX), max(0.0, float(a_ego)))
-  elif binding_d < 1.0:
-    a_cmd = a_brake
-  else:
-    a_cmd = (v_target ** 2 - v_ego ** 2) / (2.0 * max(binding_d, 1.0))
-  a_cmd = float(np.clip(a_cmd, a_min, float(_SCC_CURVE_A_MAX)))
-  return v_target, a_cmd, peak_kappa, peak_idx, True
-
-
-_LAT_CAPABILITY_TRACKING_FACTOR = 0.95
-_LAT_CAPABILITY_KAPPA_EPS = 1e-4
-
-# Model curve uncertainty (orientationRate.zStd → lat-accel σ ≈ zStd * v).
-_CURVE_UNCERTAINTY_GAIN = 1.0          # add 1σ to effective predicted lat accel
-_CURVE_UNCERTAINTY_V_SCALE_MAX = 0.18  # up to 18% extra speed cut
-_CURVE_UNCERTAINTY_REF = 1.0          # m/s² σ that maps to full scale-down
-
-
-def compute_curve_lat_acc_uncertainty(z_std, vel_plan, mask=None) -> float:
-  """Mean predicted lateral-accel std from yaw-rate std and planned speed."""
-  z_std = np.asarray(z_std, dtype=np.float64).reshape(-1)
-  vel = np.asarray(vel_plan, dtype=np.float64).reshape(-1)
-  n = min(len(z_std), len(vel))
-  if n == 0:
-    return 0.0
-  z_std = np.abs(z_std[:n])
-  vel = np.abs(vel[:n])
-  if mask is not None:
-    m = np.asarray(mask, dtype=bool).reshape(-1)[:n]
-    if np.any(m):
-      z_std = z_std[m]
-      vel = vel[m]
-    else:
-      return 0.0
-  return float(np.mean(z_std * vel))
-
-
-def inflate_lat_acc_with_uncertainty(lat_acc: float, lat_acc_unc: float,
-                                     gain: float = _CURVE_UNCERTAINTY_GAIN) -> float:
-  """Raise effective lat accel by a multiple of prediction uncertainty (safer v_corner)."""
-  return max(0.0, float(lat_acc)) + float(gain) * max(0.0, float(lat_acc_unc))
-
-
-def inflate_pred_lat_accels_with_uncertainty(predicted_lat_accels: np.ndarray, z_std, vel_plan,
-                                             gain: float = _CURVE_UNCERTAINTY_GAIN) -> np.ndarray:
-  """Per-horizon: a_eff = a_pred + gain * zStd * v."""
-  pred = np.asarray(predicted_lat_accels, dtype=np.float64).copy()
-  z_std = np.asarray(z_std, dtype=np.float64).reshape(-1)
-  vel = np.asarray(vel_plan, dtype=np.float64).reshape(-1)
-  n = min(len(pred), len(z_std), len(vel))
-  if n == 0:
-    return pred
-  pred[:n] = pred[:n] + float(gain) * np.abs(z_std[:n]) * np.abs(vel[:n])
-  return pred
-
-
-def apply_model_uncertainty_v_cap(v_target: float, lat_acc_unc: float, min_v: float = 0.,
-                                  ref_unc: float = _CURVE_UNCERTAINTY_REF,
-                                  max_scale: float = _CURVE_UNCERTAINTY_V_SCALE_MAX) -> float:
-  """Scale down curve speed as lat-accel prediction uncertainty rises."""
-  u = float(np.clip(float(lat_acc_unc) / max(float(ref_unc), 1e-3), 0.0, 1.0))
-  factor = 1.0 - float(max_scale) * u
-  return max(float(min_v), float(v_target) * factor)
-
-
-def apply_lat_capability_v_cap(v_target: float, v_ego: float, desired_curvature: float, curvature: float,
-                               saturated: bool, personality=log.LongitudinalPersonality.standard,
-                               min_v: float = 0.) -> float:
-  """Lower curve speed when lateral demand exceeds OP capability / comfort a_lat_max."""
-  v_target = max(float(v_target), 0.0)
-  v_ego = max(float(v_ego), 0.1)
-  a_lat_max = get_scc_lat_accel_max(personality)
-  kappa_des = abs(float(desired_curvature))
-  kappa_act = abs(float(curvature))
-  a_des = v_ego ** 2 * kappa_des
-
-  v_cap = v_target
-  if saturated or a_des > a_lat_max:
-    v_cap = float(np.sqrt(a_lat_max / max(kappa_des, _LAT_CAPABILITY_KAPPA_EPS)))
-    if kappa_des > kappa_act * 1.15 and kappa_des > _LAT_CAPABILITY_KAPPA_EPS:
-      v_cap *= _LAT_CAPABILITY_TRACKING_FACTOR
-
-  return max(float(min_v), min(v_target, v_cap))
-
-
-# While still mostly straight, trust most of the vision lat-accel prediction so curve
-# speed can drop before measured steering builds. Actual still blends in to reject noise.
-_SCC_MODEL_TRUST_STRAIGHT = 0.70
-
-
-def combine_scc_model_actual_lat_acc(model_lat_acc: float, actual_lat_acc: float,
-                                     personality=log.LongitudinalPersonality.standard) -> float:
-  """Fuse model and steering-based lateral accel for SCC passable speed.
-
-  When the vehicle is turning, actual steering can exceed a lagging model estimate.
-  When the vehicle is still mostly straight, soft-blend model with actual (instead of a
-  hard abort-threshold cap) so upcoming curves can slow earlier without fully trusting
-  single-frame model spikes.
-  """
-  actual_th = get_scc_abort_enter_lat_acc_th(personality)
-  model_lat_acc = max(float(model_lat_acc), 0.0)
-  actual_lat_acc = max(float(actual_lat_acc), 0.0)
-  if actual_lat_acc > actual_th:
-    return max(model_lat_acc, actual_lat_acc)
-  return (_SCC_MODEL_TRUST_STRAIGHT * model_lat_acc +
-          (1.0 - _SCC_MODEL_TRUST_STRAIGHT) * actual_lat_acc)
-
-
-def compute_scc_passable_speed(v_ego: float, max_pred_lat_acc: float,
-                               personality=log.LongitudinalPersonality.standard,
-                               min_v: float = 0.) -> float:
-  """Max speed that can navigate a curve with predicted lateral accel max_pred_lat_acc."""
-  a_lat = get_scc_lat_accel_max(personality)
-  max_pred = max(float(max_pred_lat_acc), 1e-3)
-  v_ref = max(float(v_ego), 0.1)
-  return max(min_v, v_ref * float(np.sqrt(a_lat / max_pred)))
-
-
-def compute_scc_curve_v_target(v_ego: float, max_pred_lat_acc: float,
-                             personality=log.LongitudinalPersonality.standard,
-                             min_v: float = 0.,
-                             position_x: np.ndarray | None = None,
-                             predicted_lat_accels: np.ndarray | None = None,
-                             vel_plan: np.ndarray | None = None) -> float:
-  """Return a speed cap for the curve. If v_ego is already at or below the passable speed, no decel."""
-  v_ego = max(float(v_ego), 0.1)
-  a_lat = get_scc_lat_accel_max(personality)
-  v_limit = compute_scc_passable_speed(v_ego, max_pred_lat_acc, personality, min_v)
-
-  curve_th = get_scc_early_enter_lat_acc_th(personality)
-  if predicted_lat_accels is not None:
-    pred = np.asarray(predicted_lat_accels, dtype=np.float64)
-    if vel_plan is None:
-      vel = np.full_like(pred, v_ego)
-    else:
-      vel = np.asarray(vel_plan[:len(pred)], dtype=np.float64)
-
-    for a_pred, v_plan_pt in zip(pred, vel):
-      if a_pred <= curve_th:
-        continue
-      v_pass = max(min_v, float(v_plan_pt) * np.sqrt(a_lat / a_pred))
-      v_limit = min(v_limit, v_pass)
-
-  v_limit *= _SCC_PASSABLE_SPEED_FACTOR
-
-  if v_ego <= v_limit:
-    return v_ego
-  return max(min_v, min(v_ego, v_limit))
-
-
 def get_stopped_equivalence_factor(v_lead):
   return (v_lead**2) / (2 * COMFORT_BRAKE)
 
-
-def get_stop_distance_for_pitch(pitch: float) -> float:
-  """Return fixed stop distance regardless of pitch."""
-  return STOP_DISTANCE_FLAT
-
-
-class RoadPitchFilter:
-  def __init__(self):
-    self.pitch = 0.0
-    self.initialized = False
-
-  def reset(self):
-    self.pitch = 0.0
-    self.initialized = False
-
-  def update(self, orientation_ned) -> float | None:
-    if orientation_ned is None or len(orientation_ned) != 3:
-      return None
-    new_pitch = orientation_ned[1]
-    if not self.initialized:
-      self.pitch = new_pitch
-      self.initialized = True
-    else:
-      alpha = PITCH_SMOOTH_ALPHA_UP if new_pitch > self.pitch else PITCH_SMOOTH_ALPHA_DOWN
-      self.pitch = alpha * new_pitch + (1.0 - alpha) * self.pitch
-    return self.pitch
-
-
-def get_coast_accel(pitch):
-  return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
-
-
 def get_safe_obstacle_distance(v_ego, t_follow):
-  stop_dist = STOP_DISTANCE_FLAT
-  kinetic = (v_ego**2) / (2 * COMFORT_BRAKE)
-  headway = t_follow * v_ego
-  moving_dist = kinetic + headway + stop_dist
-  try:
-    from casadi import MX, SX, if_else
-    if isinstance(v_ego, (SX, MX)):
-      return if_else(v_ego >= STANDSTILL_HEADWAY_SPEED, moving_dist, stop_dist)
-  except ImportError:
-    pass
-  v_arr = np.asarray(v_ego, dtype=float)
-  return np.where(v_arr >= STANDSTILL_HEADWAY_SPEED, moving_dist, stop_dist)
+  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
 
 def gen_long_model():
   model = AcadosModel()
@@ -737,10 +314,14 @@ class LongitudinalMpc:
       self.solver.set(i, 'x', np.zeros(X_DIM))
 
     self.last_cloudlog_t = 0
+    self.status = False
     self.crash_cnt = 0.0
     self.solution_status = 0
     # timers
     self.solve_time = 0.0
+    self.time_qp_solution = 0.0
+    self.time_linearization = 0.0
+    self.time_integrator = 0.0
     self.x0 = np.zeros(X_DIM)
     self.set_weights()
 
@@ -760,14 +341,11 @@ class LongitudinalMpc:
     for i in range(N):
       self.solver.cost_set(i, 'Zl', Zl)
 
-  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard,
-                  obstacle_cost=X_EGO_OBSTACLE_COST, danger_cost=DANGER_ZONE_COST):
-    self._prev_accel_constraint = prev_accel_constraint
-    self._personality = personality
+  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
     jerk_factor = get_jerk_factor(personality)
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
-    cost_weights = [obstacle_cost, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
-    constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, danger_cost]
+    cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
+    constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     self.set_cost_weights(cost_weights, constraint_cost_weights)
 
   def set_cur_state(self, v, a):
@@ -803,38 +381,19 @@ class LongitudinalMpc:
     # MPC will not converge if immediate crash is expected
     # Clip lead distance to what is still possible to brake for
     min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead) * (v_ego - v_lead) / (-ACCEL_MIN * 2)
-    # 只有前车已停止时才强制最小停车距离
-    if v_lead < 0.5:  # 前车速度<0.5m/s(约2km/h)视为停止
-      min_x_lead = max(min_x_lead, STOP_DISTANCE_FLAT)
     x_lead = np.clip(x_lead, min_x_lead, 1e8)
     v_lead = np.clip(v_lead, 0.0, 1e8)
     a_lead = np.clip(a_lead, -10., 5.)
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
-             pitch: float | None = None, t_follow: float | None = None):
-    if t_follow is None:
-      t_follow = get_T_FOLLOW(personality)
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard):
+    t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
+    self.status = radarstate.leadOne.status or radarstate.leadTwo.status
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)
-
-    # Stopped lead at speed: brake earlier and harder (vision-only leads otherwise
-    # start braking late for stationary cars detected at close range).
-    lead_0 = radarstate.leadOne
-    stopped_lead = lead_0 is not None and lead_0.status and lead_0.vLead < 1.0
-    if stopped_lead and v_ego > STOPPED_LEAD_ENHANCE_V:
-      # Pre-deceleration for stationary cars: higher gap tracking, farther danger
-      # zone and a longer follow headway so braking starts early at ANY speed.
-      self.set_weights(self._prev_accel_constraint, self._personality,
-                       obstacle_cost=STOPPED_LEAD_OBSTACLE_COST,
-                       danger_cost=STOPPED_LEAD_DANGER_COST)
-      danger_factor = STOPPED_LEAD_DANGER_FACTOR
-      t_follow = max(t_follow, STOPPED_LEAD_T_FOLLOW)
-    else:
-      danger_factor = LEAD_DANGER_FACTOR
 
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
@@ -844,13 +403,11 @@ class LongitudinalMpc:
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.
-    cruise_min = get_cruise_min_accel(personality)
-    cruise_max = get_cruise_max_accel(personality)
-    v_lower = v_ego + (T_IDXS * cruise_min * 1.05)
-    v_upper = v_ego + (T_IDXS * cruise_max * 1.05)
+    v_lower = v_ego + (T_IDXS * CRUISE_MIN_ACCEL * 1.05)
+    # TODO does this make sense when max_a is negative?
+    v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
-    cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(
-      v_cruise_clipped, t_follow)
+    cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
@@ -865,16 +422,11 @@ class LongitudinalMpc:
     self.params[:,2] = np.min(x_obstacles, axis=1)
     self.params[:,3] = np.copy(self.a_prev)
     self.params[:,4] = t_follow
-    self.params[:,5] = danger_factor
+    self.params[:,5] = LEAD_DANGER_FACTOR
 
     self.run()
-    # FCW gate: high vision confidence, or a *moving* radar lead.
-    # Stationary radar-only tracks (common Ford MRR clutter) previously satisfied
-    # `or radar` and spammed FCW / stock IPC collision warnings.
-    lead = radarstate.leadOne
-    fcw_confident = lead.modelProb > 0.9 or (lead.radar and lead.vLead > 2.0)
     if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
-            fcw_confident):
+            radarstate.leadOne.modelProb > 0.9):
       self.crash_cnt += 1
     else:
       self.crash_cnt = 0
@@ -887,6 +439,9 @@ class LongitudinalMpc:
 
     self.solution_status = self.solver.solve()
     self.solve_time = float(self.solver.get_stats('time_tot')[0])
+    self.time_qp_solution = float(self.solver.get_stats('time_qp')[0])
+    self.time_linearization = float(self.solver.get_stats('time_lin')[0])
+    self.time_integrator = float(self.solver.get_stats('time_sim')[0])
 
     for i in range(N+1):
       self.x_sol[i] = self.solver.get(i, 'x')
