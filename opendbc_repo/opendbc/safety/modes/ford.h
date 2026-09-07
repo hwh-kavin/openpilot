@@ -951,15 +951,13 @@ static safety_config ford_init(uint16_t param) {
   const uint16_t FORD_PARAM_CANFD = 2;
   const bool ford_canfd = GET_FLAG(param, FORD_PARAM_CANFD);
 
-  bool ford_longitudinal = false;
-
-#ifdef ALLOW_DEBUG
+  // BluePilot: OP longitudinal is a supported feature on both classic CAN and CAN FD Fords.
+  // Longitudinal is the default for classic CAN (Q3), and controlled by the LONG_CONTROL safety
+  // param bit (set by interfaces_ext.py when openpilotLongitudinalControl is enabled) on CAN FD
+  // (Q4). Previously this read was gated behind ALLOW_DEBUG, which silently blocked ACCDATA TX
+  // (no longitudinal) on RELEASE pandas.
   const uint16_t FORD_PARAM_LONGITUDINAL = 1;
-  ford_longitudinal = GET_FLAG(param, FORD_PARAM_LONGITUDINAL);
-#endif
-
-  // Longitudinal is the default for CAN, and optional for CAN FD w/ ALLOW_DEBUG
-  // ford_longitudinal = !ford_canfd || ford_longitudinal;
+  const bool ford_longitudinal = !ford_canfd || GET_FLAG(param, FORD_PARAM_LONGITUDINAL);
 
   // BluePilot: steering-angle curvature measurement (bad-yaw-sensor workaround), read from
   // the sunnypilot SP safety param (current_safety_param_sp, delivered via USB 0xdf before

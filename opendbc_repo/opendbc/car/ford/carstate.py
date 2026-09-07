@@ -167,7 +167,8 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     ]
 
     # BluePilot: HEV telemetry and brake light status (delegated to carstate_ext)
-    self.car_state_bp_msg = CarStateExt.update_car_state_bp(self, cp, cp_cam)
+    # NOTE: carStateBP cereal message is not defined/published yet — do not build it,
+    # otherwise card crashes with "struct has no such member; name = carStateBP".
     return ret, ret_sp
 
   @staticmethod

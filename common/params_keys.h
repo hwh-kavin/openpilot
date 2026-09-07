@@ -160,6 +160,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"BPPortalPort", {PERSISTENT | BACKUP, INT, "80"}},
     {"BPPortalCrashCount", {PERSISTENT, INT, "0"}},
     {"BPPortalLastCrash", {PERSISTENT, INT, "0"}},
+    // BluePilot backend / portal (used by bluepilot/backend & UI widgets)
+    {"BPLastSeenVersion", {PERSISTENT, STRING, ""}},
+    {"EnableWebRoutesServer", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"EnableTethering", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"IsOnRoad", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    {"FordPrefEnableDebugLogs", {PERSISTENT, BOOL, "0"}},
     {"EnableGithubRunner", {PERSISTENT | BACKUP, BOOL}},
     {"GreenLightAlert", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"GithubRunnerSufficientVoltage", {CLEAR_ON_MANAGER_START , BOOL}},
@@ -189,9 +195,18 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"UiAlertLogEnable", {PERSISTENT | BACKUP, BOOL, "0"}},
     // Ford stock ACC + OP longitudinal fusion (developer)
     {"FordStockAccFusion", {PERSISTENT | BACKUP, BOOL, "0"}},
+    // BluePilot Ford HEV telemetry availability flags (written by CarState at startup)
+    {"FordPrefHevDataAvailable", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    {"FordPrefHevBattDataAvailable", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
+    // BluePilot Ford longitudinal toggles (UI)
+    {"disable_BP_long_UI", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"disable_downhill_comp_UI", {PERSISTENT | BACKUP, BOOL, "0"}},
+    // BluePilot Ford hands-free cluster message (CAN FD only)
+    {"send_hands_free_cluster_msg", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // BluePilot Ford lateral control (curvature-primary / angle-primary)
     {"FordPrefLateralControl", {PERSISTENT | BACKUP, INT, "0"}},
+    {"disable_BP_lat_UI", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"enable_human_turn_detection_curv", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"lane_change_factor_high_curv", {PERSISTENT | BACKUP, FLOAT, "0.85"}},
     {"pc_blend_ratio_high_C_UI_curv", {PERSISTENT | BACKUP, FLOAT, "0.4"}},
