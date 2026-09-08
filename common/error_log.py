@@ -31,7 +31,8 @@ def append_error_log(line: str, *, check_enable: bool = True, params: Params | N
     os.makedirs(log_dir, exist_ok=True)
     path = os.path.join(log_dir, "error.log")
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    entry = f"[{ts}] {html.escape(line)}<br>\n"
+    escaped = "<br>".join(html.escape(l) for l in line.splitlines())
+    entry = f"[{ts}] {escaped}<br>\n"
 
     with open(path, "a", encoding="utf-8") as f:
       f.write(entry)

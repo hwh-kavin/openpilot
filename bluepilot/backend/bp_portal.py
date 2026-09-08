@@ -3383,6 +3383,11 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                                 with open(error_log_path, 'r') as f:
                                     content = f.read()
 
+                                # error.log is stored as HTML (entries end with <br>); convert
+                                # to plain text so the web modal can render it inside <pre>.
+                                content = re.sub(r"<br\s*/?>", "\n", content)
+                                content = re.sub(r"<[^>]+>", "", content)
+
                                 # Get file modification time
                                 mtime = os.path.getmtime(error_log_path)
                                 modified_date = datetime.fromtimestamp(mtime).strftime('%d-%b-%Y %I:%M:%S %p').upper()

@@ -10,6 +10,7 @@ from msgq.visionipc import VisionIpcClient, VisionStreamType
 
 
 from openpilot.common.params import Params
+from openpilot.common.error_log import append_error_log
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper, DT_CTRL
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.gps import get_gps_location_service
@@ -124,6 +125,10 @@ class SelfdriveD(CruiseHelper):
     self.is_metric = self.params.get_bool("IsMetric")
     self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
     self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
+    # Cached here and refreshed by params_thread — do NOT read these in the 100Hz
+    # update_events hot path (Params.get is a synchronous disk read per call).
+    self.dm_enabled = self.params.get_bool("DriverModelEnable")
+    self.ford_auto_follow_gap = is_ford_auto_follow_gap(self.params, self.CP)
 
     car_recognized = self.CP.brand != 'mock'
 
@@ -165,6 +170,12 @@ class SelfdriveD(CruiseHelper):
     # Already past holdoff at boot; only arms after visiting P/R/N
     self.gear_recovery_frames = GEAR_RECOVERY_HOLDOFF
     self.rk = Ratekeeper(100, print_delay_threshold=None)
+
+    # BluePilot: one-shot diagnostic for selfdrivedLagging (System Lagging)
+    self.lagging_logged = False
+
+    # BluePilot: rising-edge for Ford stock-ACC fusion fault → Developer error log
+    self.acc_faulted_last = False
 
     self.ignored_processes = {'mapd', }
 
@@ -239,7 +250,7 @@ class SelfdriveD(CruiseHelper):
       self.events.add(EventName.resumeBlocked)
 
     # Handle DM
-    if not self.CP.notCar and not self.params.get_bool("DriverModelEnable"):
+    if not self.CP.notCar and not self.dm_enabled:
       # Block engaging until ignition cycle after max number or time of distractions
       if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
         self.params.put_bool("DriverTooDistracted", True)
@@ -280,6 +291,12 @@ class SelfdriveD(CruiseHelper):
         (CS.brakePressed and (not self.CS_prev.brakePressed or not CS.standstill)) or \
         (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill)):
         self.events.add(EventName.pedalPressed)
+
+      # BluePilot: mirror the Ford stock-ACC fusion fault diagnostic into the
+      # Developer → Error Log (rising edge only; respects UiAlertLogEnable toggle).
+      if CS.accFaulted and not self.acc_faulted_last:
+        append_error_log("Ford stock ACC faulted (CCM CcStat_D_Actl denied)")
+      self.acc_faulted_last = CS.accFaulted
 
     # Create events for temperature, disk space, and memory
     if self.sm['deviceState'].thermalStatus >= ThermalStatus.overheated:
@@ -401,6 +418,11 @@ class SelfdriveD(CruiseHelper):
           self.events.add(EventName.cameraFrameRate)
     if not REPLAY and self.rk.lagging:
       self.events.add(EventName.selfdrivedLagging)
+      if not self.lagging_logged:
+        self.lagging_logged = True
+        cloudlog.event("selfdrived.lagging", frame=self.sm.frame, alive=len(self.sm.alive), error=True)
+    else:
+      self.lagging_logged = False
     ignore_gear_faults = self._ignore_gear_transition_faults(CS)
     if self.sm['radarState'].radarErrors.canError:
       self.events.add(EventName.canError)
@@ -439,7 +461,6 @@ class SelfdriveD(CruiseHelper):
         cloudlog.event("commIssue", error=True, **logs)
         self.logged_comm_issue = logs
         try:
-          from openpilot.common.error_log import append_error_log
           append_error_log(
             "commIssue invalid=%s not_alive=%s not_freq_ok=%s" % (
               logs['invalid'], logs['not_alive'], logs['not_freq_ok']),
@@ -593,7 +614,8 @@ class SelfdriveD(CruiseHelper):
     return CS
 
   def _ford_auto_follow_gap(self) -> bool:
-    return is_ford_auto_follow_gap(self.params, self.CP)
+    # Cached by params_thread; avoid a per-cycle Params disk read in update_events.
+    return self.ford_auto_follow_gap
 
   def update_alerts(self, CS):
     clear_event_types = set()
@@ -744,6 +766,8 @@ class SelfdriveD(CruiseHelper):
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
       self.personality = self.params.get("LongitudinalPersonality", return_default=True)
+      self.dm_enabled = self.params.get_bool("DriverModelEnable")
+      self.ford_auto_follow_gap = is_ford_auto_follow_gap(self.params, self.CP)
 
       self.mads.read_params()
       time.sleep(0.1)
@@ -762,7 +786,12 @@ class SelfdriveD(CruiseHelper):
 
 
 def main():
-  config_realtime_process(4, Priority.CTRL_HIGH)
+  # Upstream pins card + controlsd + selfdrived together on core 4 (all 100Hz,
+  # SCHED_FIFO CTRL_HIGH). selfdrived is the least timing-critical of the three;
+  # move it to isolated big core 6 alongside camerad (SCHED_OTHER, non-RT, and
+  # lighter with driver monitoring disabled) so core 4 keeps only the card/controlsd
+  # control I/O chain.
+  config_realtime_process(6, Priority.CTRL_HIGH)
   s = SelfdriveD()
   s.run()
 

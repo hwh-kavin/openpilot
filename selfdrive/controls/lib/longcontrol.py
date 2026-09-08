@@ -1,9 +1,10 @@
 import numpy as np
-from cereal import car
+from cereal import car, log
 from openpilot.common.realtime import DT_CTRL
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.common.pid import PIDController
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_start_accel
 
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
@@ -14,6 +15,12 @@ def long_control_state_trans(CP, CP_SP, active, long_control_state, v_ego,
                              should_stop, brake_pressed, cruise_standstill):
   # Gas Interceptor
   cruise_standstill = cruise_standstill and not CP_SP.enableGasInterceptor
+
+  # Once the planner wants to go, do not stay locked in stopping solely because
+  # the PCM still reports cruise standstill. controlsd sends resume; holding
+  # stopAccel deadlocks some PCMs (Ford AccStopMde with stock ACC fusion).
+  if CP.autoResumeSng and not should_stop:
+    cruise_standstill = False
 
   stopping_condition = should_stop
   starting_condition = (not should_stop and
@@ -60,7 +67,8 @@ class LongControl:
   def reset(self):
     self.pid.reset()
 
-  def update(self, active, CS, a_target, should_stop, accel_limits):
+  def update(self, active, CS, a_target, should_stop, accel_limits,
+             personality=log.LongitudinalPersonality.standard):
     """Update longitudinal control. This updates the state machine and runs a PID loop"""
     self.pid.neg_limit = accel_limits[0]
     self.pid.pos_limit = accel_limits[1]
@@ -80,7 +88,7 @@ class LongControl:
       self.reset()
 
     elif self.long_control_state == LongCtrlState.starting:
-      output_accel = self.CP.startAccel
+      output_accel = get_start_accel(personality, self.CP.startAccel)
       self.reset()
 
     else:  # LongCtrlState.pid

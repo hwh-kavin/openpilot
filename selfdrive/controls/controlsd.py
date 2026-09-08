@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import time
 from numbers import Number
 
 from cereal import car, log
@@ -20,6 +21,7 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongControl
 from openpilot.selfdrive.modeld.modeld import LAT_SMOOTH_SECONDS
 from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
+from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 from openpilot.sunnypilot.selfdrive.controls.lib.curvature_lead import apply_curvature_lead, apply_curvature_exit_lead
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
@@ -70,6 +72,11 @@ class Controls(ControlsExt):
 
     self.LaC = ControlsExt.initialize_lateral_control(self, self.LaC, self.CI, DT_CTRL)
     self._ford_follow_bars = FordFollowBarsDisplay()
+
+    # FordStockAccFusion is a persistent param; cache it instead of a per-cycle
+    # Params disk read in publish() (100Hz hot path on core 4).
+    self._ford_auto_follow_gap = is_ford_auto_follow_gap(self.params, self.CP)
+    self._ford_auto_follow_gap_time = 0.0
 
   def update(self):
     self.sm.update(15)
@@ -141,7 +148,8 @@ class Controls(ControlsExt):
     pid_accel_limits = self.CI.get_pid_accel_limits(self.CP, self.CP_SP, CS.vEgo, CS.vCruise * CV.KPH_TO_MS)
     personality = self.sm['selfdriveState'].personality
     actuators.accel = float(self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop,
-                                             pid_accel_limits))
+                                             pid_accel_limits,
+                                             personality=personality))
 
     # Steering PID loop and lateral MPC
     # When lat inactive (incl. HTD pause): snap desired to current wheel curvature so
@@ -203,7 +211,10 @@ class Controls(ControlsExt):
     hudControl.speedVisible = CC.enabled
     hudControl.lanesVisible = CC.enabled
     hudControl.leadVisible = self.sm['longitudinalPlan'].hasLead
-    if is_ford_auto_follow_gap(self.params, self.CP):
+    if time.monotonic() - self._ford_auto_follow_gap_time > PARAMS_UPDATE_PERIOD:
+      self._ford_auto_follow_gap = is_ford_auto_follow_gap(self.params, self.CP)
+      self._ford_auto_follow_gap_time = time.monotonic()
+    if self._ford_auto_follow_gap:
       at_standstill = CS.standstill or CS.cruiseState.standstill
       hudControl.leadDistanceBars = self._ford_follow_bars.update(CS.vEgo, at_standstill)
     else:

@@ -56,16 +56,23 @@ def save_exception(content: str) -> None:
 
     files = [
       os.path.join(CRASHES_DIR, datetime.now().strftime("%Y-%m-%d--%H-%M-%S.log")),
-      os.path.join(CRASHES_DIR, "error.log")
+      os.path.join(CRASHES_DIR, "crash_latest.log"),
     ]
 
     for fn in files:
       with open(fn, 'w') as f:
-        if fn == "error.log":
-          lines = content.splitlines()[-3:]
-          f.write("\n".join(lines))
+        if os.path.basename(fn) == "crash_latest.log":
+          f.write("\n".join(content.splitlines()[-3:]))
         else:
           f.write(content)
+
+    # BluePilot: crashes must also show up in the Developer → Error Log viewer.
+    # error.log is append-only HTML managed by common/error_log.py — never overwrite it.
+    try:
+      from openpilot.common.error_log import append_error_log
+      append_error_log(f"Process crash:\n{content}", check_enable=False)
+    except Exception:
+      pass
 
     cloudlog.error(f"logged crash to {files}")
   except Exception:

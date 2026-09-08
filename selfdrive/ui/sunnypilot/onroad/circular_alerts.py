@@ -29,6 +29,7 @@ class CircularAlertsRenderer:
     self._alert_text = ""
     self._alert_img = None
     self._allow_e2e_alerts = False
+    self._allow_standstill_timer = False
 
   def update(self) -> None:
     sm = ui_state.sm
@@ -43,6 +44,11 @@ class CircularAlertsRenderer:
 
     self._allow_e2e_alerts = sm['selfdriveState'].alertSize == log.SelfdriveState.AlertSize.none and \
                              sm.recv_frame['driverStateV2'] > ui_state.started_frame
+
+    # Standstill timer must not depend on driverStateV2: dmonitoringmodeld is stopped
+    # when driver monitoring is disabled (DriverModelEnable), which would hide the timer.
+    self._allow_standstill_timer = ui_state.standstill_timer and self._is_standstill and \
+                                   sm['selfdriveState'].alertSize == log.SelfdriveState.AlertSize.none
 
     if self._green_light_alert or self._lead_depart_alert:
       self._e2e_alert_display_timer = 3 * gui_app.target_fps
@@ -78,21 +84,22 @@ class CircularAlertsRenderer:
   def _log_circular_alert(self) -> None:
     alert_id = None
     text = ""
-    if self._allow_e2e_alerts:
-      if self._e2e_alert_display_timer > 0:
-        if self._green_light_alert:
-          alert_id = "green_light"
-        elif self._lead_depart_alert:
-          alert_id = "lead_depart"
-        text = self._alert_text
-      elif ui_state.standstill_timer and self._is_standstill:
-        alert_id = "standstill"
-        text = self._alert_text
+    if self._allow_e2e_alerts and self._e2e_alert_display_timer > 0:
+      if self._green_light_alert:
+        alert_id = "green_light"
+      elif self._lead_depart_alert:
+        alert_id = "lead_depart"
+      text = self._alert_text
+    elif self._allow_standstill_timer and self._e2e_alert_display_timer == 0:
+      alert_id = "standstill"
+      text = self._alert_text
 
     ui_alert_logger.log_circular(alert_id, text)
 
   def render(self, rect: rl.Rectangle) -> None:
-    if not self._allow_e2e_alerts or (self._e2e_alert_display_timer <= 0 and not (ui_state.standstill_timer and self._is_standstill)):
+    show_alert = self._allow_e2e_alerts and self._e2e_alert_display_timer > 0
+    show_standstill = self._allow_standstill_timer and self._e2e_alert_display_timer == 0
+    if not (show_alert or show_standstill):
       return
 
     e2e_alert_size = 250

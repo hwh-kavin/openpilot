@@ -89,6 +89,17 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     raise NotImplementedError("Longitudinal personality not supported")
 
 
+def get_start_accel(personality, base_start_accel: float) -> float:
+  """Personality-scaled launch accel for the LongCtrlState.starting state."""
+  if personality == log.LongitudinalPersonality.relaxed:
+    factor = 0.55
+  elif personality == log.LongitudinalPersonality.aggressive:
+    factor = 1.25
+  else:
+    factor = 1.0
+  return float(base_start_accel * factor)
+
+
 # Ford + FordStockAccFusion: speed-based stock follow gap (button + OP t_follow)
 # <40 km/h → 1, <70 → 2, <90 → 3, else → 4
 _FORD_AUTO_T_FOLLOW_BY_BARS = {1: 1.20, 2: 1.40, 3: 1.55, 4: 1.70}
