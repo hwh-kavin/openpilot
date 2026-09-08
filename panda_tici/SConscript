@@ -22,6 +22,12 @@ else:
   if os.getenv("DEBUG"):
     common_flags += ["-DDEBUG"]
 
+# Old (panda_tici) comms protocol uses a literal CAN packet version (defined in
+# board/can_declarations.h, which is no longer reachable from main.c's include
+# order since can.h now points at opendbc/safety/can.h). Pass it as a flag so
+# main_comms.h's 0xdd handler compiles.
+common_flags += ["-DCAN_PACKET_VERSION=4"]
+
 def objcopy(source, target, env, for_signature):
     return '$OBJCOPY -O binary %s %s' % (source[0], target[0])
 

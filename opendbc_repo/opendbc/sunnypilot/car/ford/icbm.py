@@ -54,11 +54,11 @@ class IntelligentCruiseButtonManagementInterface(IntelligentCruiseButtonManageme
       # Ford sends button messages at 10Hz (every 0.1s), but we send at 20Hz (every 0.05s) per CarControllerParams.BUTTONS_STEP
       # Only send if enough time has passed since last button press
       if (self.frame - self.last_button_frame) * DT_CTRL > 0.05:
-        # Send button press to both camera and main bus (same as cancel/resume)
+        # BluePilot: send button press on the camera bus only (upstream parity).
+        # The GWM already transmits Steering_Data_FD1 on the main bus, so a
+        # main-bus copy would be a duplicate-ID transmission.
         can_sends.append(fordcan_ext.create_button_msg(packer, CAN.camera, CS.buttons_stock_values,
-                                                     icbm_button=button_signal))
-        can_sends.append(fordcan_ext.create_button_msg(packer, CAN.main, CS.buttons_stock_values,
-                                                     icbm_button=button_signal))
+                                                       icbm_button=button_signal))
         self.last_button_frame = self.frame
 
     return can_sends, self.last_button_frame

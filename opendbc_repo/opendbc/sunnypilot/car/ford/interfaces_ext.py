@@ -41,14 +41,17 @@ def apply_ford_ext_params(ret: structs.CarParams, CP, car_fw, fingerprint, alpha
   if DBC[candidate][Bus.radar] == RADAR.DELPHI_MRR_64:
     ret.radarDelay = 0.1  # 20 Hz / 4 scan modes = 100 ms
 
-  # BluePilot: alpha longitudinal always available for all Ford platforms.
-  # This enables the developer toggle on both CAN and CANFD Ford vehicles.
-  ret.alphaLongitudinalAvailable = True
+  # BluePilot: alpha longitudinal availability. Keep the toggle visible only
+  # where it actually changes the mode (radar-less / CAN FD platforms).
+  ret.alphaLongitudinalAvailable = ret.radarUnavailable
 
-  # BluePilot: make the alpha toggle authoritative for longitudinal mode.
-  # True  -> openpilot longitudinal (alpha)
-  # False -> Ford ACC (stock longitudinal)
-  ret.openpilotLongitudinalControl = bool(alpha_long)
+  # BluePilot: longitudinal mode selection. Base sp-master260612 / upstream
+  # default is OP longitudinal for radar-equipped cars (Q3); the stock-ACC
+  # passthrough mode is only used on radar-less (CAN FD) platforms, where the
+  # stock CCM owns ACCDATA. On Q3 Escape-class cars the stock-ACC mode was
+  # observed to latch the CCM into "Denied" (CcStat_D_Actl=1, cluster
+  # "ACC unavailable") right after OP startup, so keep the base default here.
+  ret.openpilotLongitudinalControl = bool(alpha_long) or not ret.radarUnavailable
   if ret.openpilotLongitudinalControl:
     ret.safetyConfigs[-1].safetyParam |= FordSafetyFlags.LONG_CONTROL.value
   else:

@@ -14,10 +14,12 @@ from openpilot.common.swaglog import cloudlog
 
 # C3/DOS internal panda is USB-only (often behind a hub). Prefer connecting immediately
 # when serial is already readable; only GPIO-reset + settle when list() is empty.
-NO_PANDA_RESET_SETTLE_S = 1.0
-NO_PANDA_POLL_S = 0.2
-NO_PANDA_RESET_EVERY_S = 5.0
-PANDA_STABLE_BEFORE_MODEM_S = 2.0
+# BluePilot: tightened vs upstream — first GPIO reset after ~2s of empty list(),
+# 0.8s settle after each reset, 0.1s poll interval, 1s modem grace.
+NO_PANDA_RESET_SETTLE_S = 0.8
+NO_PANDA_POLL_S = 0.1
+NO_PANDA_RESET_EVERY_S = 2.0
+PANDA_STABLE_BEFORE_MODEM_S = 1.0
 
 # Avoid immediate GPIO reset on first empty list(); wait one reset interval.
 _last_panda_reset_at = time.monotonic()

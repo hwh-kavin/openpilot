@@ -1,5 +1,6 @@
 from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, create_button_events, structs
+from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
 from openpilot.common.params import Params
 from opendbc.car.ford.fordcan import CanBus
@@ -39,6 +40,9 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     # BluePilot: Save HEV data available flags to params for UI
     self.params.put_bool("FordPrefHevDataAvailable", True if CP.flags & FordFlags.HEV_CLUSTER_DATA else False)
     self.params.put_bool("FordPrefHevBattDataAvailable", True if CP.flags & FordFlags.HEV_BATTERY_DATA else False)
+
+    # BluePilot: accFaulted diagnostic (log rising edge with the raw signals)
+    self.acc_faulted_last = False
 
   def update(self, can_parsers) -> tuple[structs.CarState, structs.CarStateSP]:
     cp = can_parsers[Bus.pt]
@@ -109,6 +113,15 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
 
     if not self.CP.openpilotLongitudinalControl:
       ret.accFaulted = ret.accFaulted or cp_cam.vl["ACCDATA"]["CmbbDeny_B_Actl"] == 1
+
+    # BluePilot: log accFaulted rising edge with the raw signals to diagnose
+    # CCM "Denied" latching (e.g. after a RESUME press) vs OP message interference
+    if ret.accFaulted and not self.acc_faulted_last:
+      carlog.error(
+        f"accFaulted rising: CcStat_D_Actl={cp.vl['EngBrakeData']['CcStat_D_Actl']} "
+        f"CmbbDeny_B_Actl={cp_cam.vl['ACCDATA']['CmbbDeny_B_Actl']} "
+        f"openpilotLong={self.CP.openpilotLongitudinalControl} vEgo={ret.vEgo:.1f} standstill={ret.standstill}")
+    self.acc_faulted_last = ret.accFaulted
 
     # gear
     if self.CP.transmissionType == TransmissionType.automatic:
