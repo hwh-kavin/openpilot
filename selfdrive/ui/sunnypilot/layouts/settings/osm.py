@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import datetime
+import json
 import os
 import platform
 import requests
@@ -201,14 +202,40 @@ class OSMLayout(Widget):
     else:
       self._update_db()
 
-  def _do_select_region(self, region_type, btn):
-    base_url = "https://raw.githubusercontent.com/pfeiferj/openpilot-mapd/main/"
-    url = base_url + ("nation_bounding_boxes.json" if region_type == "Country" else "us_states_bounding_boxes.json")
+  _OSM_REGIONS_PATH = Path(__file__).resolve().parent / "osm_data"
+
+  def _load_region_data(self, region_type: str) -> dict:
+    """Bundled region list first (raw.githubusercontent.com is unreachable in
+    some regions and the upstream repo moved to pfeiferj/mapd); fall back to
+    remote fetches so the lists can still refresh without a software update."""
+    filename = "nation_bounding_boxes.json" if region_type == "Country" else "us_states_bounding_boxes.json"
+    local_path = self._OSM_REGIONS_PATH / filename
     try:
-      data = requests.get(url, timeout=10).json()
-      locations = sorted([TreeNode(ref=k, data={'display_name': v['full_name']}) for k, v in data.items()], key=lambda n: n.data['display_name'])
+      if local_path.is_file():
+        return json.loads(local_path.read_text(encoding="utf-8"))
     except Exception:
-      locations = []
+      pass
+    for base_url in (
+      "https://raw.githubusercontent.com/pfeiferj/mapd/main/",
+      "https://raw.githubusercontent.com/pfeiferj/openpilot-mapd/main/",
+    ):
+      try:
+        return requests.get(base_url + filename, timeout=10).json()
+      except Exception:
+        continue
+    return {}
+
+  def _do_select_region(self, region_type, btn):
+    data = self._load_region_data(region_type)
+    locations = sorted([TreeNode(ref=k, data={'display_name': v['full_name']}) for k, v in data.items()], key=lambda n: n.data['display_name'])
+    if not locations:
+      # All sources failed: keep the button usable and show an explanatory dialog
+      btn.action_item.set_enabled(True)
+      btn.action_item.set_text(tr("SELECT"))
+      gui_app.push_widget(ConfirmDialog(
+        tr("Failed to load the region list. Please retry, or contact support if it persists."),
+        tr("OK"), callback=lambda res: None))
+      return
 
     if region_type == "State":
       locations.insert(0, TreeNode(ref="All", data={'display_name': tr("All states (~6.0 GB)")}))

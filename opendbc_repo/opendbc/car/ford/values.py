@@ -28,6 +28,7 @@ class CarControllerParams:
   LKAS_UI_STEP = 100    # IPMA_Data, 1Hz
   ACC_UI_STEP = 20      # ACCDATA_3, 5Hz
   BUTTONS_STEP = 5      # Steering_Data_FD1, 10Hz, but send twice as fast
+  RESUME_HOLD_FRAMES = 5  # BluePilot: debounce RESUME button injection (~50ms)
 
   STEER_DRIVER_ALLOWANCE = 1.0  # Driver intervention threshold, Nm
 

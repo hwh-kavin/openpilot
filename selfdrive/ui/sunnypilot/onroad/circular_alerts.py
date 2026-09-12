@@ -42,8 +42,10 @@ class CircularAlertsRenderer:
     if not ui_state.started:
       self._standstill_elapsed_time = 0.0
 
-    self._allow_e2e_alerts = sm['selfdriveState'].alertSize == log.SelfdriveState.AlertSize.none and \
-                             sm.recv_frame['driverStateV2'] > ui_state.started_frame
+    # e2e alerts (green light / lead depart circle) must not depend on driverStateV2:
+    # dmonitoringmodeld is stopped when driver monitoring is disabled (DriverModelEnable),
+    # so driverStateV2 never arrives and the circle would never show.
+    self._allow_e2e_alerts = sm['selfdriveState'].alertSize == log.SelfdriveState.AlertSize.none
 
     # Standstill timer must not depend on driverStateV2: dmonitoringmodeld is stopped
     # when driver monitoring is disabled (DriverModelEnable), which would hide the timer.

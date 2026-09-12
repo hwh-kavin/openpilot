@@ -48,6 +48,7 @@ class UIState(UIStateSP):
         "radarState",
         "deviceState",
         "pandaStates",
+        "peripheralState",
         "carParams",
         "driverMonitoringState",
         "carState",

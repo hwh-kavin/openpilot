@@ -10,9 +10,10 @@ import pyray as rl
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.sunnypilot.onroad.developer_ui.elements import (
   UiElement, RelDistElement, RelSpeedElement, SteeringAngleElement,
+  ActualSteeringAngleElement,
   DesiredLateralAccelElement, ActualLateralAccelElement, DesiredSteeringAngleElement,
   DesiredSteeringPIDElement, CpuUsageElement, CpuTempElement, MemoryUsageElement, FreeSpaceElement,
-  ModelTorqueElement, ModelAccelElement,
+  ModelTorqueElement, ModelAccelElement, VoltageElement,
 )
 from openpilot.system.ui.lib.application import gui_app, FontWeight
 from openpilot.system.ui.lib.text_measure import measure_text_cached
@@ -50,7 +51,9 @@ class DeveloperUiRenderer(Widget):
     self.cpu_temp_elem = CpuTempElement()
     self.memory_usage_elem = MemoryUsageElement()
     self.free_space_elem = FreeSpaceElement()
+    self.voltage_elem = VoltageElement()
     self.model_torque_elem = ModelTorqueElement()
+    self.actual_steer_elem = ActualSteeringAngleElement()
     self.model_accel_elem = ModelAccelElement()
 
   def _update_state(self) -> None:
@@ -144,10 +147,12 @@ class DeveloperUiRenderer(Widget):
 
     elements = [
       self.model_torque_elem.update(sm, ui_state.is_metric),
+      self.actual_steer_elem.update(sm, ui_state.is_metric),
       self.cpu_usage_elem.update(sm, ui_state.is_metric),
       self.cpu_temp_elem.update(sm, ui_state.is_metric),
       self.memory_usage_elem.update(sm, ui_state.is_metric),
       self.free_space_elem.update(sm, ui_state.is_metric),
+      self.voltage_elem.update(sm, ui_state.is_metric),
       self.model_accel_elem.update(sm, ui_state.is_metric),
     ]
 

@@ -177,6 +177,11 @@ class SelfdriveD(CruiseHelper):
     # BluePilot: rising-edge for Ford stock-ACC fusion fault → Developer error log
     self.acc_faulted_last = False
 
+    # BluePilot: follow stop-and-go diagnostics (edge-triggered, error log)
+    self._sng_standstill_logged = False
+    self._sng_launch_wanted_logged = False
+    self._sng_stuck_frame = 0
+
     self.ignored_processes = {'mapd', }
 
     # Determine startup event
@@ -552,6 +557,9 @@ class SelfdriveD(CruiseHelper):
 
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
 
+    # BluePilot: follow stop-and-go diagnostics for the Developer error log
+    self._log_follow_stop_go(CS)
+
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)
     CS = _car_state.carState if _car_state else self.CS_prev
@@ -616,6 +624,60 @@ class SelfdriveD(CruiseHelper):
   def _ford_auto_follow_gap(self) -> bool:
     # Cached by params_thread; avoid a per-cycle Params disk read in update_events.
     return self.ford_auto_follow_gap
+
+  def _log_follow_stop_go(self, CS) -> None:
+    """BluePilot: log follow stop / launch edges and stuck diagnostics to error.log.
+
+    Edge-triggered (plus a 1s-throttled stuck report) so a stop-and-go session yields
+    a few concise lines instead of 100Hz spam. Gated by the UiAlertLogEnable toggle.
+    """
+    try:
+      sm = self.sm
+      long_plan = sm['longitudinalPlan']
+      radar = sm['radarState']
+      lead = radar.leadOne
+      has_lead = bool(long_plan.hasLead and lead.status)
+      v_ego = float(CS.vEgo)
+      standstill = bool(CS.standstill)
+      should_stop = bool(long_plan.shouldStop)
+      long_ctrl = str(sm['controlsState'].longControlState)
+      cc = sm['carControl'].cruiseControl
+
+      ctx = ("vEgo=%.2f lead.dRel=%.1f lead.vLead=%.2f shouldStop=%s longCtrl=%s "
+             "cruiseStandstill=%s cruiseEnabled=%s resume=%s cancel=%s override=%s "
+             "brake=%s gas=%s accFaulted=%s" % (
+               v_ego, lead.dRel, lead.vLead, should_stop, long_ctrl,
+               CS.cruiseState.standstill, CS.cruiseState.enabled, cc.resume,
+               cc.cancel, cc.override, CS.brakePressed, CS.gasPressed, CS.accFaulted))
+
+      # 1) follow stop: entered standstill while tracking a lead
+      if standstill and has_lead and not self._sng_standstill_logged:
+        self._sng_standstill_logged = True
+        append_error_log("Follow STOP: " + ctx)
+
+      # 2) lead departs → planner wants to launch
+      if standstill and has_lead and lead.vLead > 0.5 and not should_stop and not self._sng_launch_wanted_logged:
+        self._sng_launch_wanted_logged = True
+        append_error_log("Follow LAUNCH wanted: aTarget=%.3f %s" % (long_plan.aTarget, ctx))
+
+      # 3) launch completed (rolling again)
+      if self._sng_launch_wanted_logged and v_ego > 0.5:
+        append_error_log("Follow LAUNCH done: " + ctx)
+        self._sng_launch_wanted_logged = False
+
+      # 4) stuck: planner wants to launch, lead is moving, but ego stays stopped
+      if standstill and has_lead and lead.vLead > 0.5 and not should_stop:
+        if sm.frame - self._sng_stuck_frame >= 100:
+          self._sng_stuck_frame = sm.frame
+          append_error_log("Follow LAUNCH STUCK: " + ctx)
+
+      # reset edges once rolling or lead lost
+      if not standstill or not has_lead:
+        self._sng_standstill_logged = False
+        self._sng_launch_wanted_logged = False
+
+    except Exception:
+      pass
 
   def update_alerts(self, CS):
     clear_event_types = set()

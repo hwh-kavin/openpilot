@@ -13,8 +13,11 @@ from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
 GREEN_LIGHT_X_THRESHOLD = 30
-LEAD_DEPART_DIST_THRESHOLD = 1.0
-TRIGGER_TIMER_THRESHOLD = 0.3
+LEAD_DEPART_DIST_THRESHOLD = 1.0   # m, lead must move this much further before alerting (anti-jitter range)
+LEAD_DEPART_ARM_DIST = 12.0        # m, arm the alert when the lead stops this close ahead
+LEAD_DEPART_HOLD_DIST = 30.0       # m, keep the armed state while the lead is still tracked this close
+LEAD_DEPART_DIST_EMA = 0.3         # EMA factor smoothing the radar lead distance (detection jitter)
+TRIGGER_TIMER_THRESHOLD = 0.3      # s, sustained departure before the chime fires
 
 
 class E2EStates:
@@ -43,8 +46,9 @@ class E2EAlertsHelper:
     self.last_moving_frame = -1
 
     self.allowed = False
-    self.last_allowed = False
     self.has_lead = False
+    self.lead_depart_allowed = False
+    self.lead_dRel_filt = -1.0
 
     self.lead_depart_arm_timer = 0
     self.lead_depart_confirmed_lead = False
@@ -73,6 +77,10 @@ class E2EAlertsHelper:
 
     self.allowed = not moving and not CS.gasPressed and not CC.enabled and not recent_moving
 
+    # Lead departure alert per spec: armed whenever the ego car is stopped (vEgo=0)
+    # and the native radar tracks a lead — OP engagement does not gate it.
+    self.lead_depart_allowed = not moving and not CS.gasPressed and not recent_moving
+
     # Green Light Alert
     green_light_trigger = False
     if self.green_light_state == E2EStates.ARMED:
@@ -86,28 +94,45 @@ class E2EAlertsHelper:
     elif self.green_light_state != E2EStates.ARMED:
       self.green_light_trigger_timer = 0
 
-    # Lead Departure Alert
-    close_lead_valid = self.has_lead and lead_dRel < 8.0
-    if self.allowed and not self.last_allowed and close_lead_valid:
+    # Lead Departure Alert (native radar only)
+    # Light EMA on the radar lead distance to reject detection jitter, then arm
+    # while stopped behind a close lead. Once armed, the armed state is held as
+    # long as the lead is still tracked nearby, so the departure trigger (dRel
+    # rising more than LEAD_DEPART_DIST_THRESHOLD for >TRIGGER_TIMER_THRESHOLD)
+    # can complete even though the lead leaves the close-arm window on departure.
+    if not self.has_lead:
+      self.lead_dRel_filt = -1.0
+    elif self.lead_dRel_filt < 0.0:
+      self.lead_dRel_filt = lead_dRel
+    else:
+      self.lead_dRel_filt += LEAD_DEPART_DIST_EMA * (lead_dRel - self.lead_dRel_filt)
+    lead_dRel_smoothed = self.lead_dRel_filt if self.lead_dRel_filt >= 0.0 else lead_dRel
+
+    close_lead_valid = self.has_lead and lead_dRel_smoothed < LEAD_DEPART_ARM_DIST
+    lead_tracked = self.has_lead and lead_dRel_smoothed < LEAD_DEPART_HOLD_DIST
+    if self.lead_depart_allowed and close_lead_valid:
       self.lead_depart_confirmed_lead = True
-    elif not self.allowed:
+    elif not self.lead_depart_allowed:
       self.lead_depart_confirmed_lead = False
 
-    if self.allowed and self.lead_depart_confirmed_lead and close_lead_valid:
+    if self.lead_depart_allowed and self.lead_depart_confirmed_lead and close_lead_valid:
       self.lead_depart_arm_timer += 1
 
       if self.lead_depart_arm_timer * DT_MDL >= 1.0:
         self.lead_depart_armed = True
+    elif self.lead_depart_allowed and self.lead_depart_armed and lead_tracked:
+      pass  # hold the armed state while the lead is still tracked nearby
     else:
       self.lead_depart_arm_timer = 0
       self.lead_depart_armed = False
 
     lead_depart_trigger = False
     if self.lead_depart_state == E2EStates.ARMED:
-      if self.last_lead_distance == -1 or lead_dRel < self.last_lead_distance:
-        self.last_lead_distance = lead_dRel
+      if self.last_lead_distance == -1 or lead_dRel_smoothed < self.last_lead_distance:
+        self.last_lead_distance = lead_dRel_smoothed
 
-      if self.last_lead_distance != -1 and (lead_dRel - self.last_lead_distance > LEAD_DEPART_DIST_THRESHOLD):
+      # departure must exceed the anti-jitter range and persist
+      if self.last_lead_distance != -1 and (lead_dRel_smoothed - self.last_lead_distance > LEAD_DEPART_DIST_THRESHOLD):
         self.lead_depart_trigger_timer += 1
       else:
         self.lead_depart_trigger_timer = 0
@@ -117,8 +142,6 @@ class E2EAlertsHelper:
     elif self.lead_depart_state != E2EStates.ARMED:
       self.last_lead_distance = -1
       self.lead_depart_trigger_timer = 0
-
-    self.last_allowed = self.allowed
 
     return green_light_trigger, lead_depart_trigger
 
@@ -160,7 +183,7 @@ class E2EAlertsHelper:
     self.lead_depart_state, self.lead_depart_alert = self.update_state_machine(
       self.lead_depart_state,
       self.lead_depart_alert_enabled,
-      self.allowed and self.lead_depart_armed,
+      self.lead_depart_allowed and self.lead_depart_armed,
       lead_depart_trigger
     )
 

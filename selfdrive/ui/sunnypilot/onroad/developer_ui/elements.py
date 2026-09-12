@@ -127,6 +127,14 @@ class SteeringAngleElement(LateralControlElement):
     return UiElement(value, "REAL STEER", self.unit, color)
 
 
+class ActualSteeringAngleElement(SteeringAngleElement):
+  """Bottom-bar element: actual steering wheel angle fed back by the car (实际角)."""
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    elem = super().update(sm, is_metric)
+    return UiElement(elem.value, "实际角", self.unit, elem.color)
+
+
 class DesiredSteeringAngleElement(LateralControlElement):
   def __init__(self):
     self.unit = ""
@@ -440,20 +448,46 @@ class FreeSpaceElement(DeviceStateElement):
     return UiElement(f"{free_space:.0f}", "存储", self.unit, color)
 
 
+class VoltageElement:
+  """Bottom-bar element: car supply voltage from peripheralState (12V battery, mV).
+
+  Same source the low-voltage shutdown uses (hardwared -> power_monitoring).
+  """
+
+  def __init__(self):
+    self.unit = "V"
+
+  def update(self, sm, is_metric: bool) -> UiElement:
+    if not sm.valid.get('peripheralState', False):
+      return UiElement("-", "电压", self.unit, rl.WHITE)
+
+    voltage_mv = int(sm['peripheralState'].voltage)
+    if voltage_mv <= 0:
+      return UiElement("-", "电压", self.unit, rl.WHITE)
+
+    color = rl.WHITE
+    if voltage_mv < 11000:
+      color = rl.RED
+    elif voltage_mv < 11500:
+      color = rl.Color(255, 188, 0, 255)
+
+    return UiElement(f"{voltage_mv / 1000.0:.1f}", "电压", self.unit, color)
+
+
 class ModelTorqueElement:
-  """Bottom-bar element: shows desired steering angle (期望转角)."""
+  """Bottom-bar element: shows desired steering angle (期望角)."""
 
   def __init__(self):
     self.unit = ""
 
   def update(self, sm, is_metric: bool) -> UiElement:
     if not sm.valid.get('carControl', False):
-      return UiElement("-", "期望转角", self.unit, rl.WHITE)
+      return UiElement("-", "期望角", self.unit, rl.WHITE)
 
     lat_active = sm['carControl'].latActive
     color = rl.Color(0, 255, 0, 255) if lat_active else rl.WHITE
     if not lat_active:
-      return UiElement("-", "期望转角", self.unit, color)
+      return UiElement("-", "期望角", self.unit, color)
 
     desired = None
     if sm.valid.get('controlsState', False):
@@ -468,7 +502,7 @@ class ModelTorqueElement:
     if desired is None:
       desired = float(sm['carControl'].actuators.steeringAngleDeg)
 
-    return UiElement(f"{desired:.1f}°", "期望转角", self.unit, color)
+    return UiElement(f"{desired:.1f}°", "期望角", self.unit, color)
 
 
 class ModelAccelElement:
@@ -477,7 +511,7 @@ class ModelAccelElement:
 
   def update(self, sm, is_metric: bool) -> UiElement:
     if not sm.valid.get('modelV2', False):
-      return UiElement("-", "模型加速度", self.unit, rl.WHITE)
+      return UiElement("-", "模型纵向", self.unit, rl.WHITE)
 
     accel = sm['modelV2'].action.desiredAcceleration
-    return UiElement(f"{accel:.2f}", "模型加速度", self.unit, rl.WHITE)
+    return UiElement(f"{accel:.2f}", "模型纵向", self.unit, rl.WHITE)

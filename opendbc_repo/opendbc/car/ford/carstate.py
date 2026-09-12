@@ -34,6 +34,14 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     self.cluster_speed_hyst_gap = CV.KPH_TO_MS / 2.
     self.distance_button = 0
     self.lc_button = 0
+    # Stock ACCDATA (camera bus) longitudinal request for the low-speed stop-and-go
+    # handover (<=15 km/h stock longitudinal). IPMA keeps publishing it while OP TXes ACCDATA.
+    self.stock_acc_prpl = CarControllerParams.INACTIVE_GAS
+    self.stock_acc_brk = 0.0
+    self.stock_acc_prpl_pred = CarControllerParams.INACTIVE_GAS
+    self.stock_acc_v_trg = 0.0
+    self.stock_acc_enbl = False
+    self.stock_acc_tgap = 0
     # BluePilot: fix uninitialized attribute (used by ALT_STEER_ANGLE steering angle calc)
     self.steering_angle_offset_deg = 0.0
 
@@ -119,6 +127,8 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     if ret.accFaulted and not self.acc_faulted_last:
       carlog.error(
         f"accFaulted rising: CcStat_D_Actl={cp.vl['EngBrakeData']['CcStat_D_Actl']} "
+        f"AccStopMde_D_Rq={cp.vl['EngBrakeData']['AccStopMde_D_Rq']} "
+        f"AccEnbl_B_RqDrv={cp.vl['Cluster_Info1_FD1']['AccEnbl_B_RqDrv']} "
         f"CmbbDeny_B_Actl={cp_cam.vl['ACCDATA']['CmbbDeny_B_Actl']} "
         f"openpilotLong={self.CP.openpilotLongitudinalControl} vEgo={ret.vEgo:.1f} standstill={ret.standstill}")
     self.acc_faulted_last = ret.accFaulted
@@ -169,6 +179,16 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     # Stock values from IPMA so that we can retain some stock functionality
     self.acc_tja_status_stock_values = cp_cam.vl["ACCDATA_3"]
     self.lkas_status_stock_values = cp_cam.vl["IPMA_Data"]
+
+    # Stock ACC longitudinal request (still published on camera bus while OP TXes ACCDATA).
+    # Used for the stop-and-go handover: <=15 km/h the stock ACC owns longitudinal.
+    accdata = cp_cam.vl["ACCDATA"]
+    self.stock_acc_prpl = float(accdata["AccPrpl_A_Rq"])
+    self.stock_acc_brk = float(accdata["AccBrkTot_A_Rq"])
+    self.stock_acc_prpl_pred = float(accdata["AccPrpl_A_Pred"])
+    self.stock_acc_v_trg = float(accdata["AccVeh_V_Trg"])
+    self.stock_acc_enbl = bool(accdata["Cmbb_B_Enbl"])
+    self.stock_acc_tgap = int(cp_cam.vl["ACCDATA_3"]["AccTGap_D_Dsply"])
 
     MadsCarState.update_mads(self, ret, can_parsers)
     CarStateExt.update(self, ret, ret_sp, can_parsers)

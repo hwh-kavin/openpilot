@@ -1,7 +1,9 @@
 import math
+import collections
 import numpy as np
 from opendbc.can import CANPacker
 from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, apply_hysteresis, structs
+from opendbc.car.carlog import carlog
 from opendbc.car.lateral import AVERAGE_ROAD_ROLL, ISO_LATERAL_ACCEL, apply_std_steer_angle_limits
 from opendbc.car.ford import fordcan
 from opendbc.car.ford.values import CarControllerParams, FordFlags, CAR
@@ -92,6 +94,15 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
     self.accel = 0.0
     self.gas = 0.0
     self.last_button_frame = 0  # BluePilot: ICBM button press tracking
+    self._resume_hold_frames = 0  # BluePilot: RESUME button injection debounce
+    # BluePilot: ACC fault diagnosis (TX timeline + rising-edge dump)
+    self._acc_faulted_last = False
+    self._acc_tx_hist = collections.deque(maxlen=60)
+    self._resume_sent = False
+    self._cancel_sent = False
+    self._tja_sent = False
+    self._icbm_sent = "n/a"
+    self._lng_tx = None
     # Note: main_on_last, lkas_enabled_last, steer_alert_last, lead_distance_bars_last,
     # distance_bar_frame are initialized by HudExt.__init__() above
 
@@ -118,20 +129,39 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
     HudExt.update_dm(self, hud_control, main_on, CS.out.cruiseState.standstill, self.frame)
 
     ### acc buttons ###
+    self._cancel_sent = False
+    self._resume_sent = False
+    self._tja_sent = False
     if CC.cruiseControl.cancel:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, cancel=True))
-    elif CC.cruiseControl.resume and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
-      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, resume=True))
-    # if stock lane centering isn't off, send a button press to toggle it off
-    # the stock system checks for steering pressed, and eventually disengages cruise control
-    elif CS.acc_tja_status_stock_values["Tja_D_Stat"] != 0 and (self.frame % CarControllerParams.ACC_UI_STEP) == 0:
-      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, tja_toggle=True))
+      self._resume_hold_frames = 0
+      self._cancel_sent = True
+    else:
+      # Stock ACC has no stop-and-go: AccStopMde hold needs a RESUME press to release.
+      # LongitudinalExt sets induce_stock_resume (debounced stock pullaway) for the next frame.
+      # Send a plain single RESUME press (level held at 20Hz); do NOT pulse it — a
+      # repeated press train looks like button malfunction to the CCM and faults
+      # the stock ACC, shutting the ACC bus down.
+      resume_want = bool(CC.cruiseControl.resume) or bool(getattr(self, 'induce_stock_resume', False))
+      if resume_want:
+        self._resume_hold_frames = min(self._resume_hold_frames + 1, CarControllerParams.RESUME_HOLD_FRAMES + 1)
+      else:
+        self._resume_hold_frames = 0
+      if self._resume_hold_frames >= CarControllerParams.RESUME_HOLD_FRAMES and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
+        can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, resume=True))
+        self._resume_sent = True
+      # if stock lane centering isn't off, send a button press to toggle it off
+      # the stock system checks for steering pressed, and eventually disengages cruise control
+      elif CS.acc_tja_status_stock_values["Tja_D_Stat"] != 0 and (self.frame % CarControllerParams.ACC_UI_STEP) == 0:
+        can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, tja_toggle=True))
+        self._tja_sent = True
 
     # BluePilot: Intelligent Cruise Button Management (ICBM)
     icbm_can_sends, self.last_button_frame = IntelligentCruiseButtonManagementInterface.update(
       self, CC_SP, CS, self.packer, self.CAN, self.frame, self.last_button_frame
     )
     can_sends.extend(icbm_can_sends)
+    self._icbm_sent = str(self.ICBM.sendButton) if getattr(self, 'ICBM', None) else "n/a"
 
     ### lateral control ###
     # BluePilot: keep stock lateral path in carcontroller, and run BP 4-signal lateral
@@ -261,6 +291,9 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
       lng = LongitudinalExt.update(self, CC, CS, op_accel, op_gas, accel_due_to_pitch,
                                     v_ego_mph, stopping, target_speed)
 
+      # BluePilot: keep the last ACCDATA TX for the fault timeline
+      self._lng_tx = (lng.stopping, lng.brake_actuate, lng.precharge_actuate, lng.target_speed, lng.bp_long_used)
+
       can_sends.append(fordcan_ext.create_acc_msg(
         self.packer, self.CAN, CC.longActive, lng.gas, lng.accel, lng.accel_pred_send,
         lng.stopping, lng.brake_actuate, lng.precharge_actuate, v_ego_kph=lng.target_speed
@@ -276,6 +309,31 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
                                        self.frame, self.packer, self.CAN, self.CP)
     can_sends.extend(hud_can_sends)
 
+    # BluePilot: ACC fault diagnosis — record the TX timeline every frame and
+    # dump it on the accFaulted rising edge (CCM Denied/故障).
+    self._last_long_active = bool(CC.longActive)
+    self._last_long_state = str(actuators.longControlState)
+    lng_tx = self._lng_tx or (0, 0, 0, 0, False)
+    self._acc_tx_hist.append((
+      self.frame,
+      int(CC.longActive),
+      str(actuators.longControlState),
+      int(lng_tx[0]),            # stopping (AccStopStat_B_Rq)
+      round(self.gas, 2),
+      round(self.accel, 2),
+      int(lng_tx[1]),            # brake_actuate (AccBrkDecel_B_Rq)
+      int(lng_tx[2]),            # precharge (AccBrkPrchg_B_Rq)
+      float(lng_tx[3]),          # target_speed (AccVeh_V_Trg)
+      int(self._resume_sent),
+      int(self._cancel_sent),
+      int(self._tja_sent),
+      self._icbm_sent,
+    ))
+
+    if CS.out.accFaulted and not self._acc_faulted_last:
+      self._log_acc_fault_tx(CS)
+    self._acc_faulted_last = CS.out.accFaulted
+
     new_actuators = actuators.as_builder()
     new_actuators.curvature = float(self.apply_curvature_last)
     new_actuators.accel = float(self.accel)
@@ -283,3 +341,27 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
 
     self.frame += 1
     return new_actuators, can_sends
+
+  def _log_acc_fault_tx(self, CS) -> None:
+    """Dump the recent OP TX timeline when the CCM faults (accFaulted rising)."""
+    try:
+      ctx = ("ACC FAULT TX: vEgo=%.2f standstill=%s cruiseEnbl=%s avail=%s accFaulted=%s "
+             "fusion=%s stockLong=%s session=%s stopGo=%s stockGo=%d opGo=%d hold=%d induceResume=%s sng=%s" % (
+               CS.out.vEgo, CS.out.standstill, CS.out.cruiseState.enabled, CS.out.cruiseState.available,
+               CS.out.accFaulted,
+               getattr(self, '_fusion_enabled', '?'), getattr(self, '_stock_long_active', '?'),
+               getattr(self, '_stock_session_latched', '?'), getattr(self, '_fusion_stop_go', '?'),
+               getattr(self, '_stock_go_confirm', 0), getattr(self, '_op_go_confirm', 0),
+               self._resume_hold_frames, getattr(self, 'induce_stock_resume', '?'),
+               getattr(self, '_sng_last_log_line', '')))
+      rows = ["  f=%d la=%d ls=%s stop=%d gas=%.2f acc=%.2f brk=%d prchg=%d vtrg=%.0f res=%d cncl=%d tja=%d icbm=%s" % r
+              for r in list(self._acc_tx_hist)[-40:]]
+      msg = ctx + "\n" + "\n".join(rows)
+      carlog.error(msg)
+      try:
+        from openpilot.common.error_log import append_error_log
+        append_error_log("ACC FAULT TX:\n" + msg, check_enable=False)
+      except Exception:
+        pass
+    except Exception:
+      pass
