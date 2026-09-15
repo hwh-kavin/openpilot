@@ -364,6 +364,14 @@ class LongitudinalExt:
       planner_wants_go = bool(CC.cruiseControl.resume)
       op_wants_go = (not stopping and op_accel > 0.05)
       radar_lead_departing = self._radar_lead_departing(CS, at_stop)
+      # The stock ACC's stop-and-go auto-resume only lasts ~3s after stopping;
+      # beyond that its request is stale (the log shows it briefly spiking
+      # 0.42→0.67 then dropping to None). Once the native radar sees the lead
+      # departing, ignore the dead stock request and launch with OP's own
+      # pullaway floor (op_go) instead of stock_go — following the stale stock
+      # value held the car stopped and the driver had to take over.
+      if radar_lead_departing:
+        stock_a = None
       pullaway_ctx = (planner_wants_go or op_wants_go or self._stock_lead_moving(CS) or
                       radar_lead_departing)
 
@@ -383,12 +391,16 @@ class LongitudinalExt:
         self._stock_go_confirm = 0
       stock_pullaway = self._stock_go_confirm >= self.STOCK_GO_DEBOUNCE_CYCLES
 
-      # sp-master260727: RESUME is induced only once the stock system is itself
-      # pulling away (re-engages the stock session smoothly). OP-vision go is
-      # covered by CC.cruiseControl.resume, which the carcontroller sends as a
-      # plain single RESUME press — no repeated pulse train (CCM button-spam
-      # faults shut the ACC bus down).
-      self.induce_stock_resume = bool(stock_pullaway)
+      # sp-master260727: RESUME is induced once the stock system is itself
+      # pulling away (re-engages the stock session smoothly), or the native
+      # radar sees the lead departing while stopped (user spec: with
+      # longitudinal enabled, a departing lead must launch immediately, without
+      # waiting for OP vision/plannerd to notice — the AccStopMde hold only
+      # releases on a RESUME press, and CC.cruiseControl.resume lags the radar
+      # by up to a second). The carcontroller sends this as a plain single
+      # RESUME press (level held), never a pulse train (CCM button-spam faults
+      # shut the ACC bus down).
+      self.induce_stock_resume = bool(stock_pullaway or radar_lead_departing)
 
       # sp-master260727 stop-go pullaway floor: OP vision decided to launch —
       # floor OP accel so the launch cannot deadlock behind the stock stop-hold.

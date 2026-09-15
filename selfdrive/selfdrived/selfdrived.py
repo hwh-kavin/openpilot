@@ -275,7 +275,12 @@ class SelfdriveD(CruiseHelper):
       if self.sm['driverMonitoringState'].visionPolicyState.uncertainOffroadAlertPercent >= 100 and not self.dm_uncertain_alerted:
         set_offroad_alert("Offroad_DriverMonitoringUncertain", True)
         self.dm_uncertain_alerted = True
-      self.events_sp.add_from_msg(self.sm['longitudinalPlanSP'].events)
+
+    # BluePilot: planner SP events (e2e chime, speed limit, etc.) must reach
+    # selfdrived regardless of driver-monitoring state. With DM off
+    # (DriverModelEnable=True) this block is skipped, so the lead-depart /
+    # green-light chime never played.
+    self.events_sp.add_from_msg(self.sm['longitudinalPlanSP'].events)
 
     # Add car events, ignore if CAN isn't valid
     if CS.canValid:

@@ -154,12 +154,6 @@ class LateralAngleExt:
     # User-tunable angle-mode base gain + deviation clip (read from Params in update_angle_params).
     self.angle_base_gain = 1.25
     self.angle_deviation_clip = _ANGLE_KAPPA_DEVIATION
-    # Lane-centering correction: a heading trim toward the model's predicted centerline
-    # (modelV2 position.y), toggled by FordAngleLaneCenteringEnabled. Angle mode has no c0
-    # (path_offset) trim, so this is the only lateral-offset correction available.
-    self.enable_lane_centering_ang = False
-    self.lane_center_lookup_time = 1.0    # s — model lookahead used to sample position.y
-    self.lane_center_max_correction = 0.12  # rad — cap on the heading correction magnitude
     # BluePilot: angle mode's own lane-change scaling factor, independent of curvature mode's
     # lane_change_factor_high_curv -- angle needs a boost (>1) where curvature needs a cut (<1).
     self.lane_change_factor_high_ang = 1.0
@@ -223,10 +217,6 @@ class LateralAngleExt:
         if raw is not None and raw != b"":
           self.lane_change_factor_high_ang = float(clip(
             float(raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw), 0.85, 1.50))
-      except Exception:
-        pass
-      try:
-        self.enable_lane_centering_ang = params.get_bool("FordAngleLaneCenteringEnabled")
       except Exception:
         pass
 
@@ -489,20 +479,6 @@ class LateralAngleExt:
 
     path_angle_calc = kappa_cmd * v_ego * self.curvature_factor
     path_angle = path_angle_calc
-
-    # Lane-centering heading correction from the model's predicted lateral offset.
-    # Angle mode has no c0 (path_offset) trim, so when enabled (FordAngleLaneCenteringEnabled)
-    # steer the heading toward the predicted centerline: heading_corr ≈ -offset / lookahead.
-    # Runs before the PSCM clamp and soft ROC, so the correction is bounded and rate-limited
-    # by the same machinery as the curvature-derived path_angle.
-    if self.enable_lane_centering_ang and self.model is not None and len(self.model.position.y) >= 17:
-      offset = float(np.interp(self.lane_center_lookup_time, ModelConstants.T_IDXS,
-                               np.asarray(self.model.position.y, dtype=float)))
-      lookahead_dist = max(v_ego * self.lane_center_lookup_time, 5.0)
-      heading_corr = float(np.clip(-offset / lookahead_dist,
-                                   -self.lane_center_max_correction, self.lane_center_max_correction))
-      path_angle = path_angle_calc + heading_corr
-
 
     # PSCM authority limit clamp.
     # On CANFD Fords in angle mode, LatCtlLim_D_Stat does not fire, so _pscm_lim stays 0.

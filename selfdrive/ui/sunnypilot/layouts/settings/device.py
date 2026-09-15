@@ -136,6 +136,28 @@ class DeviceLayoutSP(DeviceLayout):
   def _offroad_transition(self):
     self._power_buttons.action_item.right_button.set_visible(ui_state.is_offroad())
 
+  def _reset_calibration_prompt(self):
+    if ui_state.engaged:
+      gui_app.push_widget(alert_dialog(tr("Disengage to Reset Calibration")))
+      return
+
+    def reset_calibration(result: DialogResult):
+      # Check engaged again in case it changed while the dialog was open
+      if ui_state.engaged or result != DialogResult.CONFIRM:
+        return
+
+      params = ui_state.params
+      params.remove("CalibrationParams")
+      params.remove("LiveTorqueParameters")
+      params.remove("LiveParameters")
+      params.remove("LiveParametersV2")
+      params.remove("LiveDelay")
+      params.put_bool("OnroadCycleRequested", True, block=True)
+      self._update_calib_description()
+
+    dialog = ConfirmDialog(tr("Are you sure you want to reset calibration?"), tr("Reset"), callback=reset_calibration)
+    gui_app.push_widget(dialog)
+
   @staticmethod
   def wake_mode_description() -> str:
     def_str = tr("Default: Device will boot/wake-up normally & will be ready to engage.")

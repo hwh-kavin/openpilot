@@ -142,6 +142,13 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
       # Send a plain single RESUME press (level held at 20Hz); do NOT pulse it — a
       # repeated press train looks like button malfunction to the CCM and faults
       # the stock ACC, shutting the ACC bus down.
+      # The RESUME press must also go out on the main bus: the PCM reads
+      # Steering_Data_FD1 (0x083) on the main bus (transmitted by the GWM), so a
+      # camera-bus-only press reaches the IPMA but never releases the PCM's
+      # AccStopMde hold after the stock ACC's ~3s auto-resume window expires.
+      # CAN arbitration handles the same-ID GWM transmission (its dominant
+      # Button_Not_Pressed bit wins on a tie); our press gets through on the
+      # frames we transmit while the GWM is silent.
       resume_want = bool(CC.cruiseControl.resume) or bool(getattr(self, 'induce_stock_resume', False))
       if resume_want:
         self._resume_hold_frames = min(self._resume_hold_frames + 1, CarControllerParams.RESUME_HOLD_FRAMES + 1)
@@ -149,6 +156,7 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
         self._resume_hold_frames = 0
       if self._resume_hold_frames >= CarControllerParams.RESUME_HOLD_FRAMES and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
         can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, resume=True))
+        can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, resume=True))
         self._resume_sent = True
       # if stock lane centering isn't off, send a button press to toggle it off
       # the stock system checks for steering pressed, and eventually disengages cruise control

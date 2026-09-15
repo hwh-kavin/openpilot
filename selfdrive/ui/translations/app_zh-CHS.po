@@ -2572,9 +2572,6 @@ msgstr "角度：基础横向增益"
 msgid "Angle: Deviation Clip"
 msgstr "角度：偏差限幅"
 
-msgid "Angle: Lane Centering Correction"
-msgstr "角度：车道居中修正"
-
 msgid "Curvature: Lane Change Factor"
 msgstr "曲率：变道系数"
 
