@@ -32,7 +32,9 @@ from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import is_ford_auto_follow_gap
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  _FORD_PERSONALITY_LEVELS, is_ford_auto_follow_gap, next_personality_level,
+)
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -161,6 +163,7 @@ class SelfdriveD(CruiseHelper):
       max(log.LongitudinalPersonality.schema.enumerants.values()),
       self.params
     )
+    self._auto_personality_level = 1  # Ford speed-based 4-level driving style index (standard)
     self.recalibrating_seen = False
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
@@ -560,6 +563,13 @@ class SelfdriveD(CruiseHelper):
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
 
+    # Ford auto follow gap: 4-level driving style (激进/标准/稳健/从容) auto by speed
+    # with +5/-5 km/h hysteresis. Computed per frame, NOT persisted to a param.
+    if self._ford_auto_follow_gap():
+      v_kph = CS.vEgo * 3.6  # m/s -> km/h
+      self._auto_personality_level = next_personality_level(v_kph, self._auto_personality_level)
+      self.personality = _FORD_PERSONALITY_LEVELS[self._auto_personality_level]
+
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
 
     # BluePilot: follow stop-and-go diagnostics for the Developer error log
@@ -832,7 +842,10 @@ class SelfdriveD(CruiseHelper):
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      self.personality = self.params.get("LongitudinalPersonality", return_default=True)
+      # Ford auto follow gap: personality is 4-level and auto by speed, so do NOT
+      # overwrite the per-frame value computed in update_events with the persisted param.
+      if not self.ford_auto_follow_gap:
+        self.personality = self.params.get("LongitudinalPersonality", return_default=True)
       self.dm_enabled = self.params.get_bool("DriverModelEnable")
       self.ford_auto_follow_gap = is_ford_auto_follow_gap(self.params, self.CP)
 

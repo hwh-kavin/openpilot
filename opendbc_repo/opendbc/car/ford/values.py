@@ -29,6 +29,8 @@ class CarControllerParams:
   ACC_UI_STEP = 20      # ACCDATA_3, 5Hz
   BUTTONS_STEP = 5      # Steering_Data_FD1, 10Hz, but send twice as fast
   RESUME_HOLD_FRAMES = 5  # BluePilot: debounce RESUME button injection (~50ms)
+  GAP_SYNC_COOLDOWN_FRAMES = 50  # ~500ms between stock follow-gap button presses
+  GAP_PRESS_FRAMES = 2           # ~20ms gap button press duration
 
   STEER_DRIVER_ALLOWANCE = 1.0  # Driver intervention threshold, Nm
 

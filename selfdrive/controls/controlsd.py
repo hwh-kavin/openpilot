@@ -25,7 +25,7 @@ from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
 from openpilot.sunnypilot.selfdrive.controls.lib.curvature_lead import apply_curvature_lead, apply_curvature_exit_lead
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
-  FordFollowBarsDisplay, is_ford_auto_follow_gap,
+  is_ford_auto_follow_gap, personality_to_bars,
 )
 
 State = log.SelfdriveState.OpenpilotState
@@ -71,7 +71,6 @@ class Controls(ControlsExt):
       self.LaC = LatControlTorque(self.CP, self.CP_SP, self.CI, DT_CTRL)
 
     self.LaC = ControlsExt.initialize_lateral_control(self, self.LaC, self.CI, DT_CTRL)
-    self._ford_follow_bars = FordFollowBarsDisplay()
 
     # FordStockAccFusion is a persistent param; cache it instead of a per-cycle
     # Params disk read in publish() (100Hz hot path on core 4).
@@ -215,8 +214,7 @@ class Controls(ControlsExt):
       self._ford_auto_follow_gap = is_ford_auto_follow_gap(self.params, self.CP)
       self._ford_auto_follow_gap_time = time.monotonic()
     if self._ford_auto_follow_gap:
-      at_standstill = CS.standstill or CS.cruiseState.standstill
-      hudControl.leadDistanceBars = self._ford_follow_bars.update(CS.vEgo, at_standstill)
+      hudControl.leadDistanceBars = personality_to_bars(self.sm['selfdriveState'].personality)
     else:
       hudControl.leadDistanceBars = self.sm['selfdriveState'].personality.raw + 1
     hudControl.visualAlert = self.sm['selfdriveState'].alertHudVisual

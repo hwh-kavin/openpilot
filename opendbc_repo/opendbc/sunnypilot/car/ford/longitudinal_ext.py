@@ -90,6 +90,11 @@ class LongitudinalExt:
     self._stock_go_confirm = 0
     self._op_go_confirm = 0
     self._radar_lead_min_dRel = -1.0
+    # MRR 点云水平角宽，可能锁到相邻车道车辆并把它距离当成本车 lead（导致停车距离拉长）。
+    # 用视觉 lead 的横向位置与雷达 leadOne.yRel 做交叉校验，EMA 收敛后超出半车道宽则拒绝。
+    self._radar_lane_diff_ema = 0.0
+    self.RADAR_LANE_TOLERANCE_M = 1.8  # |radar_yRel + vision_y| 超过此值 => 相邻车道
+    self.RADAR_LANE_EMA = 0.4          # 横向差 EMA 的新数据权重
     self.induce_stock_resume = False
     self._sng_last_log_line = ""
     self._sng_log_time = 0.0
@@ -127,13 +132,17 @@ class LongitudinalExt:
     prpl = float(getattr(CS, "stock_acc_prpl", CarControllerParams.INACTIVE_GAS))
     brk = float(getattr(CS, "stock_acc_brk", 0.0))
 
+    # 刹车优先：原车正在制动（AccBrkTot_A_Rq<0）时返回制动请求，不能被推进
+    # 请求（AccPrpl_A_Pred/AccPrpl_A_Rq）掩盖。否则低速跟停时读到的 stock_a
+    # 是正推进值，原车自己的制动被丢掉，OP 视觉噪声才会占据停车制动。
+    if brk < -0.05:
+      return brk
+
     # AccPrpl_A_Pred is the raw request during stock operation when live
     if pred > CarControllerParams.INACTIVE_GAS + 0.05:
       return pred
     if prpl >= CarControllerParams.MIN_GAS:
       return prpl
-    if brk < -0.05:
-      return brk
     if prpl > CarControllerParams.INACTIVE_GAS + 0.05:
       return prpl
     return None
@@ -149,6 +158,39 @@ class LongitudinalExt:
     if stock_v_trg <= 1.0:
       return False
     return stock_v_trg < (cruise_kph - self.FUSION_LEAD_MOVING_V_TRG_MARGIN_KPH)
+
+  def _radar_lane_ok(self) -> bool:
+    """雷达 leadOne 与视觉 lead 的车道交叉校验（收敛+滤波）。
+
+    MRR 点云水平角很宽，会把相邻车道车辆的距离误当成本车道 lead，导致跟车
+    /停车距离拉长。用视觉 lead 的横向位置 y（右正）与雷达 yRel（左正，故取负
+    后等价）求横向差，EMA 收敛后超过半车道宽就判为相邻车道目标、拒绝。
+    无可靠视觉 lead 可比对时保留雷达结果（不拒绝），避免误杀。
+    """
+    try:
+      sm = getattr(self, 'sm', None)
+      if sm is None or not sm.valid.get('radarState', False):
+        return True
+      lead = sm['radarState'].leadOne
+      if lead is None or getattr(lead, 'status', 0) != 1:
+        return False
+      if not getattr(lead, 'radar', True):  # 该 lead 本就来自视觉，必然在车道内
+        return True
+      if not sm.valid.get('modelV2', False):
+        return True
+      leads = getattr(sm['modelV2'], 'leadsV3', [])
+      if len(leads) == 0:
+        return True
+      vlead = leads[0]
+      if float(getattr(vlead, 'prob', 0.0)) < 0.5:
+        return True
+      radar_y = float(getattr(lead, 'yRel', 0.0))       # 左正
+      vision_y = float(getattr(vlead, 'y', [0.0])[0])   # 右正
+      diff = abs(radar_y + vision_y)
+      self._radar_lane_diff_ema = (1.0 - self.RADAR_LANE_EMA) * self._radar_lane_diff_ema + self.RADAR_LANE_EMA * diff
+      return self._radar_lane_diff_ema < self.RADAR_LANE_TOLERANCE_M
+    except Exception:
+      return True
 
   def _radar_lead_departing(self, CS, at_stop: bool) -> bool:
     """True when the native radar lead is departing while the ego is stopped.
@@ -167,6 +209,10 @@ class LongitudinalExt:
       if not at_stop or not has_lead:
         self._radar_lead_min_dRel = -1.0
         return False
+      # 相邻车道雷达目标不判为前车起步（避免误触发起步）
+      if not self._radar_lane_ok():
+        self._radar_lead_min_dRel = -1.0
+        return False
       d_rel = float(getattr(lead, 'dRel', 0.0))
       v_rel = float(getattr(lead, 'vRel', 0.0))
       if self._radar_lead_min_dRel < 0.0 or d_rel < self._radar_lead_min_dRel:
@@ -183,7 +229,8 @@ class LongitudinalExt:
     - Stock auto-resume (debounced stock pullaway): follow the stock request.
     - Stop-go: if OP wants to go while stock is silent/holding, use the OP
       pullaway floor so the stock stop-hold cannot deadlock the launch.
-    - Otherwise the more conservative (lower) request wins.
+    - Otherwise follow the stock request (stock owns low-speed longitudinal;
+      OP vision braking is noisy at low speed and is not the stop arbiter).
     """
     op_a = float(op_a)
     if stock_a is None:
@@ -199,22 +246,58 @@ class LongitudinalExt:
     if stop_go_op and op_a > stock_a + 1e-3:
       return float(min(max(op_a, self.FUSION_OP_PULLAWAY_ACCEL), soft_max_accel)), "op_go"
 
-    fused = min(op_a, stock_a, soft_max_accel)
-    if fused < op_a - 1e-3 and fused < stock_a - 1e-3:
-      mode = "soft_max"
-    elif fused < stock_a - 1e-3:
-      mode = "op_more_brake"
-    elif fused < op_a - 1e-3:
-      mode = "stock_more_brake"
-    else:
-      mode = "match"
-    return float(fused), mode
+    # 低速跟车（stock 模式）：原车纵向为主，直接跟随原车请求（含原车自己的
+    # 制动）。OP 视觉低速前车距离噪声大，不作为停车制动判据；紧急制动由
+    # 毫米波雷达兜底（update 里的 _radar_brake_accel）。
+    fused = float(min(stock_a, soft_max_accel))
+    mode = "stock_follow"
+    return fused, mode
+
+  def _radar_follow_accel(self, CS) -> float | None:
+    """低速跟车：毫米波雷达距离闭环，替代 OP 视觉前车距离。
+
+    OP 视觉在低速时前车距离噪声大，导致停车距离忽远忽近；雷达距离稳定，
+    直接用 dRel/vRel 做 P+D 距离闭环：正=跟上/收近，负=刹车。
+    目标停车距离 ~3.0m，随速度按 1.5s 时距平滑拉大。无前车/雷达失效返回 None。
+    """
+    try:
+      sm = getattr(self, 'sm', None)
+      if sm is None or not sm.valid.get('radarState', False):
+        return None
+      lead = sm['radarState'].leadOne
+      if lead is None or getattr(lead, 'status', 0) != 1:
+        return None
+      # 相邻车道雷达目标误判：拒绝，回退视觉/原车纵向，避免停车距离被拉长
+      if not self._radar_lane_ok():
+        return None
+      d_rel = float(getattr(lead, 'dRel', 0.0))
+      v_rel = float(getattr(lead, 'vRel', 0.0))
+      if d_rel <= 0.0:
+        return None
+      v_ego = max(float(CS.out.vEgo), 0.0)
+
+      # 目标距离：停车 3.0m，随速度以 1.5s 时距拉大（15km/h 时约 9.2m）
+      desired_d = 3.0 + v_ego * 1.5
+      d_err = d_rel - desired_d
+
+      # P + D：距离误差 0.4，相对速度阻尼 0.6
+      accel = 0.4 * d_err + 0.6 * v_rel
+
+      # 碰撞时距硬阈值：TTC 过小直接给足制动力，防止雷达跟车收不住
+      if v_rel < -0.5:
+        ttc = d_rel / -v_rel
+        if ttc < 2.0:
+          accel = min(accel, float(np.interp(ttc, [0.5, 2.0], [-3.5, -1.5])))
+
+      return float(np.clip(accel, -2.5, 1.2))
+    except Exception:
+      return None
 
   def _radar_brake_accel(self, CS) -> float | None:
-    """毫米波雷达纵向距离刹车兜底（低速原车纵向跟车时 OP 视觉距离偏差大）。
+    """毫米波雷达紧急制动兜底（stock 模式：原车纵向为主时 OP 只兜底）。
 
     以毫米波雷达测量为准；雷达失效时回退 OP 视觉前车距离（modelV2 leadsV3）。
-    用 dRel/vRel 判距：距离不足或接近太快时返回负加速度覆盖融合输出；
+    用 dRel/vRel 判距：距离不足或接近太快时返回负加速度覆盖原车请求；
     None 表示无需干预。无前车（雷达无效且视觉无 lead）直接跳过。
     """
     try:
@@ -420,13 +503,25 @@ class LongitudinalExt:
                                                      stock_auto_resume=stock_pullaway,
                                                      soft_max_accel=self.FUSION_ACCEL_SOFT_MAX)
 
-      # 毫米波雷达纵向距离刹车兜底：低速跟车时 OP 视觉前车距离偏差大，
-      # 用雷达 dRel 判距，需要更强制动时覆盖融合输出。仅在 OP 纵向激活时
-      # 允许——纵向未激活时 panda 安全层禁止任何制动请求，发送即整帧拦截。
-      radar_accel = self._radar_brake_accel(CS)
-      if CC.longActive and radar_accel is not None and radar_accel < accel:
-        accel = radar_accel
-        fusion_mode = "radar_brake"
+      # OP-only（stock_a=None，原车会话未建立）：OP 视觉低速噪声大，改用毫米波
+      # 雷达距离闭环（目标停车 ~3.0m）稳定停车距离。起步（op_go/stock_go）不覆盖。
+      if (CC.longActive and self._stock_long_active and stock_a is None and
+          fusion_mode not in ("op_go", "stock_go")):
+        radar_follow = self._radar_follow_accel(CS)
+        if radar_follow is not None:
+          # 停车保持/规划停车时不允许正加速度漏出，防止与 AccStopStat 冲突导致蠕动
+          if at_stop or stopping:
+            radar_follow = min(radar_follow, 0.0)
+          accel = radar_follow
+          fusion_mode = "radar_follow"
+
+      # 毫米波雷达紧急制动兜底（stock 模式）：原车制动为主时，雷达判距更近/
+      # TTC 过小则加刹。仅在 OP 纵向激活时允许——未激活发制动会被 panda 整帧拦截。
+      if stock_a is not None:
+        radar_accel = self._radar_brake_accel(CS)
+        if CC.longActive and radar_accel is not None and radar_accel < accel:
+          accel = radar_accel
+          fusion_mode = "radar_brake"
 
       # 纵向未激活：所有纵向请求必须为不活跃哨兵（accel=0、无制动、无预充），
       # 与上游/参考分支一致。否则 panda 安全层拦截 ACCDATA → CCM 收不到帧 →

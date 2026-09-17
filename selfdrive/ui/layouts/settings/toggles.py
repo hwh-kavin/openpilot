@@ -99,8 +99,8 @@ class TogglesLayout(Widget):
     self._long_personality_setting = multiple_button_item(
       lambda: tr("Driving Personality"),
       lambda: tr(DESCRIPTIONS["LongitudinalPersonality"]),
-      buttons=[lambda: tr("Aggressive"), lambda: tr("Standard"), lambda: tr("Relaxed")],
-      button_width=300,
+      buttons=[lambda: tr("Aggressive"), lambda: tr("Standard"), lambda: tr("Steady"), lambda: tr("Relaxed")],
+      button_width=240,
       callback=self._set_longitudinal_personality,
       selected_index=self._params.get("LongitudinalPersonality", return_default=True),
       icon="speed_limit.png"

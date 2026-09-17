@@ -231,14 +231,14 @@ class SteeringLayout(Widget):
       min_value=50, max_value=200, value_change_step=5,
       label_callback=lambda x: f"{x / 100:.2f}",
       use_float_scaling=True,
-      description=lambda: tr("path_angle 整体增益（κ·v·gain）。过大→弯道压线/冲出车道；过小→转向不足。"),
+      description=lambda: tr("path_angle 总增益（曲率 x 速度 x 增益）。过大则弯道压线/驶出车道；过小则转向不足。"),
     )
     self._ford_angle_deviation_clip = option_item_sp(
       title=lambda: tr("Angle: Deviation Clip"),
       param="FordAngleDeviationClip",
       min_value=2, max_value=8, value_change_step=1,
       label_callback=lambda x: f"{x / 1000:.3f}",
-      description=lambda: tr("允许命令领先实测曲率的上限（m⁻¹）。过大→入弯过猛；过小→入弯转向不足。上限 0.008。"),
+      description=lambda: tr("允许控制量领先实测曲率的上限（1/m）。过大则入弯过强；过小则入弯转向不足。上限 0.008。"),
     )
     self._ford_curv_lane_change = option_item_sp(
       title=lambda: tr("Curvature: Lane Change Factor"),

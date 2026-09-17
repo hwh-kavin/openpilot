@@ -68,46 +68,60 @@ CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
-  if personality==log.LongitudinalPersonality.relaxed:
-    return 1.0
-  elif personality==log.LongitudinalPersonality.standard:
-    return 1.0
-  elif personality==log.LongitudinalPersonality.aggressive:
+  if personality == log.LongitudinalPersonality.aggressive:
     return 0.5
-  else:
-    raise NotImplementedError("Longitudinal personality not supported")
+  return 1.0
 
 
 def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
-  if personality==log.LongitudinalPersonality.relaxed:
-    return 1.75
-  elif personality==log.LongitudinalPersonality.standard:
-    return 1.45
-  elif personality==log.LongitudinalPersonality.aggressive:
-    return 1.25
+  if personality == log.LongitudinalPersonality.aggressive:
+    return 1.20
+  elif personality == log.LongitudinalPersonality.standard:
+    return 1.40
+  elif personality == log.LongitudinalPersonality.steady:
+    return 1.55
+  elif personality == log.LongitudinalPersonality.relaxed:
+    return 1.70
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
 
 def get_start_accel(personality, base_start_accel: float) -> float:
   """Personality-scaled launch accel for the LongCtrlState.starting state."""
-  if personality == log.LongitudinalPersonality.relaxed:
-    factor = 0.55
-  elif personality == log.LongitudinalPersonality.aggressive:
+  if personality == log.LongitudinalPersonality.aggressive:
     factor = 1.25
+  elif personality == log.LongitudinalPersonality.standard:
+    factor = 1.0
+  elif personality == log.LongitudinalPersonality.steady:
+    factor = 0.8
+  elif personality == log.LongitudinalPersonality.relaxed:
+    factor = 0.55
   else:
     factor = 1.0
   return float(base_start_accel * factor)
 
 
-# Ford + FordStockAccFusion: speed-based stock follow gap (button + OP t_follow)
-# <40 km/h → 1, <70 → 2, <90 → 3, else → 4
-_FORD_AUTO_T_FOLLOW_BY_BARS = {1: 1.20, 2: 1.40, 3: 1.55, 4: 1.70}
-_FORD_FOLLOW_BARS_HOLD_S = 2.0
+# Ford + FordStockAccFusion: 4-level speed-based driving style (激进/标准/稳健/从容),
+# matching the stock ACC's follow-gap bars. Speed thresholds 40/70/90 km/h with
+# +5/-5 km/h hysteresis. Level index 0-3 is the closest→farthest order.
+_FORD_PERSONALITY_LEVELS = [
+  log.LongitudinalPersonality.aggressive,  # 0 激进 (closest, bar 1)
+  log.LongitudinalPersonality.standard,    # 1 标准 (bar 2)
+  log.LongitudinalPersonality.steady,      # 2 稳健 (bar 3)
+  log.LongitudinalPersonality.relaxed,     # 3 从容 (farthest, bar 4)
+]
+
+
+def personality_to_bars(personality) -> int:
+  """Map a 4-level personality to the stock follow-gap bars (1=closest, 4=farthest)."""
+  try:
+    return _FORD_PERSONALITY_LEVELS.index(personality) + 1
+  except ValueError:
+    return 2
 
 
 def is_ford_auto_follow_gap(params, CP) -> bool:
-  """True when Ford stock fusion should use speed-based t_follow instead of personality."""
+  """True when Ford stock fusion should use the speed-based 4-level personality."""
   if not getattr(CP, 'openpilotLongitudinalControl', False):
     return False
   if 'FORD' not in CP.carFingerprint:
@@ -118,51 +132,27 @@ def is_ford_auto_follow_gap(params, CP) -> bool:
     return False
 
 
-def _v_kph_to_bars_target(v_kph: float) -> int:
-  """Stock ACC follow bars from ego speed (km/h).
+def next_personality_level(v_kph: float, current_level: int) -> int:
+  """Speed-based 4-level driving style index (0-3) with +5/-5 km/h hysteresis.
 
-  <40 → 1, <70 → 2, <90 → 3, else → 4
+  Up-switch: exceed threshold +5 (45/75/95 km/h).
+  Down-switch: below threshold -5 (35/65/85 km/h).
   """
-  if v_kph < 40.0:
+  if current_level <= 0:
+    return 1 if v_kph >= 45.0 else 0
+  if current_level == 1:
+    if v_kph >= 75.0:
+      return 2
+    if v_kph < 35.0:
+      return 0
     return 1
-  if v_kph < 70.0:
+  if current_level == 2:
+    if v_kph >= 95.0:
+      return 3
+    if v_kph < 65.0:
+      return 1
     return 2
-  if v_kph < 90.0:
-    return 3
-  return 4
-
-
-def get_t_follow_auto(v_ego: float, standstill: bool = False) -> float:
-  """t_follow matching the speed-based stock 1–4 bar gap."""
-  from opendbc.car.common.conversions import Conversions as CV
-  if standstill:
-    return float(_FORD_AUTO_T_FOLLOW_BY_BARS[1])
-  v_kph = max(0.0, v_ego * CV.MS_TO_KPH)
-  return float(_FORD_AUTO_T_FOLLOW_BY_BARS[_v_kph_to_bars_target(v_kph)])
-
-
-def resolve_t_follow(v_ego: float, standstill: bool, personality, params, CP) -> float:
-  if is_ford_auto_follow_gap(params, CP):
-    return get_t_follow_auto(v_ego, standstill)
-  return get_T_FOLLOW(personality)
-
-
-class FordFollowBarsDisplay:
-  """Hysteresis for speed-based stock follow gap (1–4 bars)."""
-
-  def __init__(self):
-    self.bars = 3
-    self._last_change = 0.0
-
-  def update(self, v_ego: float, standstill: bool) -> int:
-    from opendbc.car.common.conversions import Conversions as CV
-    target = 1 if standstill else _v_kph_to_bars_target(max(0.0, v_ego * CV.MS_TO_KPH))
-    now = time.monotonic()
-    if target != self.bars:
-      if (now - self._last_change) >= _FORD_FOLLOW_BARS_HOLD_S or abs(target - self.bars) > 1:
-        self.bars = target
-        self._last_change = now
-    return self.bars
+  return 2 if v_kph < 85.0 else 3
 
 
 def get_stopped_equivalence_factor(v_lead):

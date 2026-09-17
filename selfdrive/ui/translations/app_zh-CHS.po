@@ -1724,6 +1724,10 @@ msgstr "基本的 备份/恢复 功能不需要赞助"
 msgid "Standard"
 msgstr "标准"
 
+#: ../pythonpath/openpilot/selfdrive/ui/layouts/settings/toggles.py
+msgid "Steady"
+msgstr "稳健"
+
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Start Download"
 msgstr "开始下载"

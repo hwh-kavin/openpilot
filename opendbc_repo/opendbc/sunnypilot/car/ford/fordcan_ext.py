@@ -316,17 +316,21 @@ def create_lkas_ui_msg(packer, CAN: CanBus, main_on: bool, enabled: bool, hands:
 
 
 def create_button_msg(packer, bus: int, stock_values: dict, cancel=False, resume=False,
-                      tja_toggle=False, icbm_button=None):
+                      tja_toggle=False, icbm_button=None, gap_inc=False, gap_dec=False):
   """
   Creates a CAN message for the Ford SCCM buttons/switches.
 
   BluePilot extension: adds icbm_button parameter for Intelligent Cruise Button
   Management. When set, the specified CAN signal is set to 1 in the outgoing
   message, enabling openpilot to emulate cruise button presses for speed adjustment.
+  gap_inc/gap_dec emulate the stock follow-gap buttons (AccButtnGapIncPress /
+  AccButtnGapDecPress) to sync the stock ACC's displayed follow distance.
 
   Args:
     icbm_button: Optional string signal name (e.g., "CcAslButtnSetIncPress",
                  "CcAslButtnSetDecPress") for ICBM button injection.
+    gap_inc: Emulate a gap-increase press (follow farther).
+    gap_dec: Emulate a gap-decrease press (follow closer).
 
   Frequency is 10Hz.
   """
@@ -373,5 +377,12 @@ def create_button_msg(packer, bus: int, stock_values: dict, cancel=False, resume
   # ICBM button support — set the specified button signal to 1
   if icbm_button is not None:
     values[icbm_button] = 1
+
+  # Gap button emulation — only override the passthrough bits when actually
+  # simulating a press, so physical gap presses still pass through otherwise.
+  if gap_inc:
+    values["AccButtnGapIncPress"] = 1
+  if gap_dec:
+    values["AccButtnGapDecPress"] = 1
 
   return packer.make_can_msg("Steering_Data_FD1", bus, values)

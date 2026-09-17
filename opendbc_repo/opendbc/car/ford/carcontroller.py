@@ -103,6 +103,9 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
     self._tja_sent = False
     self._icbm_sent = "n/a"
     self._lng_tx = None
+    self._gap_sync_last_frame = -1000
+    self._gap_press_frames = 0
+    self._gap_press_inc = False
     # Note: main_on_last, lkas_enabled_last, steer_alert_last, lead_distance_bars_last,
     # distance_bar_frame are initialized by HudExt.__init__() above
 
@@ -163,6 +166,30 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
       elif CS.acc_tja_status_stock_values["Tja_D_Stat"] != 0 and (self.frame % CarControllerParams.ACC_UI_STEP) == 0:
         can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, tja_toggle=True))
         self._tja_sent = True
+
+    # BluePilot: sync the stock ACC's follow gap with OP's speed-based 4-level gap.
+    # The IPMA (stock ACC) reads Steering_Data_FD1 on the camera bus, so emulate the
+    # steering-wheel gap buttons there. One short press per cooldown window, repeated
+    # until the stock AccTGap display matches the target bars.
+    if CC.enabled and self._fusion_enabled:
+      target_bars = int(getattr(CC.hudControl, "leadDistanceBars", 0))
+      current_bars = max(1, min(4, int(getattr(CS, "stock_acc_tgap", 0))))
+      if 1 <= target_bars <= 4 and current_bars != target_bars:
+        if self.frame - self._gap_sync_last_frame >= CarControllerParams.GAP_SYNC_COOLDOWN_FRAMES:
+          self._gap_press_frames = CarControllerParams.GAP_PRESS_FRAMES
+          self._gap_press_inc = current_bars < target_bars
+          self._gap_sync_last_frame = self.frame
+      else:
+        self._gap_press_frames = 0
+    else:
+      self._gap_press_frames = 0
+
+    if self._gap_press_frames > 0:
+      can_sends.append(fordcan_ext.create_button_msg(self.packer, self.CAN.camera,
+                                                     CS.buttons_stock_values,
+                                                     gap_inc=self._gap_press_inc,
+                                                     gap_dec=not self._gap_press_inc))
+      self._gap_press_frames -= 1
 
     # BluePilot: Intelligent Cruise Button Management (ICBM)
     icbm_can_sends, self.last_button_frame = IntelligentCruiseButtonManagementInterface.update(

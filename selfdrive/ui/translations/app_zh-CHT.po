@@ -1581,6 +1581,10 @@ msgstr ""
 msgid "Standard"
 msgstr "標準"
 
+#: ../pythonpath/openpilot/selfdrive/ui/layouts/settings/toggles.py
+msgid "Steady"
+msgstr "穩健"
+
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/osm.py
 msgid "Start Download"
 msgstr ""
