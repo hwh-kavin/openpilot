@@ -381,12 +381,12 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
     """Dump the recent OP TX timeline when the CCM faults (accFaulted rising)."""
     try:
       ctx = ("ACC FAULT TX: vEgo=%.2f standstill=%s cruiseEnbl=%s avail=%s accFaulted=%s "
-             "fusion=%s stockLong=%s session=%s stopGo=%s stockGo=%d opGo=%d hold=%d induceResume=%s sng=%s" % (
+             "fusion=%s radarLong=%s session=%s stopGo=%s opGo=%d hold=%d induceResume=%s sng=%s" % (
                CS.out.vEgo, CS.out.standstill, CS.out.cruiseState.enabled, CS.out.cruiseState.available,
                CS.out.accFaulted,
                getattr(self, '_fusion_enabled', '?'), getattr(self, '_radar_long_active', '?'),
                getattr(self, '_stock_session_latched', '?'), getattr(self, '_fusion_stop_go', '?'),
-               getattr(self, '_stock_go_confirm', 0), getattr(self, '_op_go_confirm', 0),
+               getattr(self, '_op_go_confirm', 0),
                self._resume_hold_frames, getattr(self, 'induce_stock_resume', '?'),
                getattr(self, '_sng_last_log_line', '')))
       rows = ["  f=%d la=%d ls=%s stop=%d gas=%.2f acc=%.2f brk=%d prchg=%d vtrg=%.0f res=%d cncl=%d tja=%d icbm=%s" % r

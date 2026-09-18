@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 import math
+import time
 import numpy as np
 
 import cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
+from openpilot.selfdrive.controls.lib.radar_lead_filter import RadarLeadFilter, get_vision_lead, lead_from_vision
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
@@ -23,9 +26,21 @@ CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
+# BluePilot: MPC 前车参数源切换速度带（车道收敛+滤波逻辑见 radar_lead_filter）
+RADAR_LEAD_ENTER_V_MS = 60.0 * CV.KPH_TO_MS   # 低于此速度启用雷达点云前车参数
+RADAR_LEAD_EXIT_V_MS = 62.0 * CV.KPH_TO_MS    # 高于此速度退出（迟滞）
+
 # Lookup table for turns
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
+
+
+class _RadarStateCopy:
+  """radarState 替身：leadOne 替换为收敛+滤波后的 lead，leadTwo 原样传递。"""
+  def __init__(self, leadOne, leadTwo):
+    self.leadOne = leadOne
+    self.leadTwo = leadTwo
+
 
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
@@ -66,6 +81,21 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
 
+    # BluePilot: MPC 前车参数的雷达点云处理（视觉车道收敛 + 滤波，与停车起步判定同源）
+    self._radar_lead_filter = RadarLeadFilter()
+    self._mpc_lead_status = False
+    # 雷达点云前车参数启用条件：Ford + FordStockAccFusion + 车速 <60 km/h
+    self._radar_lead_active = True
+    self._is_ford = CP.carName == "ford"
+    self._fusion_params = None
+    self._fusion_enabled_cached = True
+    self._fusion_checked_t = 0.0
+    if self._is_ford:
+      try:
+        self._fusion_params = Params()
+      except Exception:
+        self._fusion_params = None
+
   @staticmethod
   def parse_model(model_msg):
     if (len(model_msg.position.x) == ModelConstants.IDX_N and
@@ -85,6 +115,49 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     else:
       throttle_prob = 1.0
     return x, v, a, j, throttle_prob
+
+  def _mpc_radar_state(self, sm):
+    """MPC 前车参数源选择：
+    - 车速 < 60 km/h 且雷达点云有效（Ford + FordStockAccFusion）时，使用
+      视觉车道收敛 + dRel/vLead 滤波后的雷达点云数据（与停车起步判定同源）；
+    - 否则（≥60 km/h / 雷达无效 / 车道校验拒绝）使用 OP 视觉模型前车距离/速度。"""
+    rs = sm['radarState']
+    lead = rs.leadOne
+
+    # 雷达点云启用带（迟滞）：<60 km/h 进入，>=62 km/h 退出
+    v_ego = float(sm['carState'].vEgo)
+    if v_ego < RADAR_LEAD_ENTER_V_MS:
+      self._radar_lead_active = True
+    elif v_ego >= RADAR_LEAD_EXIT_V_MS:
+      self._radar_lead_active = False
+    # 1s 刷新一次融合开关（避免每帧读 Params）
+    now = time.monotonic()
+    if self._is_ford and self._fusion_params is not None and now - self._fusion_checked_t > 1.0:
+      self._fusion_checked_t = now
+      try:
+        self._fusion_enabled_cached = self._fusion_params.get_bool("FordStockAccFusion")
+      except Exception:
+        pass
+    use_radar = self._is_ford and self._fusion_enabled_cached and self._radar_lead_active
+
+    if use_radar and lead is not None and lead.status and lead.radar:
+      filt = self._radar_lead_filter.update(lead, get_vision_lead(sm))
+      if filt is not None and filt.status:
+        self._mpc_lead_status = True
+        return _RadarStateCopy(filt, rs.leadTwo)
+      # 相邻车道雷达目标/滤波无效：回退视觉 lead；无可靠视觉 lead 视为无前车
+      lead_copy = lead_from_vision(get_vision_lead(sm))
+      self._mpc_lead_status = lead_copy.status
+      return _RadarStateCopy(lead_copy, rs.leadTwo)
+
+    # 视觉模型前车距离/速度（无可靠视觉 lead 时回退雷达 leadOne 原样保底）
+    vlead = get_vision_lead(sm)
+    if vlead is not None:
+      lead_copy = lead_from_vision(vlead)
+      self._mpc_lead_status = lead_copy.status
+      return _RadarStateCopy(lead_copy, rs.leadTwo)
+    self._mpc_lead_status = bool(lead.status) if lead is not None else False
+    return rs
 
   def update(self, sm):
     LongitudinalPlannerSP.update(self, sm)
@@ -138,7 +211,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
-    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality)
+    self.mpc.update(self._mpc_radar_state(sm), v_cruise, personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -188,7 +261,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     longitudinalPlan.accels = self.a_desired_trajectory.tolist()
     longitudinalPlan.jerks = self.j_desired_trajectory.tolist()
 
-    longitudinalPlan.hasLead = sm['radarState'].leadOne.status
+    longitudinalPlan.hasLead = self._mpc_lead_status
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
     longitudinalPlan.fcw = self.fcw
 
