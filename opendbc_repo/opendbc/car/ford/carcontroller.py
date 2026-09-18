@@ -384,7 +384,7 @@ class CarController(CarControllerBase, LateralCurvExt, LateralAngleExt, Longitud
              "fusion=%s stockLong=%s session=%s stopGo=%s stockGo=%d opGo=%d hold=%d induceResume=%s sng=%s" % (
                CS.out.vEgo, CS.out.standstill, CS.out.cruiseState.enabled, CS.out.cruiseState.available,
                CS.out.accFaulted,
-               getattr(self, '_fusion_enabled', '?'), getattr(self, '_stock_long_active', '?'),
+               getattr(self, '_fusion_enabled', '?'), getattr(self, '_radar_long_active', '?'),
                getattr(self, '_stock_session_latched', '?'), getattr(self, '_fusion_stop_go', '?'),
                getattr(self, '_stock_go_confirm', 0), getattr(self, '_op_go_confirm', 0),
                self._resume_hold_frames, getattr(self, 'induce_stock_resume', '?'),

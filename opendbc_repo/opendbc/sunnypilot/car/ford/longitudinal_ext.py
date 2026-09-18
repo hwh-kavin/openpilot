@@ -63,12 +63,12 @@ class LongitudinalExt:
     self.MAX_URBAN_SPEED_MPH = 45.0
     self.following_accel_ROC = 0.002  # max accel change per scan in following mode
 
-    # Stop-and-go longitudinal handover (hysteresis):
-    #   vEgo <= 15 km/h -> stock (PCM) longitudinal
-    #   vEgo >= 20 km/h -> OP longitudinal
+    # Radar-primary handover (hysteresis):
+    #   vEgo < 60 km/h -> 雷达点云为主（视觉车道匹配+滤波，视觉兜底）
+    #   vEgo >= 62 km/h -> 普通 OP 视觉纵向
     #   between -> keep the currently active controller (avoid repeated handover jerk)
-    self.STOCK_LONG_MAX_V_MS = 15.0 * CV.KPH_TO_MS   # ~4.17 m/s
-    self.OP_LONG_MIN_V_MS = 20.0 * CV.KPH_TO_MS      # ~5.56 m/s
+    self.RADAR_LONG_ENTER_V_MS = 60.0 * CV.KPH_TO_MS  # ~16.7 m/s
+    self.RADAR_LONG_EXIT_V_MS = 62.0 * CV.KPH_TO_MS   # ~17.2 m/s
     # Ford stock ACC cannot initially enable below ~20 mph; only trust the camera-bus
     # stock request once the cruise session has been established above this speed.
     self.STOCK_SESSION_MIN_V_MS = 20.0 * CV.MPH_TO_MS
@@ -83,7 +83,7 @@ class LongitudinalExt:
     self.FUSION_OP_PULLAWAY_ACCEL = 0.4           # m/s^2 floor while OP pulls away
     self.FUSION_ACCEL_SOFT_MAX = 1.2              # m/s^2 cap for stock/OP positive accel
     self.FUSION_LEAD_MOVING_V_TRG_MARGIN_KPH = 5.0  # stock v_trg below cruise by this => lead moving
-    self._stock_long_active = False
+    self._radar_long_active = False
     self._stock_session_latched = False
     self._fusion_enabled = False
     self._fusion_stop_go = False
@@ -95,6 +95,9 @@ class LongitudinalExt:
     self._radar_lane_diff_ema = 0.0
     self.RADAR_LANE_TOLERANCE_M = 1.8  # |radar_yRel + vision_y| 超过此值 => 相邻车道
     self.RADAR_LANE_EMA = 0.4          # 横向差 EMA 的新数据权重
+    # 视觉强烈制动否决：OP 视觉比雷达闭环多要求的制动量(m/s^2)超过该值
+    # （红灯/切入/静止障碍等雷达跟车不会减速的场景）时以视觉为准。
+    self.RADAR_VISION_VETO_MARGIN = 0.5
     self.induce_stock_resume = False
     self._sng_last_log_line = ""
     self._sng_log_time = 0.0
@@ -221,44 +224,25 @@ class LongitudinalExt:
     except Exception:
       return False
 
-  def _fuse_stock_op_accel(self, op_a: float, stock_a: float | None, *, stop_go_op: bool,
-                           stock_auto_resume: bool, soft_max_accel: float) -> tuple[float, str]:
-    """Fuse stock ACC with OP longitudinal (sp-master260727 logic, stock mode).
+  def _op_pullaway_accel(self, op_a: float, stop_go_op: bool, soft_max_accel: float) -> tuple[float, str]:
+    """OP 纵向为唯一主控的基准加速度（不再跟随原车请求）。
 
-    - stock_a None: OP only; during stop-go OP gets the pullaway floor (op_go).
-    - Stock auto-resume (debounced stock pullaway): follow the stock request.
-    - Stop-go: if OP wants to go while stock is silent/holding, use the OP
-      pullaway floor so the stock stop-hold cannot deadlock the launch.
-    - Otherwise follow the stock request (stock owns low-speed longitudinal;
-      OP vision braking is noisy at low speed and is not the stop arbiter).
+    - 起步确认（op_go）：OP 视觉起步意图去抖确认后给起步地板加速度，
+      防止停车保持把起步锁死。
+    - 否则直接返回 OP 视觉纵向请求；低速跟车距离闭环由 update() 中的
+      雷达点云接管（op_only 兜底）。
     """
     op_a = float(op_a)
-    if stock_a is None:
-      if stop_go_op:
-        return float(min(max(op_a, self.FUSION_OP_PULLAWAY_ACCEL), soft_max_accel)), "op_go"
-      return op_a, "op_only"
-
-    stock_a = float(stock_a)
-
-    if stock_auto_resume and stock_a > self.STOCK_PULLAWAY_THRESH:
-      return float(min(stock_a, soft_max_accel)), "stock_go"
-
-    if stop_go_op and op_a > stock_a + 1e-3:
+    if stop_go_op:
       return float(min(max(op_a, self.FUSION_OP_PULLAWAY_ACCEL), soft_max_accel)), "op_go"
-
-    # 低速跟车（stock 模式）：原车纵向为主，直接跟随原车请求（含原车自己的
-    # 制动）。OP 视觉低速前车距离噪声大，不作为停车制动判据；紧急制动由
-    # 毫米波雷达兜底（update 里的 _radar_brake_accel）。
-    fused = float(min(stock_a, soft_max_accel))
-    mode = "stock_follow"
-    return fused, mode
+    return op_a, "op_only"
 
   def _radar_follow_accel(self, CS) -> float | None:
-    """低速跟车：毫米波雷达距离闭环，替代 OP 视觉前车距离。
+    """<60 km/h 跟车：毫米波雷达点云距离闭环（OP 纵向优先使用雷达数据）。
 
-    OP 视觉在低速时前车距离噪声大，导致停车距离忽远忽近；雷达距离稳定，
-    直接用 dRel/vRel 做 P+D 距离闭环：正=跟上/收近，负=刹车。
-    目标停车距离 ~3.0m，随速度按 1.5s 时距平滑拉大。无前车/雷达失效返回 None。
+    雷达距离稳定，直接用 dRel/vRel 做 P+D 距离闭环：正=跟上/收近，负=刹车。
+    目标停车距离 ~3.0m，随速度按 1.5s 时距平滑拉大。车道校验由 _radar_lane_ok
+    把关（视觉车道匹配+滤波）。无前车/雷达失效返回 None，回退 OP 视觉。
     """
     try:
       sm = getattr(self, 'sm', None)
@@ -294,7 +278,7 @@ class LongitudinalExt:
       return None
 
   def _radar_brake_accel(self, CS) -> float | None:
-    """毫米波雷达紧急制动兜底（stock 模式：原车纵向为主时 OP 只兜底）。
+    """毫米波雷达紧急制动兜底（低速融合主控之上的安全网）。
 
     以毫米波雷达测量为准；雷达失效时回退 OP 视觉前车距离（modelV2 leadsV3）。
     用 dRel/vRel 判距：距离不足或接近太快时返回负加速度覆盖原车请求；
@@ -348,15 +332,15 @@ class LongitudinalExt:
     except Exception:
       return None
 
-  def _log_sng(self, tag: str, v_ego: float, stock_a, op_accel: float, stopping: bool,
-               resume: bool, at_standstill: bool) -> None:
+  def _log_sng(self, tag: str, v_ego: float, stock_a, op_accel: float, accel: float,
+               stopping: bool, resume: bool, at_standstill: bool) -> None:
     """1 Hz stop-and-go diagnostics into Developer → Error Log (UiAlertLogEnable gated)."""
     try:
-      line = ("SNG %s vEgo=%.2f stock_a=%s op=%.2f stopping=%s resume=%s standstill=%s "
+      line = ("SNG %s vEgo=%.2f stock_a=%s op=%.2f a=%.2f stopping=%s resume=%s standstill=%s "
               "stockGo=%d/%d opGo=%d/%d" % (
                 tag, v_ego * CV.MS_TO_KPH,
                 ("%.2f" % stock_a) if stock_a is not None else "None",
-                op_accel, stopping, resume, at_standstill,
+                op_accel, accel, stopping, resume, at_standstill,
                 self._stock_go_confirm, self.STOCK_GO_DEBOUNCE_CYCLES,
                 self._op_go_confirm, self.OP_GO_DEBOUNCE_CYCLES))
       now = time.monotonic()
@@ -398,15 +382,15 @@ class LongitudinalExt:
     elif accel_pitch_compensated < self.brake_actuate_target:
       op_brake_actuate = True
 
-    # --- Stock longitudinal handover (stop-and-go) ---
-    # Hysteresis switch: <=15 km/h stock longitudinal, >=20 km/h OP longitudinal,
-    # keep the active controller inside the band to avoid repeated handovers.
+    # --- 雷达点云主控带（hysteresis）---
+    # vEgo < 60 km/h：雷达点云为前车距离/速度主源（视觉车道匹配+滤波）；
+    # vEgo >= 62 km/h：普通 OP 视觉纵向；带内保持当前控制器避免来回切换。
     v_ego = float(CS.out.vEgo)
-    if v_ego <= self.STOCK_LONG_MAX_V_MS:
-      self._stock_long_active = True
-    elif v_ego >= self.OP_LONG_MIN_V_MS:
-      self._stock_long_active = False
-    if not self._stock_long_active:
+    if v_ego < self.RADAR_LONG_ENTER_V_MS:
+      self._radar_long_active = True
+    elif v_ego >= self.RADAR_LONG_EXIT_V_MS:
+      self._radar_long_active = False
+    if not self._radar_long_active:
       self._stock_go_confirm = 0
       self._op_go_confirm = 0
       self.induce_stock_resume = False
@@ -417,16 +401,14 @@ class LongitudinalExt:
       self._stock_session_latched = False
     elif v_ego >= self.STOCK_SESSION_MIN_V_MS:
       self._stock_session_latched = True
-    if not self._stock_long_active or not self._fusion_enabled:
+    if not self._radar_long_active or not self._fusion_enabled:
       self.induce_stock_resume = False
 
-    # Stock-ACC + OP fusion (sp-master260727 behavior): only when the user
-    # enables FordStockAccFusion. It runs in the stock-long handover band
-    # (<=15 km/h), NOT only after the 20mph session latch — otherwise low-speed
-    # city follow never arms the launch logic and the AccStopMde hold deadlocks
-    # the pullaway. The session latch only gates how much we trust the
-    # camera-bus stock request below.
-    if self._stock_long_active and self._fusion_enabled:
+    # 雷达主控融合（需 FordStockAccFusion 开启）：在 <60 km/h 带内运行。
+    # 纵向请求一律由 OP 决定：雷达点云距离闭环主控、OP 视觉兜底；原车请求只
+    # 用于起步上下文（自动恢复检测）与日志。20mph 会话锁存只影响原车请求的
+    # 可信度，不影响 OP 主控地位。
+    if self._radar_long_active and self._fusion_enabled:
       # sp-master260727 stop-and-go latch: entering a stop latches it; it only
       # releases once the car is moving again above the release speed.
       at_stop = bool(CS.out.standstill) or bool(CS.out.cruiseState.standstill)
@@ -435,9 +417,8 @@ class LongitudinalExt:
       elif v_ego >= self.FUSION_STOP_GO_RELEASE_V:
         self._fusion_stop_go = False
 
-      # Camera-bus stock request is only trustworthy once the stock ACC session
-      # has been established above ~20 mph. Below that, treat it as unavailable so
-      # the OP pullaway floor (op_go) still launches the car from AccStopMde.
+      # 原车请求仅用于起步上下文（自动恢复检测）与日志，不再作为跟车指令。
+      # 20 mph 以下会话未建立时原车请求不可信，按不可用处理。
       stock_a = self._parse_stock_accel(CS) if self._stock_session_latched else None
 
       # Launch context: OP decided to go, or the stock system sees the lead moving
@@ -447,14 +428,9 @@ class LongitudinalExt:
       planner_wants_go = bool(CC.cruiseControl.resume)
       op_wants_go = (not stopping and op_accel > 0.05)
       radar_lead_departing = self._radar_lead_departing(CS, at_stop)
-      # The stock ACC's stop-and-go auto-resume only lasts ~3s after stopping;
-      # beyond that its request is stale (the log shows it briefly spiking
-      # 0.42→0.67 then dropping to None). Once the native radar sees the lead
-      # departing, ignore the dead stock request and launch with OP's own
-      # pullaway floor (op_go) instead of stock_go — following the stale stock
-      # value held the car stopped and the driver had to take over.
-      if radar_lead_departing:
-        stock_a = None
+      # RESUME 按压触发：原车自动恢复（stock_pullaway）或雷达看到前车起步
+      # （radar_lead_departing，>3s 停车保持只有 RESUME 能解除）。纵向请求
+      # 一律由 OP 决定，原车请求只作为起步上下文与日志。
       pullaway_ctx = (planner_wants_go or op_wants_go or self._stock_lead_moving(CS) or
                       radar_lead_departing)
 
@@ -466,8 +442,8 @@ class LongitudinalExt:
         self._op_go_confirm = 0
       op_go_confirmed = self._op_go_confirm >= self.OP_GO_DEBOUNCE_CYCLES
 
-      # Debounced stock pullaway: once AccStopMde releases, the stock ACC resumes
-      # positive requests — follow that profile for the smoothest launch.
+      # Debounced stock pullaway: AccStopMde 释放后原车自动恢复检测，
+      # 用于触发 RESUME 按压与起步上下文（不再跟随其加速度）。
       if pullaway_ctx and stock_a is not None and stock_a > self.STOCK_PULLAWAY_THRESH:
         self._stock_go_confirm = min(self._stock_go_confirm + 1, self.STOCK_GO_DEBOUNCE_CYCLES + 1)
       else:
@@ -488,40 +464,42 @@ class LongitudinalExt:
       # sp-master260727 stop-go pullaway floor: OP vision decided to launch —
       # floor OP accel so the launch cannot deadlock behind the stock stop-hold.
       # Never while stock is braking.
-      stop_go_op = (CC.longActive and self._fusion_stop_go and not stock_pullaway and op_go_confirmed and
+      stop_go_op = (CC.longActive and self._fusion_stop_go and op_go_confirmed and
                     (stock_a is None or stock_a > -0.05))
       op_for_fuse = op_accel
-      # 停车起步未确认时（低速蠕行/停车），原车请求不可用也不允许 OP 正加速度漏出，
+      # 停车/规划停车且起步未确认：不允许 OP 正加速度漏出，
       # 过滤跟随停车时 shouldStop 抖动引起的 1-2 帧启动脉冲。
-      if stock_a is None and v_ego < 1.0 and not stop_go_op:
+      if (at_stop or stopping) and not stop_go_op:
         op_for_fuse = min(op_for_fuse, 0.0)
       if stop_go_op and op_for_fuse < self.FUSION_OP_PULLAWAY_ACCEL:
         op_for_fuse = self.FUSION_OP_PULLAWAY_ACCEL
 
-      accel, fusion_mode = self._fuse_stock_op_accel(op_for_fuse, stock_a,
-                                                     stop_go_op=stop_go_op,
-                                                     stock_auto_resume=stock_pullaway,
-                                                     soft_max_accel=self.FUSION_ACCEL_SOFT_MAX)
+      accel, fusion_mode = self._op_pullaway_accel(op_for_fuse, stop_go_op=stop_go_op,
+                                                   soft_max_accel=self.FUSION_ACCEL_SOFT_MAX)
 
-      # OP-only（stock_a=None，原车会话未建立）：OP 视觉低速噪声大，改用毫米波
-      # 雷达距离闭环（目标停车 ~3.0m）稳定停车距离。起步（op_go/stock_go）不覆盖。
-      if (CC.longActive and self._stock_long_active and stock_a is None and
-          fusion_mode not in ("op_go", "stock_go")):
+      # <60 km/h 纵向主控 = OP：雷达点云距离闭环（稳定 ~3m 停车距离）。雷达
+      # lead 无效/车道校验拒绝（相邻车道目标）时回退 OP 视觉请求（op_only）兜底。
+      # 起步（op_go）不覆盖；雷达失效返回 None。
+      if CC.longActive and fusion_mode != "op_go":
         radar_follow = self._radar_follow_accel(CS)
         if radar_follow is not None:
           # 停车保持/规划停车时不允许正加速度漏出，防止与 AccStopStat 冲突导致蠕动
           if at_stop or stopping:
             radar_follow = min(radar_follow, 0.0)
-          accel = radar_follow
-          fusion_mode = "radar_follow"
+          # 视觉强烈制动否决：视觉比雷达闭环多要求 VETO_MARGIN 以上制动时
+          # （红灯/切入/静止障碍等雷达跟车不会减速的场景）以视觉为准。
+          if op_for_fuse < radar_follow - self.RADAR_VISION_VETO_MARGIN:
+            fusion_mode = "op_vision_veto"
+          else:
+            accel = radar_follow
+            fusion_mode = "radar_follow"
 
-      # 毫米波雷达紧急制动兜底（stock 模式）：原车制动为主时，雷达判距更近/
-      # TTC 过小则加刹。仅在 OP 纵向激活时允许——未激活发制动会被 panda 整帧拦截。
-      if stock_a is not None:
-        radar_accel = self._radar_brake_accel(CS)
-        if CC.longActive and radar_accel is not None and radar_accel < accel:
-          accel = radar_accel
-          fusion_mode = "radar_brake"
+      # 毫米波雷达近距离紧急兜底：需要更强制动时覆盖（雷达失效时内部回退视觉）。
+      # 仅在 OP 纵向激活时允许——未激活发制动会被 panda 整帧拦截。
+      radar_accel = self._radar_brake_accel(CS)
+      if CC.longActive and radar_accel is not None and radar_accel < accel:
+        accel = radar_accel
+        fusion_mode = "radar_brake"
 
       # 纵向未激活：所有纵向请求必须为不活跃哨兵（accel=0、无制动、无预充），
       # 与上游/参考分支一致。否则 panda 安全层拦截 ACCDATA → CCM 收不到帧 →
@@ -529,7 +507,7 @@ class LongitudinalExt:
       if not CC.longActive:
         accel = 0.0
 
-      pulling_away = fusion_mode in ("stock_go", "op_go")
+      pulling_away = fusion_mode == "op_go"
       if pulling_away:
         stopping_out = False
       elif at_stop and not op_go_confirmed and CC.longActive:
@@ -583,7 +561,8 @@ class LongitudinalExt:
       self.bp_accel_last = accel
       self.op_brake_actuate_last = brake_actuate
 
-      self._log_sng("fusion:" + fusion_mode, v_ego, stock_a, op_accel, stopping_out, planner_wants_go, at_stop)
+      self._log_sng("fusion:" + fusion_mode, v_ego, stock_a, op_accel, accel,
+                    stopping_out, planner_wants_go, at_stop)
 
       return LongitudinalResult(
         accel=accel,
