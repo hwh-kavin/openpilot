@@ -4,10 +4,13 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import time
+
 import numpy as np
 
 import cereal.messaging as messaging
 from cereal import custom
+from openpilot.common.error_log import append_error_log
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
@@ -19,8 +22,8 @@ VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.VisionState
 ACTIVE_STATES = (VisionState.entering, VisionState.turning, VisionState.leaving)
 ENABLED_STATES = (VisionState.enabled, VisionState.overriding, *ACTIVE_STATES)
 
-_ENTERING_PRED_LAT_ACC_TH = 1.3  # Predicted Lat Acc threshold to trigger entering turn state.
-_ABORT_ENTERING_PRED_LAT_ACC_TH = 1.1  # Predicted Lat Acc threshold to abort entering state if speed drops.
+_ENTERING_PRED_LAT_ACC_TH = 1.1  # Predicted Lat Acc threshold to trigger entering turn state.
+_ABORT_ENTERING_PRED_LAT_ACC_TH = 0.9  # Predicted Lat Acc threshold to abort entering state if speed drops.
 
 _TURNING_LAT_ACC_TH = 1.6  # Lat Acc threshold to trigger turning state.
 
@@ -33,8 +36,9 @@ _NO_OVERSHOOT_TIME_HORIZON = 4.  # s. Time to use for velocity desired based on 
 
 # Lookup table for the minimum smooth deceleration during the ENTERING state
 # depending on the actual maximum absolute lateral acceleration predicted on the turn ahead.
-_ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]  # min decel value allowed on ENTERING state
-_ENTERING_SMOOTH_DECEL_BP = [1.3, 3.]  # absolute value of lat acc ahead
+# BluePilot: 加强减速量（原 -0.2..-1.0 过温和平淡，实测无感）
+_ENTERING_SMOOTH_DECEL_V = [-0.4, -1.2]  # min decel value allowed on ENTERING state
+_ENTERING_SMOOTH_DECEL_BP = [1.1, 3.]  # absolute value of lat acc ahead
 
 # Lookup table for the acceleration for the TURNING state
 # depending on the current lateral acceleration of the vehicle.
@@ -65,6 +69,9 @@ class SmartCruiseControlVision:
     self.state = VisionState.disabled
     self.current_lat_acc = 0.
     self.max_pred_lat_acc = 0.
+    # BluePilot: 1 Hz 诊断日志（Developer error log, UiAlertLogEnable 门控）
+    self.ui_log_enabled = False
+    self._diag_log_time = 0.0
 
   def get_a_target_from_control(self) -> float:
     return self.a_target
@@ -78,6 +85,7 @@ class SmartCruiseControlVision:
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlVision")
+      self.ui_log_enabled = self.params.get_bool("UiAlertLogEnable")
 
   def _update_calculations(self, sm: messaging.SubMaster) -> None:
     if not self.long_enabled:
@@ -183,6 +191,25 @@ class SmartCruiseControlVision:
 
     return a_target
 
+  def _log_diag(self) -> None:
+    """BluePilot: 1 Hz SCC-V 诊断（Developer error log，UiAlertLogEnable 门控）。"""
+    if not self.ui_log_enabled or not self.long_enabled:
+      return
+    now = time.monotonic()
+    if now - self._diag_log_time < 1.0:
+      return
+    self._diag_log_time = now
+    try:
+      state_name = str(self.state)
+      if state_name.isdigit():
+        state_name = {0: "disabled", 1: "enabled", 2: "overriding",
+                      3: "entering", 4: "turning", 5: "leaving"}.get(int(state_name), state_name)
+      append_error_log("SCCV state=%s vEgo=%.1f predLat=%.2f curLat=%.2f vTgt=%.1f aTgt=%.2f outV=%.1f" % (
+        state_name, self.v_ego * 3.6, self.max_pred_lat_acc, self.current_lat_acc,
+        self.v_target * 3.6 if self.v_target else 0.0, self.a_target, self.output_v_target))
+    except Exception:
+      pass
+
   def update(self, sm: messaging.SubMaster, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float,
              v_cruise_setpoint: float) -> None:
     self.long_enabled = long_enabled
@@ -200,4 +227,5 @@ class SmartCruiseControlVision:
     self.output_v_target = self.get_v_target_from_control()
     self.output_a_target = self.get_a_target_from_control()
 
+    self._log_diag()
     self.frame += 1
