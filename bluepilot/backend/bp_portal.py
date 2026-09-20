@@ -2204,7 +2204,7 @@ class WebRoutesHandler(BaseHTTPRequestHandler):
                             state['isPcmCruise'] = car_params.pcmCruise
 
                             # Brand detection
-                            car_name = car_params.carName.lower() if car_params.carName else ''
+                            car_name = car_params.brand.lower() if car_params.brand else ''
                             car_fingerprint = car_params.carFingerprint.lower() if car_params.carFingerprint else ''
 
                             state['brandEquals'] = {}

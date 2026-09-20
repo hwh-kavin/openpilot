@@ -86,7 +86,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self._mpc_lead_status = False
     # 雷达点云前车参数启用条件：Ford + FordStockAccFusion + 车速 <60 km/h
     self._radar_lead_active = True
-    self._is_ford = CP.carName == "ford"
+    self._is_ford = "FORD" in CP.carFingerprint
     self._fusion_params = None
     self._fusion_enabled_cached = True
     self._fusion_checked_t = 0.0
