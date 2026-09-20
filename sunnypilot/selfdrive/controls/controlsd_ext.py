@@ -77,7 +77,7 @@ class ControlsExt(ModelStateBase):
     # so the dp_htd human-turn detector is redundant there. Keep the curve-exit release working
     # independently of the (hidden) dp_htd_enabled master by passing an explicit override.
     human_turn_master = None
-    if self.CP.brand == 'ford' and int(self.params.get("FordPrefLateralControl", return_default=True) or 0) == 1:
+    if self.CP.brand == 'ford':
       human_turn_master = False
 
     allowed, _ = self.htd.update(

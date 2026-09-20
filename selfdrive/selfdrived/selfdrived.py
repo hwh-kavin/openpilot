@@ -10,7 +10,6 @@ from msgq.visionipc import VisionIpcClient, VisionStreamType
 
 
 from openpilot.common.params import Params
-from openpilot.common.error_log import append_error_log
 from openpilot.common.realtime import config_realtime_process, Priority, Ratekeeper, DT_CTRL
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.gps import get_gps_location_service
@@ -32,9 +31,7 @@ from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
-  _FORD_PERSONALITY_LEVELS, is_ford_auto_follow_gap, next_personality_level,
-)
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import is_ford_auto_follow_gap
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -127,10 +124,6 @@ class SelfdriveD(CruiseHelper):
     self.is_metric = self.params.get_bool("IsMetric")
     self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
     self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
-    # Cached here and refreshed by params_thread — do NOT read these in the 100Hz
-    # update_events hot path (Params.get is a synchronous disk read per call).
-    self.dm_enabled = self.params.get_bool("DriverModelEnable")
-    self.ford_auto_follow_gap = is_ford_auto_follow_gap(self.params, self.CP)
 
     car_recognized = self.CP.brand != 'mock'
 
@@ -163,7 +156,6 @@ class SelfdriveD(CruiseHelper):
       max(log.LongitudinalPersonality.schema.enumerants.values()),
       self.params
     )
-    self._auto_personality_level = 1  # Ford speed-based 4-level driving style index (standard)
     self.recalibrating_seen = False
     self.dm_lockout_set = False
     self.dm_uncertain_alerted = False
@@ -176,14 +168,6 @@ class SelfdriveD(CruiseHelper):
 
     # BluePilot: one-shot diagnostic for selfdrivedLagging (System Lagging)
     self.lagging_logged = False
-
-    # BluePilot: rising-edge for Ford stock-ACC fusion fault → Developer error log
-    self.acc_faulted_last = False
-
-    # BluePilot: follow stop-and-go diagnostics (edge-triggered, error log)
-    self._sng_standstill_logged = False
-    self._sng_launch_wanted_logged = False
-    self._sng_stuck_frame = 0
 
     self.ignored_processes = {'mapd', }
 
@@ -258,7 +242,7 @@ class SelfdriveD(CruiseHelper):
       self.events.add(EventName.resumeBlocked)
 
     # Handle DM
-    if not self.CP.notCar and not self.dm_enabled:
+    if not self.CP.notCar and not self.params.get_bool("DriverModelEnable"):
       # Block engaging until ignition cycle after max number or time of distractions
       if self.sm['driverMonitoringState'].lockout and not self.dm_lockout_set:
         self.params.put_bool("DriverTooDistracted", True)
@@ -278,12 +262,7 @@ class SelfdriveD(CruiseHelper):
       if self.sm['driverMonitoringState'].visionPolicyState.uncertainOffroadAlertPercent >= 100 and not self.dm_uncertain_alerted:
         set_offroad_alert("Offroad_DriverMonitoringUncertain", True)
         self.dm_uncertain_alerted = True
-
-    # BluePilot: planner SP events (e2e chime, speed limit, etc.) must reach
-    # selfdrived regardless of driver-monitoring state. With DM off
-    # (DriverModelEnable=True) this block is skipped, so the lead-depart /
-    # green-light chime never played.
-    self.events_sp.add_from_msg(self.sm['longitudinalPlanSP'].events)
+      self.events_sp.add_from_msg(self.sm['longitudinalPlanSP'].events)
 
     # Add car events, ignore if CAN isn't valid
     if CS.canValid:
@@ -304,12 +283,6 @@ class SelfdriveD(CruiseHelper):
         (CS.brakePressed and (not self.CS_prev.brakePressed or not CS.standstill)) or \
         (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill)):
         self.events.add(EventName.pedalPressed)
-
-      # BluePilot: mirror the Ford stock-ACC fusion fault diagnostic into the
-      # Developer → Error Log (rising edge only; respects UiAlertLogEnable toggle).
-      if CS.accFaulted and not self.acc_faulted_last:
-        append_error_log("Ford stock ACC faulted (CCM CcStat_D_Actl denied)")
-      self.acc_faulted_last = CS.accFaulted
 
     # Create events for temperature, disk space, and memory
     if self.sm['deviceState'].thermalStatus >= ThermalStatus.overheated:
@@ -474,6 +447,7 @@ class SelfdriveD(CruiseHelper):
         cloudlog.event("commIssue", error=True, **logs)
         self.logged_comm_issue = logs
         try:
+          from openpilot.common.error_log import append_error_log
           append_error_log(
             "commIssue invalid=%s not_alive=%s not_freq_ok=%s" % (
               logs['invalid'], logs['not_alive'], logs['not_freq_ok']),
@@ -563,17 +537,7 @@ class SelfdriveD(CruiseHelper):
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
 
-    # Ford auto follow gap: 4-level driving style (激进/标准/稳健/从容) auto by speed
-    # with +5/-5 km/h hysteresis. Computed per frame, NOT persisted to a param.
-    if self._ford_auto_follow_gap():
-      v_kph = CS.vEgo * 3.6  # m/s -> km/h
-      self._auto_personality_level = next_personality_level(v_kph, self._auto_personality_level)
-      self.personality = _FORD_PERSONALITY_LEVELS[self._auto_personality_level]
-
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
-
-    # BluePilot: follow stop-and-go diagnostics for the Developer error log
-    self._log_follow_stop_go(CS)
 
   def data_sample(self):
     _car_state = messaging.recv_one(self.car_state_sock)
@@ -637,62 +601,7 @@ class SelfdriveD(CruiseHelper):
     return CS
 
   def _ford_auto_follow_gap(self) -> bool:
-    # Cached by params_thread; avoid a per-cycle Params disk read in update_events.
-    return self.ford_auto_follow_gap
-
-  def _log_follow_stop_go(self, CS) -> None:
-    """BluePilot: log follow stop / launch edges and stuck diagnostics to error.log.
-
-    Edge-triggered (plus a 1s-throttled stuck report) so a stop-and-go session yields
-    a few concise lines instead of 100Hz spam. Gated by the UiAlertLogEnable toggle.
-    """
-    try:
-      sm = self.sm
-      long_plan = sm['longitudinalPlan']
-      radar = sm['radarState']
-      lead = radar.leadOne
-      has_lead = bool(long_plan.hasLead and lead.status)
-      v_ego = float(CS.vEgo)
-      standstill = bool(CS.standstill)
-      should_stop = bool(long_plan.shouldStop)
-      long_ctrl = str(sm['controlsState'].longControlState)
-      cc = sm['carControl'].cruiseControl
-
-      ctx = ("vEgo=%.2f lead.dRel=%.1f lead.vLead=%.2f shouldStop=%s longCtrl=%s "
-             "cruiseStandstill=%s cruiseEnabled=%s resume=%s cancel=%s override=%s "
-             "brake=%s gas=%s accFaulted=%s" % (
-               v_ego, lead.dRel, lead.vLead, should_stop, long_ctrl,
-               CS.cruiseState.standstill, CS.cruiseState.enabled, cc.resume,
-               cc.cancel, cc.override, CS.brakePressed, CS.gasPressed, CS.accFaulted))
-
-      # 1) follow stop: entered standstill while tracking a lead
-      if standstill and has_lead and not self._sng_standstill_logged:
-        self._sng_standstill_logged = True
-        append_error_log("Follow STOP: " + ctx)
-
-      # 2) lead departs → planner wants to launch
-      if standstill and has_lead and lead.vLead > 0.5 and not should_stop and not self._sng_launch_wanted_logged:
-        self._sng_launch_wanted_logged = True
-        append_error_log("Follow LAUNCH wanted: aTarget=%.3f %s" % (long_plan.aTarget, ctx))
-
-      # 3) launch completed (rolling again)
-      if self._sng_launch_wanted_logged and v_ego > 0.5:
-        append_error_log("Follow LAUNCH done: " + ctx)
-        self._sng_launch_wanted_logged = False
-
-      # 4) stuck: planner wants to launch, lead is moving, but ego stays stopped
-      if standstill and has_lead and lead.vLead > 0.5 and not should_stop:
-        if sm.frame - self._sng_stuck_frame >= 100:
-          self._sng_stuck_frame = sm.frame
-          append_error_log("Follow LAUNCH STUCK: " + ctx)
-
-      # reset edges once rolling or lead lost
-      if not standstill or not has_lead:
-        self._sng_standstill_logged = False
-        self._sng_launch_wanted_logged = False
-
-    except Exception:
-      pass
+    return is_ford_auto_follow_gap(self.params, self.CP)
 
   def update_alerts(self, CS):
     clear_event_types = set()
@@ -842,12 +751,7 @@ class SelfdriveD(CruiseHelper):
       self.is_ldw_enabled = self.params.get_bool("IsLdwEnabled")
       self.disengage_on_accelerator = self.params.get_bool("DisengageOnAccelerator")
       self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl
-      # Ford auto follow gap: personality is 4-level and auto by speed, so do NOT
-      # overwrite the per-frame value computed in update_events with the persisted param.
-      if not self.ford_auto_follow_gap:
-        self.personality = self.params.get("LongitudinalPersonality", return_default=True)
-      self.dm_enabled = self.params.get_bool("DriverModelEnable")
-      self.ford_auto_follow_gap = is_ford_auto_follow_gap(self.params, self.CP)
+      self.personality = self.params.get("LongitudinalPersonality", return_default=True)
 
       self.mads.read_params()
       time.sleep(0.1)
@@ -866,12 +770,7 @@ class SelfdriveD(CruiseHelper):
 
 
 def main():
-  # Upstream pins card + controlsd + selfdrived together on core 4 (all 100Hz,
-  # SCHED_FIFO CTRL_HIGH). selfdrived is the least timing-critical of the three;
-  # move it to isolated big core 6 alongside camerad (SCHED_OTHER, non-RT, and
-  # lighter with driver monitoring disabled) so core 4 keeps only the card/controlsd
-  # control I/O chain.
-  config_realtime_process(6, Priority.CTRL_HIGH)
+  config_realtime_process(4, Priority.CTRL_HIGH)
   s = SelfdriveD()
   s.run()
 

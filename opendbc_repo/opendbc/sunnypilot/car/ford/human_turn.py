@@ -1,11 +1,10 @@
 """
-BluePilot: shared manual-steering-override ("human turn") detection for Ford lateral control.
+BluePilot: manual-steering-override ("human turn") detection for the Ford angle-primary
+lateral strategy.
 
-Both Ford lateral strategies hand control back to the driver on a sustained manual turn, and the
-detection is identical, so it lives here as one class instead of being copied into each mode. What
-each mode DOES with the signal differs: curvature-primary (``lateral_curv_ext``) zeroes its command
-(reset_steering + post-reset ramp); angle-primary (``lateral_angle_ext``) forces lateral inactive
-(mode 0 on the wire) and ramps path_angle back in from zero through its soft ROC on release.
+On a sustained manual turn the strategy hands control back to the driver: lateral is forced
+inactive (mode 0 on the wire), and path_angle ramps back in from zero through its soft ROC
+on release.
 """
 from opendbc.car import DT_CTRL
 from opendbc.car.ford.values import CarControllerParams

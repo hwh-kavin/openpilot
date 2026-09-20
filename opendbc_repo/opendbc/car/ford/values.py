@@ -4,16 +4,8 @@ from dataclasses import dataclass, field, replace
 from enum import Enum, IntFlag
 
 from opendbc.car import Bus, CarSpecs, DbcDict, PlatformConfig, Platforms, uds
-from opendbc.car.lateral import AngleSteeringLimits
 from opendbc.car.structs import CarParams
 
-# BluePilot: Stock Ford curvature rate limits (upstream 2-point [5, 25]) — used when BP lateral is bypassed
-# (disable_BP_lat_UI). BluePilot lateral uses BP_ANGLE_LIMITS in sunnypilot/car/ford/values_ext.py.
-FORD_STOCK_ANGLE_LIMITS = AngleSteeringLimits(
-  0.02,
-  ([5, 25], [0.00045, 0.0001]),
-  ([5, 25], [0.00045, 0.00015]),
-)
 from opendbc.car.docs_definitions import CarFootnote, CarHarness, CarDocs, CarParts, Column
 from opendbc.car.fw_query_definitions import FwQueryConfig, LiveFwVersions, OfflineFwVersions, Request, StdQueries, p16
 from opendbc.car.vin import Vin, is_valid_vin
@@ -33,9 +25,6 @@ class CarControllerParams:
   GAP_PRESS_FRAMES = 2           # ~20ms gap button press duration
 
   STEER_DRIVER_ALLOWANCE = 1.0  # Driver intervention threshold, Nm
-
-  ANGLE_LIMITS: AngleSteeringLimits = FORD_STOCK_ANGLE_LIMITS
-  CURVATURE_ERROR = 0.002  # ~6 degrees at 10 m/s, ~10 degrees at 35 m/s
 
   ACCEL_MAX = 2.0               # m/s^2 max acceleration
   ACCEL_MIN = -3.5              # m/s^2 max deceleration

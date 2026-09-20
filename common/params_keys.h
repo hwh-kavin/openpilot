@@ -204,18 +204,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // BluePilot Ford hands-free cluster message (CAN FD only)
     {"send_hands_free_cluster_msg", {PERSISTENT | BACKUP, BOOL, "0"}},
 
-    // BluePilot Ford lateral control (curvature-primary / angle-primary)
-    {"FordPrefLateralControl", {PERSISTENT | BACKUP, INT, "0"}},
-    {"disable_BP_lat_UI", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"enable_human_turn_detection_curv", {PERSISTENT | BACKUP, BOOL, "1"}},
-    {"lane_change_factor_high_curv", {PERSISTENT | BACKUP, FLOAT, "0.85"}},
-    {"pc_blend_ratio_high_C_UI_curv", {PERSISTENT | BACKUP, FLOAT, "0.4"}},
-    {"pc_blend_ratio_low_C_UI_curv", {PERSISTENT | BACKUP, FLOAT, "0.4"}},
-    {"enable_lane_positioning_curv", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"custom_path_offset_curv", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
-    {"enable_lane_full_mode_curv", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"custom_profile_curv", {PERSISTENT | BACKUP, INT, "0"}},
-    {"LC_PID_gain_UI_curv", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    // BluePilot Ford lateral control (angle-primary only)
     {"FordLowSpeedFactor_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordHighSpeedFactor_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
     {"FordHighSpeedDampening_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},

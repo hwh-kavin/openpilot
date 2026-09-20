@@ -10,7 +10,6 @@ from collections import namedtuple
 from opendbc.car import structs
 from opendbc.car.docs_definitions import CarParts, Device
 from opendbc.car.ford.values import CAR
-from opendbc.car.lateral import AngleSteeringLimits
 
 ButtonType = structs.CarState.ButtonEvent.Type
 Button = namedtuple('Button', ['event_type', 'can_addr', 'can_msg', 'values'])
@@ -78,27 +77,6 @@ FORD_PINION_GEOMETRY_INDEX = {
   CAR.FORD_MUSTANG_MACH_E_MK1: 11,
   CAR.FORD_RANGER_MK2: 12,
 }
-
-
-# BluePilot: Max curvature for steering command (m^-1), from DBC file limits
-CURVATURE_MAX = 0.02
-
-# BluePilot: Curvature rate limits — 3-point breakpoints for smoother lateral control.
-# Upstream opendbc uses 2-point ([5, 25]) with more conservative values.
-# These allow higher rates at low speed for responsiveness, lower rates at mid-speed
-# for comfort, and very low rates at highway speed for stability.
-#
-# Control (Python) uses stricter windup than unwind so OP stays inside panda when apply_std
-# picks the wrong table vs steer_angle_cmd_checks. Safety firmware uses looser symmetric ROCs
-# (former “down” table for both up/down) — see ford.h FORD_LIMITS.
-# Tests: test_ford.py ANGLE_RATE_* match ford.h, not the stricter BP_ANGLE_LIMITS up row.
-_BP_ANGLE_RATE_UP = ([5, 16, 25], [0.0025, 0.0012, 0.00008])
-_BP_ANGLE_RATE_DOWN = ([5, 16, 25], [0.0025, 0.0014, 0.00018])
-BP_ANGLE_LIMITS = AngleSteeringLimits(
-  0.02,  # Max curvature for steering command, m^-1
-  _BP_ANGLE_RATE_UP,
-  _BP_ANGLE_RATE_DOWN,
-)
 
 
 def apply_bp_device_mount(car_docs, CP):

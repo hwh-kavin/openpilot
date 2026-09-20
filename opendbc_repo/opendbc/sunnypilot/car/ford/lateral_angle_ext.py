@@ -12,8 +12,8 @@ trim -- an earlier port attempt piped a small additive trim onto path_angle thro
 curv-mode ``LC_PID_controller``, but it never actually tracked lane center correctly in this
 mode and was removed; only the DBC-required zero c0 remains.
 
-**Human-turn override**: while the driver manually turns (same sustained-press + angle criteria
-as ``lateral_curv_ext``, via the shared ``HumanTurnDetector``), lateral is forced inactive (mode
+**Human-turn override**: while the driver manually turns (sustained-press + angle criteria via
+the shared ``HumanTurnDetector``), lateral is forced inactive (mode
 0, all-zero signals) instead of winding path_angle into a stale command the PSCM has to reconcile
 on release -- on the Mach-E's PSCM that reconciliation cost 2-3 s of dead time before control
 resumed. Mode 0 is panda-clean by construction: every ford.h check has a legitimate
@@ -26,7 +26,7 @@ from numpy import clip, interp
 
 from opendbc.car import DT_CTRL
 from opendbc.car.ford.values import CAR, CarControllerParams
-from opendbc.sunnypilot.car.ford.lateral_curv_ext import LateralResult
+from opendbc.sunnypilot.car.ford.lateral_base_ext import LateralResult
 from opendbc.sunnypilot.car.ford.human_turn import HumanTurnDetector
 from selfdrive.modeld.constants import ModelConstants
 
@@ -101,9 +101,9 @@ _PSCM_SAT_UNWIND_RATE = 0.02        # rad/call (0.02 * 20Hz = 0.40 rad/s)
 # panda-clean wire pattern the human-turn override sends, no ford.h involvement -- resets the
 # PSCM's authority, after which path_angle ramps back in from zero through the soft ROC.
 _STEER_DT = CarControllerParams.STEER_STEP * DT_CTRL  # 20 Hz lateral tick (matches human_turn.py)
-# BluePilot: default angle-mode deviation-clip tolerance (1/m). Curvature mode clips to the stock
-# CarControllerParams.CURVATURE_ERROR (0.002) to stay inside ford.h's steer_angle_cmd_checks band;
-# angle mode's shadow-curvature cross-check (ford_shadow_curvature_error_check) has its own dedicated
+# BluePilot: default angle-mode deviation-clip tolerance (1/m). The curvature mode (removed) clipped
+# to the stock 0.002 band to stay inside ford.h's steer_angle_cmd_checks; angle mode's
+# shadow-curvature cross-check (ford_shadow_curvature_error_check) has its own dedicated
 # looser band, so the command may legitimately lead measured curvature by more than 0.002 during
 # curve entry. The 0.002 lead cap caused curve-entry understeer (steerSaturated); 0.008 over-corrected
 # (line-cutting / lane runout, 2026-08-27) — settled at 0.005. This is only the DEFAULT: the live
@@ -166,8 +166,7 @@ class LateralAngleExt:
     # Human-turn override: while the driver manually turns, lateral is forced inactive (mode 0,
     # all-zero signals) instead of winding path_angle into a stale command the PSCM can't cleanly
     # reconcile on release (2-3 s re-engage dead time observed on Mach-E). See module docstring.
-    # Note: in CarController this attribute is shared with LateralCurvExt (same mixin instance) --
-    # only one lateral strategy runs per frame, so a single detector serves both.
+    # Note: only one lateral strategy runs per frame (angle-primary only).
     self.human_turn_detector = HumanTurnDetector()
     self.angle_human_turn_active = False  # read by carcontroller to force mode 0
     # Post-override stall blip state (see module constants). angle_stall_blip_active is read by
@@ -181,7 +180,6 @@ class LateralAngleExt:
 
   def update_angle_params(self, params):
     """Sets per-platform gain defaults and reads user angle-tuning params."""
-    self._ensure_lateral_curv_initialized(self.CP)
     fp = getattr(self.CP, 'carFingerprint', '')
     if fp in _CANFD_BOF_CARS:
       low, high = _GAIN_CANFD_BOF
@@ -226,7 +224,6 @@ class LateralAngleExt:
     c0 (path_offset) is always zero on the wire -- no centering trim in angle mode. c2 and c3 are zero.
     Blended κ is not passed through Ford c2 rate / DBC limits (those target the curvature actuator).
     """
-    self._ensure_lateral_curv_initialized(CP)
 
     v_ego = float(CS.out.vEgoRaw)
     d_ref = pscm_d_ref_m(v_ego)
@@ -447,8 +444,8 @@ class LateralAngleExt:
     kappa_cmd = float(requested_curvature)
 
     # BluePilot: clip kappa_cmd to current_curvature (measured, from yaw rate) +- angle_deviation_clip.
-    # The stock tolerance (CarControllerParams.CURVATURE_ERROR = 0.002) was carried over from curvature
-    # mode's steer_angle_cmd_checks band, but angle mode's shadow-curvature check is a separate, looser
+    # The stock 0.002 tolerance was carried over from the removed curvature mode's steer_angle_cmd_checks
+    # band, but angle mode's shadow-curvature check is a separate, looser
     # band (FORD_BP_SHADOW_MAX_ANGLE_ERROR = 0.008 in ford.h). The clip is user-tunable
     # (FordAngleDeviationClip): too tight -> curve-entry understeer; too loose -> entry overshoot.
     current_curvature = self.get_current_curvature(CS)

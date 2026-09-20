@@ -17,7 +17,6 @@ https://www.f150gen14.com/forum/threads/introducing-bluepilot-a-ford-specific-fo
 
 import math
 from collections import namedtuple, deque
-from enum import IntEnum
 
 import cereal.messaging as messaging
 import numpy as np
@@ -31,11 +30,6 @@ from opendbc.car.ford.values import CarControllerParams, FordFlags
 from opendbc.sunnypilot.car.ford.values_ext import BP_ANGLE_LIMITS, CURVATURE_MAX, FordSafetyFlagsSP
 from opendbc.sunnypilot.car.ford.human_turn import HumanTurnDetector
 from selfdrive.modeld.constants import ModelConstants
-
-
-class PrimaryLateralControl(IntEnum):
-  curvature = 0
-  angle = 1
 
 
 # CAN FD lateral-accel cap (match opendbc/car/ford/carcontroller.py apply_ford_curvature_limits)
@@ -118,9 +112,6 @@ class LateralCurvExt:
     self.model = None
     self.lp = None
     self.ss = None
-
-    # Primary lateral control variable: consumed by CarController's lateral dispatch.
-    self.primary_lateral_control = PrimaryLateralControl.curvature
 
     # BluePilot: steering-angle curvature measurement (bad-yaw-sensor workaround).
     # Mirrors the STEER_ANGLE_CURVATURE flag the safety firmware reads from
@@ -231,8 +222,6 @@ class LateralCurvExt:
     self.enable_lane_full_mode_curv = params.get_bool("enable_lane_full_mode_curv")
     self.custom_profile_curv = int(params.get("custom_profile_curv", return_default=True))
     self.LC_PID_gain_UI_curv = float(params.get("LC_PID_gain_UI_curv", return_default=True))
-
-    self.primary_lateral_control = PrimaryLateralControl(params.get("FordPrefLateralControl", return_default=True) or 0)
 
   def _ensure_lateral_curv_initialized(self, CP):
     # Compatibility shim for LateralAngleExt, which calls this as a lazy-init guard. In this

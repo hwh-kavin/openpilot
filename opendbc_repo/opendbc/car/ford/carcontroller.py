@@ -2,20 +2,22 @@ import math
 import time
 import numpy as np
 from opendbc.can import CANPacker
-from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, apply_hysteresis, structs
+from opendbc.car import ACCELERATION_DUE_TO_GRAVITY, Bus, DT_CTRL, structs
 from opendbc.car.carlog import carlog
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.lateral import AVERAGE_ROAD_ROLL, ISO_LATERAL_ACCEL
 from opendbc.car.ford import fordcan
 from opendbc.car.ford.values import CarControllerParams, FordFlags, CAR
 from opendbc.car.interfaces import CarControllerBase, V_CRUISE_MAX
+from openpilot.common.params import Params
+
+# BluePilot: lateral extension imports (angle-primary lateral control)
+from opendbc.sunnypilot.car.ford.lateral_base_ext import LateralBaseExt
+from opendbc.sunnypilot.car.ford.lateral_angle_ext import LateralAngleExt
+from opendbc.sunnypilot.car.ford import fordcan_ext
+from openpilot.selfdrive.controls.lib.radar_lead_filter import RadarLeadFilter, get_vision_lead
 
 LongCtrlState = structs.CarControl.Actuators.LongControlState
 VisualAlert = structs.CarControl.HUDControl.VisualAlert
-
-# CAN FD limits:
-# Limit to average banked road since safety doesn't have the roll, higher actual roll lowers lateral acceleration
-MAX_LATERAL_ACCEL = ISO_LATERAL_ACCEL - (ACCELERATION_DUE_TO_GRAVITY * AVERAGE_ROAD_ROLL)  # ~2.4 m/s^2
 
 # Soften stock/OP positive accel a bit when fusion is active (m/s^2)
 FUSION_ACCEL_SOFT_MAX = 1.2
@@ -35,16 +37,13 @@ FUSION_LEAD_MOVING_V_TRG_MARGIN_KPH = 5.0
 FUSION_STOCK_HARD_BRAKE = 1.0  # m/s^2
 # Floor accel when planner wants go but LongControl is still in stopping hold (-2 m/s^2)
 FUSION_OP_PULLAWAY_ACCEL = 0.4  # m/s^2
+# 低速防急刹（用户需求）：vEgo < 20 km/h 且前车距离（雷达收敛滤波优先、视觉
+# 兜底）> 2m 时不出现急刹，制动力度限制到柔和水平；距离 <= 2m 恢复完整制动。
+LOW_SPEED_GENTLE_BRAKE_V_MS = 20.0 * CV.KPH_TO_MS  # ~5.56 m/s
+LOW_SPEED_GENTLE_BRAKE_DIST_M = 2.0
+LOW_SPEED_GENTLE_BRAKE_ACCEL = -1.0  # m/s^2，柔和制动上限
 PARAMS_UPDATE_FRAMES = 100  # ~1s at 100Hz
 LOG_EVERY_FRAMES = 100
-
-# Pulse stock GAP so IPMA's AccTGap_D_Dsply matches speed-based 1–4 bars
-STOCK_GAP_PRESS_HOLD_S = 0.12
-STOCK_GAP_RETRY_S = 0.55
-STOCK_GAP_DRIVER_HOLD_S = 8.0
-STOCK_GAP_MAX_PRESSES = 6
-STOCK_GAP_MIN = 1
-STOCK_GAP_MAX = 5
 
 
 def _stock_lead_moving(CS, cruise_kph: float) -> bool:
@@ -155,86 +154,6 @@ def fuse_stock_op_accel(op_a: float, stock_a: float | None, *, stop_go_op: bool 
   return float(fused), mode
 
 
-def anti_overshoot(apply_curvature, apply_curvature_last, v_ego):
-  diff = 0.1
-  tau = 5  # 5s smooths over the overshoot
-  dt = DT_CTRL * CarControllerParams.STEER_STEP
-  alpha = 1 - np.exp(-dt / tau)
-
-  lataccel = apply_curvature * (v_ego ** 2)
-  last_lataccel = apply_curvature_last * (v_ego ** 2)
-  last_lataccel = apply_hysteresis(lataccel, last_lataccel, diff)
-  last_lataccel = alpha * lataccel + (1 - alpha) * last_lataccel
-
-  output_curvature = last_lataccel / (max(v_ego, 1) ** 2)
-
-  return float(np.interp(v_ego, [5, 10], [apply_curvature, output_curvature]))
-
-
-def _is_curvature_unwind(apply_curvature: float, apply_curvature_last: float) -> bool:
-  """True when commanded |κ| is decreasing (post-apex unwind)."""
-  if apply_curvature_last * apply_curvature < 0.:
-    return True
-  return abs(apply_curvature) + 1e-6 < abs(apply_curvature_last)
-
-
-def _apply_ford_curvature_error_clip(apply_curvature: float, current_curvature: float, unwind: bool) -> float:
-  tight = CarControllerParams.CURVATURE_ERROR
-  loose = CarControllerParams.CURVATURE_ERROR_UNWIND
-  if not unwind:
-    return float(np.clip(apply_curvature, current_curvature - tight, current_curvature + tight))
-
-  # Allow faster unwind away from measured yaw curvature; keep the "more turn" side tight.
-  if current_curvature >= 0.:
-    lo = current_curvature - loose
-    hi = current_curvature + tight
-  else:
-    lo = current_curvature - tight
-    hi = current_curvature + loose
-  return float(np.clip(apply_curvature, lo, hi))
-
-
-def _apply_ford_curvature_rate_limits(apply_curvature: float, apply_curvature_last: float, v_ego_raw: float,
-                                    steering_angle: float, lat_active: bool, unwind: bool) -> float:
-  steer_up = apply_curvature_last * apply_curvature >= 0. and abs(apply_curvature) > abs(apply_curvature_last)
-  if steer_up:
-    rate_limits = CarControllerParams.ANGLE_LIMITS.ANGLE_RATE_LIMIT_UP
-  elif unwind:
-    rate_limits = CarControllerParams.UNWIND_ANGLE_RATE_LIMIT_DOWN
-  else:
-    rate_limits = CarControllerParams.ANGLE_LIMITS.ANGLE_RATE_LIMIT_DOWN
-
-  angle_rate_lim = np.interp(v_ego_raw, rate_limits[0], rate_limits[1])
-  new_apply_curvature = np.clip(apply_curvature, apply_curvature_last - angle_rate_lim, apply_curvature_last + angle_rate_lim)
-
-  if not lat_active:
-    new_apply_curvature = steering_angle
-
-  max_curv = CarControllerParams.ANGLE_LIMITS.STEER_ANGLE_MAX
-  return float(np.clip(new_apply_curvature, -max_curv, max_curv))
-
-
-def apply_ford_curvature_limits(apply_curvature, apply_curvature_last, current_curvature, v_ego_raw, steering_angle, lat_active, CP):
-  unwind = _is_curvature_unwind(apply_curvature, apply_curvature_last)
-
-  # No blending at low speed due to lack of torque wind-up and inaccurate current curvature
-  if v_ego_raw > 9:
-    apply_curvature = _apply_ford_curvature_error_clip(apply_curvature, current_curvature, unwind)
-
-  # Curvature rate limit after driver torque limit
-  apply_curvature = _apply_ford_curvature_rate_limits(apply_curvature, apply_curvature_last, v_ego_raw,
-                                                      steering_angle, lat_active, unwind)
-
-  # Ford Q4/CAN FD has more torque available compared to Q3/CAN so we limit it based on lateral acceleration.
-  # Safety is not aware of the road roll so we subtract a conservative amount at all times
-  if CP.flags & FordFlags.CANFD:
-    # Limit curvature to conservative max lateral acceleration
-    curvature_accel_limit = MAX_LATERAL_ACCEL / (max(v_ego_raw, 1) ** 2)
-    apply_curvature = float(np.clip(apply_curvature, -curvature_accel_limit, curvature_accel_limit))
-
-  return apply_curvature
-
-
 def apply_creep_compensation(accel: float, v_ego: float) -> float:
   creep_accel = np.interp(v_ego, [1., 3.], [0.6, 0.])
   creep_accel = np.interp(accel, [0., 0.2], [creep_accel, 0.])
@@ -242,14 +161,19 @@ def apply_creep_compensation(accel: float, v_ego: float) -> float:
   return float(accel)
 
 
-class CarController(CarControllerBase):
+class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
   def __init__(self, dbc_names, CP, CP_SP):
-    super().__init__(dbc_names, CP, CP_SP)
+    CarControllerBase.__init__(self, dbc_names, CP, CP_SP)
+    # BluePilot: initialize lateral extension mixins (angle-primary lateral control)
+    LateralBaseExt.__init__(self, CP, CP_SP)
+    LateralAngleExt.__init__(self, CP, CP_SP)
+
+    self.params = Params()
+
     self.packer = CANPacker(dbc_names[Bus.pt])
     self.CAN = fordcan.CanBus(CP)
 
     self.apply_curvature_last = 0
-    self.anti_overshoot_curvature_last = 0
     self.accel = 0.0
     self.gas = 0.0
     self.brake_request = False
@@ -268,17 +192,19 @@ class CarController(CarControllerBase):
     self._stock_acc_session = False
     self._standstill_since: float | None = None
     self._stock_go_confirm = 0
-    self._stock_gap_press_until = 0.0
-    self._stock_gap_retry_until = 0.0
-    self._stock_gap_driver_until = 0.0
-    self._stock_gap_presses = 0
-    self._stock_gap_target_last = 0
     self._brake_pressed_last = False
     self._long_active_last = False
     self._last_op_accel = 0.0
     self._last_stock_a: float | None = None
     self._last_long_state = ""
     self._last_v_trg_kph = 0.0
+    self._gap_sync_last_frame = -1000
+    self._gap_press_frames = 0
+    self._gap_press_inc = False
+    # 低速防急刹：与 MPC 前车参数注入同源的雷达点云处理（视觉车道收敛+滤波）
+    self._radar_filter = RadarLeadFilter()
+    self._filtered_lead_frame = -1
+    self._filtered_lead_d = None
 
   def _update_stock_go_confirm(self, stock_a: float | None, allowed: bool) -> None:
     if allowed and stock_a is not None and stock_a > FUSION_STOCK_PULLAWAY_THRESH:
@@ -292,49 +218,32 @@ class CarController(CarControllerBase):
       self._stock_go_confirm >= FUSION_STOCK_GO_DEBOUNCE_CYCLES
     )
 
-  def _update_stock_gap_request(self, CS, target_bars: int) -> bool:
-    """Hold True while a synthetic stock GAP press should be sent.
+  def _get_filtered_lead_dist(self) -> float | None:
+    """前车距离（每帧缓存）：雷达点云视觉车道收敛+滤波优先，无效时视觉兜底。
 
-    Reads IPMA AccTGap_D_Dsply (camera ACCDATA_3) and pulses AccButtnGapTogglePress
-    until it matches the speed-based 1–4 bar target. A real driver GAP press
-    pauses auto-set for a few seconds.
+    RadarLeadFilter 是 EMA 状态机，每帧只能推进一次；按 self.frame 缓存结果，
+    避免同帧多次调用重复推进滤波状态。无有效前车返回 None。
     """
-    now = time.monotonic()
-    if CS.distance_button:
-      self._stock_gap_driver_until = now + STOCK_GAP_DRIVER_HOLD_S
-      self._stock_gap_presses = 0
-      return False
-    if now < self._stock_gap_driver_until:
-      return False
-    if not self._fusion_enabled or not CS.out.cruiseState.available:
-      self._stock_gap_presses = 0
-      return False
-
-    stock = int(getattr(CS, "stock_acc_tgap", 0) or 0)
-    if stock < STOCK_GAP_MIN or stock > STOCK_GAP_MAX:
-      return False
-
-    target = int(np.clip(int(target_bars), 1, 4))
-    if stock == target:
-      self._stock_gap_presses = 0
-      self._stock_gap_target_last = target
-      return False
-
-    if target != self._stock_gap_target_last:
-      self._stock_gap_presses = 0
-      self._stock_gap_target_last = target
-
-    if now < self._stock_gap_press_until:
-      return True
-    if self._stock_gap_presses >= STOCK_GAP_MAX_PRESSES:
-      return False
-    if now < self._stock_gap_retry_until:
-      return False
-
-    self._stock_gap_presses += 1
-    self._stock_gap_press_until = now + STOCK_GAP_PRESS_HOLD_S
-    self._stock_gap_retry_until = now + STOCK_GAP_RETRY_S
-    return True
+    if self._filtered_lead_frame == self.frame:
+      return self._filtered_lead_d
+    self._filtered_lead_frame = self.frame
+    self._filtered_lead_d = None
+    try:
+      sm = getattr(self, 'sm', None)
+      if sm is not None:
+        if sm.valid.get('radarState', False):
+          lead = sm['radarState'].leadOne
+          if lead is not None and getattr(lead, 'status', 0) == 1 and getattr(lead, 'radar', True):
+            filt = self._radar_filter.update(lead, get_vision_lead(sm))
+            if filt is not None and filt.status:
+              self._filtered_lead_d = filt.dRel
+        if self._filtered_lead_d is None:
+          vlead = get_vision_lead(sm)
+          if vlead is not None:
+            self._filtered_lead_d = float(vlead.x[0])
+    except Exception:
+      self._filtered_lead_d = None
+    return self._filtered_lead_d
 
   def _update_fusion_params(self):
     if (self.frame % PARAMS_UPDATE_FRAMES) != 0 and self._params is not None:
@@ -414,6 +323,10 @@ class CarController(CarControllerBase):
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
 
+    # BluePilot: update lateral SubMaster and runtime params each frame
+    LateralBaseExt.update_sm(self)
+    LateralAngleExt.update_angle_params(self, self.params)
+
     actuators = CC.actuators
     hud_control = CC.hudControl
 
@@ -452,7 +365,6 @@ class CarController(CarControllerBase):
     induce_stock_resume = (
       self._fusion_enabled and self._stock_acc_session and stock_pullaway_ready
     )
-    want_stock_gap = self._update_stock_gap_request(CS, hud_control.leadDistanceBars)
 
     ### acc buttons ###
     if CC.cruiseControl.cancel:
@@ -465,52 +377,66 @@ class CarController(CarControllerBase):
     # the stock system checks for steering pressed, and eventually disengages cruise control
     elif CS.acc_tja_status_stock_values["Tja_D_Stat"] != 0 and (self.frame % CarControllerParams.ACC_UI_STEP) == 0:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, tja_toggle=True))
-    elif want_stock_gap and (self.frame % CarControllerParams.BUTTONS_STEP) == 0:
-      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, gap_toggle=True))
-      can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.main, CS.buttons_stock_values, gap_toggle=True))
+
+    # BluePilot: sync the stock ACC's follow gap with OP's speed-based 4-level gap.
+    # The IPMA (stock ACC) reads Steering_Data_FD1 on the camera bus, so emulate the
+    # steering-wheel gap buttons there. One short press per cooldown window, repeated
+    # until the stock AccTGap display matches the target bars.
+    if CC.enabled and self._fusion_enabled:
+      target_bars = int(getattr(hud_control, "leadDistanceBars", 0))
+      current_bars = max(1, min(4, int(getattr(CS, "stock_acc_tgap", 0))))
+      if 1 <= target_bars <= 4 and current_bars != target_bars:
+        if self.frame - self._gap_sync_last_frame >= CarControllerParams.GAP_SYNC_COOLDOWN_FRAMES:
+          self._gap_press_frames = CarControllerParams.GAP_PRESS_FRAMES
+          self._gap_press_inc = current_bars < target_bars
+          self._gap_sync_last_frame = self.frame
+      else:
+        self._gap_press_frames = 0
+    else:
+      self._gap_press_frames = 0
+
+    if self._gap_press_frames > 0:
+      can_sends.append(fordcan_ext.create_button_msg(self.packer, self.CAN.camera,
+                                                     CS.buttons_stock_values,
+                                                     gap_inc=self._gap_press_inc,
+                                                     gap_dec=not self._gap_press_inc))
+      self._gap_press_frames -= 1
 
     ### lateral control ###
     # send steer msg at 20Hz
     if (self.frame % CarControllerParams.STEER_STEP) == 0:
-      # Measured path curvature (yaw). Used for limits and to hold state while lat inactive.
-      current_curvature = -CS.out.yawRate / max(CS.out.vEgoRaw, 0.1)
+      # BluePilot: angle-primary lateral control (κ → path_angle). Curvature mode removed.
+      lat = LateralAngleExt.update_angle_strategy(self, CC, CS, actuators, self.CP)
+      self.apply_curvature_last = lat.apply_curvature
+      self.lateralUncertainty = lat.lateralUncertainty
 
-      if not CC.latActive:
-        # Safety requires inactive κ=0. Clear filters so re-engage does not replay a curve.
-        self.apply_curvature_last = 0.0
-        self.anti_overshoot_curvature_last = 0.0
-        apply_curvature = 0.0
-      else:
-        # Bronco and some other cars consistently overshoot curv requests
-        # Apply some deadzone + smoothing convergence to avoid oscillations
-        if self.CP.carFingerprint in (CAR.FORD_BRONCO_SPORT_MK1, CAR.FORD_F_150_MK14):
-          self.anti_overshoot_curvature_last = anti_overshoot(actuators.curvature, self.anti_overshoot_curvature_last, CS.out.vEgoRaw)
-          apply_curvature = self.anti_overshoot_curvature_last
-        else:
-          apply_curvature = actuators.curvature
+      self.angleRateLimited = getattr(self, 'bp_angle_rate_limited', False)
+      self.curvatureRateLimited = getattr(self, 'bp_curvature_rate_limited', False)
+      self.curvatureDeviationLimited = getattr(self, 'bp_curvature_deviation_limited', False)
+      self.humanTurnLateralPaused = self.angle_human_turn_active
+      self.stallBlipActive = self.angle_stall_blip_active
 
-        # apply rate limits, curvature error limit, and clip to signal range
-        # When lat was just re-enabled, apply_curvature_last is 0 → blend up from zero
-        # toward desired (which controlsd snapped to actual wheel during the pause).
-        self.apply_curvature_last = apply_ford_curvature_limits(apply_curvature, self.apply_curvature_last, current_curvature,
-                                                                CS.out.vEgoRaw, 0., CC.latActive, self.CP)
-
+      lat_active = CC.latActive and not (self.angle_human_turn_active or self.angle_stall_blip_active)
       if self.CP.flags & FordFlags.CANFD:
-        # TODO: extended mode
-        # Ford uses four individual signals to dictate how to drive to the car. Curvature alone (limited to 0.02m/s^2)
-        # can actuate the steering for a large portion of any lateral movements. However, in order to get further control on
-        # steer actuation, the other three signals are necessary. Ford controls vehicles differently than most other makes.
-        # A detailed explanation on ford control can be found here:
-        # https://www.f150gen14.com/forum/threads/introducing-bluepilot-a-ford-specific-fork-for-comma3x-openpilot.24241/#post-457706
-        mode = 1 if CC.latActive else 0
+        mode = 1 if lat_active else 0
         counter = (self.frame // CarControllerParams.STEER_STEP) % 0x10
-        can_sends.append(fordcan.create_lat_ctl2_msg(self.packer, self.CAN, mode, 0., 0., -self.apply_curvature_last, 0., counter))
+        can_sends.append(fordcan_ext.create_lat_ctl2_msg(
+          self.packer, self.CAN, mode, lat.ramp_type, lat.precision_type,
+          -lat.path_offset, -lat.path_angle, -lat.apply_curvature, -lat.curvature_rate, counter
+        ))
       else:
-        can_sends.append(fordcan.create_lat_ctl_msg(self.packer, self.CAN, CC.latActive, 0., 0., -self.apply_curvature_last, 0.))
+        can_sends.append(fordcan_ext.create_lat_ctl_msg(
+          self.packer, self.CAN, lat_active, lat.ramp_type, lat.precision_type,
+          -lat.path_offset, -lat.path_angle, -lat.apply_curvature, -lat.curvature_rate
+        ))
 
     # send lka msg at 33Hz
     if (self.frame % CarControllerParams.LKA_STEP) == 0:
-      can_sends.append(fordcan.create_lka_msg(self.packer, self.CAN))
+      # BluePilot: angle mode is always engaged; publish shadow curvature to ford.h.
+      shadow_curvature = -self.bp_kappa_cmd
+      can_sends.append(fordcan_ext.create_lka_msg(
+        self.packer, self.CAN, CC.latActive, hud_control, True, shadow_curvature
+      ))
 
     ### longitudinal control ###
     # send acc msg at 50Hz
@@ -520,6 +446,7 @@ class CarController(CarControllerBase):
       gas = accel
       fusion_mode = "off"
       stock_a = None
+      gentle_brake = False
 
       # Latch once cruise/long has been engaged above min set speed (~20 mph).
       # After latch, stock ACC long can follow down to a stop; clear when cruise/long drops.
@@ -593,6 +520,15 @@ class CarController(CarControllerBase):
       accel = float(np.clip(accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
       gas = float(np.clip(gas, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
 
+      # 低速防急刹（用户需求）：vEgo<20km/h 且前车距离（雷达收敛滤波优先、
+      # 视觉兜底）>2m 时不出现急刹，制动力度限制到柔和水平；距离<=2m 或
+      # 更高车速时恢复完整制动能力。停车保持（standstill）不受限。
+      if CC.longActive and CS.out.vEgo < LOW_SPEED_GENTLE_BRAKE_V_MS and not CS.out.standstill:
+        lead_d = self._get_filtered_lead_dist()
+        if lead_d is not None and lead_d > LOW_SPEED_GENTLE_BRAKE_DIST_M:
+          accel = max(accel, LOW_SPEED_GENTLE_BRAKE_ACCEL)
+          gentle_brake = True
+
       # Both gas and accel are in m/s^2, accel is used solely for braking
       if not CC.longActive or gas < CarControllerParams.MIN_GAS:
         gas = CarControllerParams.INACTIVE_GAS
@@ -633,10 +569,9 @@ class CarController(CarControllerBase):
             if is_ford_auto_follow_gap(self._params, self.CP):
               at_stop = CS.out.standstill or CS.out.cruiseState.standstill
               t_af = get_t_follow_auto(CS.out.vEgo, at_stop)
-              auto_follow_extra = " t_follow_auto=%.2f bars=%d stock_tgap=%d presses=%d" % (
+              auto_follow_extra = " t_follow_auto=%.2f bars=%d stock_tgap=%d" % (
                 t_af, hud_control.leadDistanceBars,
                 int(getattr(CS, "stock_acc_tgap", 0) or 0),
-                self._stock_gap_presses,
               )
           except Exception:
             pass
@@ -644,6 +579,7 @@ class CarController(CarControllerBase):
           "FordStockAccFusion: mode=%s longActive=%s enbl=%s session=%s stop_go=%s "
           "below_min=%s hold_s=%.2f auto_resume=%s pullaway_ctx=%s go_confirm=%d/%d "
           "longState=%s op=%.2f stock=%s "
+          "gentle=%s "
           "fused_gas=%.2f fused_brk=%.2f prpl=%.2f brk=%.2f pred=%.2f "
           "v_trg=%.1f v_ego=%.1f cruise=%.1f stock_min_mph=%.0f%s" % (
             fusion_mode,
@@ -660,6 +596,7 @@ class CarController(CarControllerBase):
             str(long_state),
             op_accel,
             ("%.2f" % stock_a) if stock_a is not None else "None",
+            gentle_brake,
             gas,
             accel,
             getattr(CS, "stock_acc_prpl", 0.0),
