@@ -16,15 +16,12 @@ Key features:
 
 from collections import namedtuple
 
-import time
-
 import numpy as np
 from numpy import clip
 
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.ford.values import CarControllerParams
 from opendbc.car.interfaces import V_CRUISE_MAX
-from openpilot.common.error_log import append_error_log
 from openpilot.selfdrive.controls.lib.radar_lead_filter import RadarLeadFilter, get_vision_lead
 
 
@@ -88,8 +85,6 @@ class LongitudinalExt:
     # 雷达点云前车参数处理（视觉车道收敛 + 滤波），与 MPC 前车参数注入同源
     self._radar_filter = RadarLeadFilter()
     self.induce_stock_resume = False
-    self._sng_last_log_line = ""
-    self._sng_log_time = 0.0
 
     # Brake hysteresis thresholds
     self.brake_actuate_target = -0.14   # engage brakes below this accel
@@ -188,24 +183,6 @@ class LongitudinalExt:
     if stop_go_op:
       return float(min(max(op_a, self.FUSION_OP_PULLAWAY_ACCEL), soft_max_accel)), "op_go"
     return op_a, "op_mpc"
-
-  def _log_sng(self, tag: str, v_ego: float, stock_a, op_accel: float, accel: float,
-               stopping: bool, resume: bool, at_standstill: bool) -> None:
-    """1 Hz stop-and-go diagnostics into Developer → Error Log (UiAlertLogEnable gated)."""
-    try:
-      line = ("SNG %s vEgo=%.2f stock_a=%s op=%.2f a=%.2f stopping=%s resume=%s standstill=%s "
-              "opGo=%d/%d" % (
-                tag, v_ego * CV.MS_TO_KPH,
-                ("%.2f" % stock_a) if stock_a is not None else "None",
-                op_accel, accel, stopping, resume, at_standstill,
-                self._op_go_confirm, self.OP_GO_DEBOUNCE_CYCLES))
-      now = time.monotonic()
-      if line != self._sng_last_log_line and now - self._sng_log_time >= 1.0:
-        self._sng_log_time = now
-        self._sng_last_log_line = line
-        append_error_log(line)
-    except Exception:
-      pass
 
   def update(self, CC, CS, op_accel, op_gas, accel_due_to_pitch, v_ego_mph, stopping, target_speed):
     """
@@ -377,9 +354,6 @@ class LongitudinalExt:
       self.bp_gas_last = gas
       self.bp_accel_last = accel
       self.op_brake_actuate_last = brake_actuate
-
-      self._log_sng("fusion:" + fusion_mode, v_ego, stock_a, op_accel, accel,
-                    stopping_out, planner_wants_go, at_stop)
 
       return LongitudinalResult(
         accel=accel,

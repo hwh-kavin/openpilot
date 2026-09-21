@@ -23,7 +23,7 @@ if __name__ == '__main__':  # generating code
 else:
   from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.c_generated_code.acados_ocp_solver_pyx import AcadosOcpSolverCython
 
-from casadi import SX, vertcat
+from casadi import SX, fmin, vertcat
 
 MODEL_NAME = 'long'
 LONG_MPC_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -63,6 +63,11 @@ FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
+# 低速停车距离缩放（用户需求）：慢速跟停时固定停车余量随车速缩小——
+# 车速趋近 0 时余量约为 2.7m（6.0 * 0.45），≥10 m/s 恢复完整 6.0m，
+# 避免低速跟车停车距离过大；快速减速刹停的均衡距离基本不受影响。
+STOP_DISTANCE_LOW_FACTOR = 0.45
+STOP_DISTANCE_FULL_V = 10.0
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
 MIN_X_LEAD_FACTOR = 0.5
@@ -225,7 +230,11 @@ def gen_long_ocp():
   ocp.cost.yref = np.zeros((COST_DIM, ))
   ocp.cost.yref_e = np.zeros((COST_E_DIM, ))
 
-  desired_dist_comfort = get_safe_obstacle_distance(v_ego, lead_t_follow)
+  # 低速停车距离缩放：固定停车余量随车速缩小（v→0 时 ~2.7m，≥10 m/s 恢复 6m），
+  # 避免低速跟车慢速刹停时停车距离过大。
+  stop_distance_scaled = STOP_DISTANCE * (STOP_DISTANCE_LOW_FACTOR +
+    (1.0 - STOP_DISTANCE_LOW_FACTOR) * fmin(1.0, v_ego / STOP_DISTANCE_FULL_V))
+  desired_dist_comfort = (v_ego**2) / (2 * COMFORT_BRAKE) + lead_t_follow * v_ego + stop_distance_scaled
 
   # The main cost in normal operation is how close you are to the "desired" distance
   # from an obstacle at every timestep. This obstacle can be a lead car
