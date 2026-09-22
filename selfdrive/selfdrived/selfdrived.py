@@ -168,6 +168,8 @@ class SelfdriveD(CruiseHelper):
 
     # BluePilot: one-shot diagnostic for selfdrivedLagging (System Lagging)
     self.lagging_logged = False
+    # BluePilot: one-shot diagnostic for deviceState publishing stalls (hardwared freeze)
+    self.ds_stall_logged = False
 
     self.ignored_processes = {'mapd', }
 
@@ -439,9 +441,10 @@ class SelfdriveD(CruiseHelper):
         self.events.add(EventName.commIssue)
 
       logs = {
-        'invalid': [s for s, valid in self.sm.valid.items() if not valid],
-        'not_alive': [s for s, alive in self.sm.alive.items() if not alive],
-        'not_freq_ok': [s for s, freq_ok in self.sm.freq_ok.items() if not freq_ok],
+        'invalid': [s for s, valid in self.sm.valid.items() if not valid and s not in self.sm.ignore_valid],
+        'not_alive': [s for s, alive in self.sm.alive.items() if not alive and s not in self.sm.ignore_alive],
+        'not_freq_ok': [s for s, freq_ok in self.sm.freq_ok.items() if not freq_ok
+                        and s not in self.sm.ignore_average_freq and s not in self.sm.ignore_alive],
       }
       if logs != self.logged_comm_issue:
         cloudlog.event("commIssue", error=True, **logs)
@@ -544,6 +547,28 @@ class SelfdriveD(CruiseHelper):
     CS = _car_state.carState if _car_state else self.CS_prev
 
     self.sm.update(0)
+
+    # BluePilot: detect deviceState publishing stalls (hardwared loop freeze).
+    # Normal rate is 2 Hz; a >2 s gap preceded "Communication Issue Between Processes"
+    # (e.g. 2026-09-22 11:06:58, 4.9 s gap → commIssue + immediate disengage).
+    if self.sm.seen.get('deviceState', False):
+      ds_gap = time.monotonic() - self.sm.recv_time['deviceState']
+      if ds_gap > 2.0 and not self.ds_stall_logged:
+        self.ds_stall_logged = True
+        ds = self.sm['deviceState']
+        cloudlog.event("deviceState stalled", gap_s=ds_gap, cpu=ds.cpuUsagePercent,
+                       gpu=ds.gpuUsagePercent, mem=ds.memoryUsagePercent, error=True)
+        try:
+          from openpilot.common.error_log import append_error_log
+          append_error_log(
+            "deviceState stalled gap=%.1fs cpu=%s gpu=%.0f%% mem=%.0f%%" % (
+              ds_gap, [int(c) for c in ds.cpuUsagePercent],
+              ds.gpuUsagePercent, ds.memoryUsagePercent),
+          )
+        except Exception:
+          pass
+      elif ds_gap <= 2.0:
+        self.ds_stall_logged = False
 
     # Enable plannerd health checks once plans are valid, or after a post-init grace.
     # Avoids NO_ENTRY "Communication Issue ... longitudinalPlan, driverAssistance, longitudinalPlanSP"

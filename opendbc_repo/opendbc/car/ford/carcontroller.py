@@ -41,6 +41,7 @@ FUSION_OP_PULLAWAY_ACCEL = 0.4  # m/s^2
 LOW_SPEED_GENTLE_BRAKE_V_MS = 20.0 * CV.KPH_TO_MS  # ~5.56 m/s
 LOW_SPEED_GENTLE_BRAKE_DIST_M = 2.0
 LOW_SPEED_GENTLE_BRAKE_ACCEL = -1.0  # m/s^2，柔和制动上限
+LOW_SPEED_GENTLE_BRAKE_EMERGENCY_ACCEL = -2.5  # m/s^2，更深的紧急制动请求不拦截
 PARAMS_UPDATE_FRAMES = 100  # ~1s at 100Hz
 
 
@@ -440,13 +441,18 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
       accel = float(np.clip(accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
       gas = float(np.clip(gas, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
 
-      # 低速防急刹（用户需求）：vEgo<20km/h 且前车距离（雷达收敛滤波优先、
-      # 视觉兜底）>2m 时不出现急刹，制动力度限制到柔和水平；距离<=2m 或
-      # 更高车速时恢复完整制动能力。停车保持（standstill）不受限。
+      # 低速防急刹：vEgo<20km/h 且前车距离（雷达收敛滤波优先、视觉兜底）
+      # >2m 时，只限制“新发起”的普通制动到柔和水平；以下情况不拦截：
+      #   1) 上一帧已处于强制动（accel <= 柔和上限）—— 急减速穿过 20km/h
+      #      时不突然松刹，避免惯性前冲撞前车（实测问题）；
+      #   2) 本帧请求深度 >= 2.5m/s² 的紧急制动 —— 真正紧急时放行；
+      #   3) 前车距离 <= 2m —— 立即恢复完整制动；
+      #   4) 停车保持（standstill）不受限。
       if CC.longActive and CS.out.vEgo < LOW_SPEED_GENTLE_BRAKE_V_MS and not CS.out.standstill:
         lead_d = self._get_filtered_lead_dist()
         if lead_d is not None and lead_d > LOW_SPEED_GENTLE_BRAKE_DIST_M:
-          accel = max(accel, LOW_SPEED_GENTLE_BRAKE_ACCEL)
+          if self.accel > LOW_SPEED_GENTLE_BRAKE_ACCEL and accel >= LOW_SPEED_GENTLE_BRAKE_EMERGENCY_ACCEL:
+            accel = max(accel, LOW_SPEED_GENTLE_BRAKE_ACCEL)
 
       # Both gas and accel are in m/s^2, accel is used solely for braking
       if not CC.longActive or gas < CarControllerParams.MIN_GAS:
