@@ -91,6 +91,11 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
     raise NotImplementedError("Longitudinal personality not supported")
 
 
+def cycle_longitudinal_personality(personality):
+  personality_count = len(log.LongitudinalPersonality.schema.enumerants)
+  return (int(personality) - 1) % personality_count
+
+
 def get_start_accel(personality, base_start_accel: float) -> float:
   """Personality-scaled launch accel for the LongCtrlState.starting state."""
   if personality == log.LongitudinalPersonality.aggressive:

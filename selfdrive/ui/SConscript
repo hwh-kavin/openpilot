@@ -16,8 +16,12 @@ output_files = [
   for f in source_files
   if "NotoColor" not in f.name and not Path(f.path).stem.lower().startswith("opfont") and Path(f.path).name != "unifont.otf"
 ]
-output_files.append(("#selfdrive/assets/fonts/OpFont-Regular-zh-CHS.fnt", "#selfdrive/assets/fonts/OpFont-Regular-zh-CHS.png"))
-output_files.append(("#selfdrive/assets/fonts/OpFont-Regular-Labels.fnt", "#selfdrive/assets/fonts/OpFont-Regular-Labels.png"))
+# process.py regenerates every OpFont weight at once; declare them all so the
+# full-CJK (GB2312) atlases are tracked as build outputs.
+for _weight in ("Regular", "Medium", "SemiBold", "Bold"):
+  for _suffix in ("Labels", "zh-CHS"):
+    output_files.append((f"#selfdrive/assets/fonts/OpFont-{_weight}-{_suffix}.fnt",
+                         f"#selfdrive/assets/fonts/OpFont-{_weight}-{_suffix}.png"))
 env.Command(
   target=output_files,
   source=[generator, source_files],

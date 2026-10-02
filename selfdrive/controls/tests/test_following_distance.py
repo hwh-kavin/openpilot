@@ -4,7 +4,7 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
 
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import cycle_longitudinal_personality, get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
@@ -44,3 +44,23 @@ class TestFollowingDistance:
     err_ratio = 0.2 if self.e2e else 0.1
     abs_err_margin = 0.5 if v_lead > 0.0 else 1.15
     assert simulation_steady_state == pytest.approx(correct_steady_state, abs=err_ratio * correct_steady_state + abs_err_margin)
+
+
+@pytest.mark.parametrize(("personality", "expected_t_follow"), [
+  (log.LongitudinalPersonality.aggressive, 1.20),
+  (log.LongitudinalPersonality.standard, 1.40),
+  (log.LongitudinalPersonality.steady, 1.55),
+  (log.LongitudinalPersonality.relaxed, 1.70),
+])
+def test_follow_time_gap_uses_saved_personality(personality, expected_t_follow):
+  assert get_T_FOLLOW(personality) == pytest.approx(expected_t_follow)
+
+
+@pytest.mark.parametrize(("personality", "next_personality"), [
+  (log.LongitudinalPersonality.aggressive, log.LongitudinalPersonality.relaxed),
+  (log.LongitudinalPersonality.standard, log.LongitudinalPersonality.aggressive),
+  (log.LongitudinalPersonality.steady, log.LongitudinalPersonality.standard),
+  (log.LongitudinalPersonality.relaxed, log.LongitudinalPersonality.steady),
+])
+def test_gap_button_cycles_all_personalities(personality, next_personality):
+  assert cycle_longitudinal_personality(personality) == next_personality

@@ -31,7 +31,7 @@ from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import is_ford_auto_follow_gap
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import cycle_longitudinal_personality
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -531,11 +531,11 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
 
-    # decrement personality on distance button press (disabled for Ford auto follow gap)
-    if self.CP.openpilotLongitudinalControl and not self._ford_auto_follow_gap():
+    # decrement personality on distance button press
+    if self.CP.openpilotLongitudinalControl:
       if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
         if not self.experimental_mode_switched:
-          self.personality = (self.personality - 1) % 3
+          self.personality = cycle_longitudinal_personality(self.personality)
           self.params.put('LongitudinalPersonality', self.personality)
           self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
@@ -624,9 +624,6 @@ class SelfdriveD(CruiseHelper):
       self.mismatch_counter += 1
 
     return CS
-
-  def _ford_auto_follow_gap(self) -> bool:
-    return is_ford_auto_follow_gap(self.params, self.CP)
 
   def update_alerts(self, CS):
     clear_event_types = set()
@@ -795,7 +792,12 @@ class SelfdriveD(CruiseHelper):
 
 
 def main():
-  config_realtime_process(4, Priority.CTRL_HIGH)
+  # BluePilot: keep core 4 for the card/controlsd control I/O chain only.
+  # Run selfdrived on the isolated big core 6 alongside camerad (SCHED_OTHER,
+  # non-RT) so it cannot be starved when card/controlsd saturate core 4.
+  # Sharing core 4 caused periodic selfdriveState/deviceState/managerState stalls
+  # -> "Communication Issue Between Processes" soft-disable (TAKE CONTROL IMMEDIATELY).
+  config_realtime_process(6, Priority.CTRL_HIGH)
   s = SelfdriveD()
   s.run()
 

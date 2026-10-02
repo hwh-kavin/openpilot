@@ -2,6 +2,7 @@
 
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -259,10 +260,32 @@ void loggerd_thread() {
 
   std::map<std::string, EncoderInfo> encoder_infos_dict;
   std::vector<RemoteEncoder*> encoders_with_audio;
+
+  // Only count encoders whose camera stream camerad actually exposes, mirroring
+  // encoderd (which starts an encoder thread per available stream). If the driver
+  // camera is disabled (DriverModelEnable) there is no driverEncodeData publisher,
+  // so counting it here would make ready_to_rotate == max_waiting unreachable and
+  // force rotation on the SEGMENT_LENGTH*1.2 timeout only, dropping most frames.
+  // Wait briefly for camerad to publish a stable stream set; fall back to counting
+  // every encoder if camerad isn't up yet.
+  std::set<VisionStreamType> available_streams;
+  for (int i = 0; i < 50 && !do_exit; ++i) {
+    auto cur = VisionIpcClient::getAvailableStreams("camerad", false);
+    if (!cur.empty() && cur == available_streams) {
+      break;
+    }
+    available_streams = std::move(cur);
+    util::sleep_for(100);
+  }
+  const bool have_streams = !available_streams.empty();
+
   for (const auto &cam : cameras_logged) {
+    const bool stream_available = !have_streams || (available_streams.count(cam.stream_type) > 0);
     for (const auto &encoder_info : cam.encoder_infos) {
       encoder_infos_dict[encoder_info.publish_name] = encoder_info;
-      s.max_waiting++;
+      if (stream_available) {
+        s.max_waiting++;
+      }
     }
   }
 

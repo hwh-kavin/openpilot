@@ -180,7 +180,6 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
     self.lkas_enabled_last = False
     self.steer_alert_last = False
     self.lead_distance_bars_last = None
-    self.distance_bar_frame = 0
 
     self._params = None
     self._fusion_enabled = False
@@ -189,9 +188,6 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
     self._stock_acc_session = False
     self._standstill_since: float | None = None
     self._stock_go_confirm = 0
-    self._gap_sync_last_frame = -1000
-    self._gap_press_frames = 0
-    self._gap_press_inc = False
     # 低速防急刹：与 MPC 前车参数注入同源的雷达点云处理（视觉车道收敛+滤波）
     self._radar_filter = RadarLeadFilter()
     self._filtered_lead_frame = -1
@@ -302,30 +298,6 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
     # the stock system checks for steering pressed, and eventually disengages cruise control
     elif CS.acc_tja_status_stock_values["Tja_D_Stat"] != 0 and (self.frame % CarControllerParams.ACC_UI_STEP) == 0:
       can_sends.append(fordcan.create_button_msg(self.packer, self.CAN.camera, CS.buttons_stock_values, tja_toggle=True))
-
-    # BluePilot: sync the stock ACC's follow gap with OP's speed-based 4-level gap.
-    # The IPMA (stock ACC) reads Steering_Data_FD1 on the camera bus, so emulate the
-    # steering-wheel gap buttons there. One short press per cooldown window, repeated
-    # until the stock AccTGap display matches the target bars.
-    if CC.enabled and self._fusion_enabled:
-      target_bars = int(getattr(hud_control, "leadDistanceBars", 0))
-      current_bars = max(1, min(4, int(getattr(CS, "stock_acc_tgap", 0))))
-      if 1 <= target_bars <= 4 and current_bars != target_bars:
-        if self.frame - self._gap_sync_last_frame >= CarControllerParams.GAP_SYNC_COOLDOWN_FRAMES:
-          self._gap_press_frames = CarControllerParams.GAP_PRESS_FRAMES
-          self._gap_press_inc = current_bars < target_bars
-          self._gap_sync_last_frame = self.frame
-      else:
-        self._gap_press_frames = 0
-    else:
-      self._gap_press_frames = 0
-
-    if self._gap_press_frames > 0:
-      can_sends.append(fordcan_ext.create_button_msg(self.packer, self.CAN.camera,
-                                                     CS.buttons_stock_values,
-                                                     gap_inc=self._gap_press_inc,
-                                                     gap_dec=not self._gap_press_inc))
-      self._gap_press_frames -= 1
 
     ### lateral control ###
     # send steer msg at 20Hz
@@ -499,10 +471,12 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
     # send acc ui msg at 5Hz or if ui state changes
     if hud_control.leadDistanceBars != self.lead_distance_bars_last:
       send_ui = True
-      self.distance_bar_frame = self.frame
 
     if (self.frame % CarControllerParams.ACC_UI_STEP) == 0 or send_ui:
-      show_distance_bars = self.frame - self.distance_bar_frame < 400
+      # BluePilot: OP long drives the cluster follow-gap display directly
+      # (AccTGap_D_Dsply = leadDistanceBars in create_acc_ui_msg) — no stock
+      # GAP button emulation. Show the bars continuously while enabled.
+      show_distance_bars = CC.enabled
       can_sends.append(fordcan.create_acc_ui_msg(self.packer, self.CAN, self.CP, main_on, CC.latActive,
                                                  fcw_alert, CS.out.cruiseState.standstill, show_distance_bars,
                                                  hud_control, CS.acc_tja_status_stock_values))

@@ -31,6 +31,29 @@ GLYPH_PADDING = 2
 EXTRA_CHARS = "–‑✓×°§•X⚙✕◀▶✔⌫⇧␣○●↳çêüñ–‑✓×°§•€£¥"
 UNIFONT_LANGUAGES = {"th", "zh-CHT", "zh-CHS", "ko", "ja"}
 
+# Legacy Chinese codecs baked in full into the CJK atlases. The .po-driven
+# charset only covers translation glyphs, so free-form text such as
+# OpenStreetMap road names would otherwise render as "?" (missing glyph).
+# GB2312 = 3755 level-1 + 3008 level-2 hanzi + symbol rows.
+CJK_CHARSETS = {
+  "zh-CHS": "gb2312",
+}
+
+
+def _cjk_chars(language: str) -> set[str]:
+  """Enumerate every character of a language's full CJK codec."""
+  codec = CJK_CHARSETS.get(language)
+  if codec is None:
+    return set()
+  chars: set[str] = set()
+  for hi in range(0xA1, 0xF8):
+    for lo in range(0xA1, 0xFF):
+      try:
+        chars.update(bytes([hi, lo]).decode(codec))
+      except UnicodeDecodeError:
+        pass
+  return chars
+
 
 def _languages():
   if not LANGUAGES_FILE.exists():
@@ -52,7 +75,7 @@ def _char_sets():
     except FileNotFoundError:
       continue
     if code in UNIFONT_LANGUAGES:
-      lang_chars = set(base) | chars
+      lang_chars = set(base) | chars | _cjk_chars(code)
       per_lang[code] = tuple(sorted(ord(c) for c in lang_chars))
     else:
       base.update(chars)
@@ -191,6 +214,11 @@ def main():
   parser = argparse.ArgumentParser()
   parser.add_argument("--fix-metrics", action="store_true",
                       help="Fix corrupt lineHeight/base values in existing .fnt files")
+  parser.add_argument("--languages", nargs="*", default=None,
+                      help="Only regenerate the per-language OpFont atlases for these codes "
+                           "(e.g. --languages zh-CHS). Other fonts are left untouched.")
+  parser.add_argument("--weights", nargs="*", default=None,
+                      help="Only regenerate these OpFont weights (e.g. --weights OpFont-SemiBold).")
   args = parser.parse_args()
   if args.fix_metrics:
     return fix_existing_font_metrics()
@@ -205,19 +233,31 @@ def main():
     if font.stem.lower().startswith("opfont"):
       opfonts.append(font)
       continue
+    if args.languages or args.weights:
+      continue
     _process_font(font, base_cp)
 
   if not opfonts:
     raise RuntimeError("OpFont not found (expected OpFont-*.otf in fonts dir)")
 
+  if args.languages:
+    unknown = [c for c in args.languages if c not in per_lang]
+    if unknown:
+      raise RuntimeError(f"Unknown language code(s): {', '.join(unknown)}")
+    selected = {c: per_lang[c] for c in args.languages}
+    opfonts = [f for f in opfonts if not args.weights or f.stem in args.weights]
+  else:
+    selected = per_lang
+
   for opfont_path in opfonts:
     weight = opfont_path.stem  # e.g. "OpFont-Regular"
 
     # Labels atlas: language display names + ASCII (for language selector)
-    _process_font(opfont_path, labels_cp, output_name=f"{weight}-Labels")
+    if not args.languages:
+      _process_font(opfont_path, labels_cp, output_name=f"{weight}-Labels")
 
-    # Per-language atlases: ASCII + that language's .po chars
-    for lang_code, lang_cp in per_lang.items():
+    # Per-language atlases: ASCII + that language's .po chars (+ full CJK set)
+    for lang_code, lang_cp in selected.items():
       _process_font(opfont_path, lang_cp, output_name=f"{weight}-{lang_code}")
 
   return 0
