@@ -80,11 +80,11 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
 
 def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
   if personality == log.LongitudinalPersonality.aggressive:
-    return 1.20
+    return 1.00
   elif personality == log.LongitudinalPersonality.standard:
-    return 1.40
+    return 1.30
   elif personality == log.LongitudinalPersonality.steady:
-    return 1.55
+    return 1.50
   elif personality == log.LongitudinalPersonality.relaxed:
     return 1.70
   else:
@@ -94,6 +94,11 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
 def cycle_longitudinal_personality(personality):
   personality_count = len(log.LongitudinalPersonality.schema.enumerants)
   return (int(personality) - 1) % personality_count
+
+
+def adjust_longitudinal_personality(personality, direction):
+  personality_count = len(log.LongitudinalPersonality.schema.enumerants)
+  return min(max(int(personality) + direction, 0), personality_count - 1)
 
 
 def get_start_accel(personality, base_start_accel: float) -> float:

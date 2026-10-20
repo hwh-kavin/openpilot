@@ -4,7 +4,7 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
 
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import cycle_longitudinal_personality, get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import adjust_longitudinal_personality, cycle_longitudinal_personality, get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
@@ -47,9 +47,9 @@ class TestFollowingDistance:
 
 
 @pytest.mark.parametrize(("personality", "expected_t_follow"), [
-  (log.LongitudinalPersonality.aggressive, 1.20),
-  (log.LongitudinalPersonality.standard, 1.40),
-  (log.LongitudinalPersonality.steady, 1.55),
+  (log.LongitudinalPersonality.aggressive, 1.00),
+  (log.LongitudinalPersonality.standard, 1.30),
+  (log.LongitudinalPersonality.steady, 1.50),
   (log.LongitudinalPersonality.relaxed, 1.70),
 ])
 def test_follow_time_gap_uses_saved_personality(personality, expected_t_follow):
@@ -64,3 +64,17 @@ def test_follow_time_gap_uses_saved_personality(personality, expected_t_follow):
 ])
 def test_gap_button_cycles_all_personalities(personality, next_personality):
   assert cycle_longitudinal_personality(personality) == next_personality
+
+
+@pytest.mark.parametrize(("personality", "direction", "next_personality"), [
+  (log.LongitudinalPersonality.aggressive, 1, log.LongitudinalPersonality.standard),
+  (log.LongitudinalPersonality.standard, 1, log.LongitudinalPersonality.steady),
+  (log.LongitudinalPersonality.steady, 1, log.LongitudinalPersonality.relaxed),
+  (log.LongitudinalPersonality.relaxed, -1, log.LongitudinalPersonality.steady),
+  (log.LongitudinalPersonality.steady, -1, log.LongitudinalPersonality.standard),
+  (log.LongitudinalPersonality.standard, -1, log.LongitudinalPersonality.aggressive),
+  (log.LongitudinalPersonality.aggressive, -1, log.LongitudinalPersonality.aggressive),
+  (log.LongitudinalPersonality.relaxed, 1, log.LongitudinalPersonality.relaxed),
+])
+def test_gap_buttons_adjust_personality_directionally(personality, direction, next_personality):
+  assert adjust_longitudinal_personality(personality, direction) == next_personality

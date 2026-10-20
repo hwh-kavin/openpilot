@@ -29,7 +29,8 @@ class FilteredLead:
 
 def get_vision_lead(sm):
   """OP 视觉模型前车（prob>=0.5 且距离>0.5m），无则 None。"""
-  if sm is not None and sm.valid.get('modelV2', False):
+  valid = getattr(sm, 'valid', None)
+  if sm is not None and (valid is None or valid.get('modelV2', False)):
     vleads = sm['modelV2'].leadsV3
     if len(vleads) > 0:
       vlead = vleads[0]

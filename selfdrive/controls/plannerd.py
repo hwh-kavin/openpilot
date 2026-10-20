@@ -6,6 +6,7 @@ from openpilot.common.realtime import Priority, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.ldw import LaneDepartureWarning
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
+from openpilot.selfdrive.controls.lib.radar_fallback import highway_radar_fallback_enabled
 import cereal.messaging as messaging
 
 
@@ -42,8 +43,14 @@ def main():
       longitudinal_planner.publish(sm, pm)
 
       ldw.update(sm.frame, sm['modelV2'], sm['carState'], sm['carControl'])
+      radar_fallback = highway_radar_fallback_enabled(CP, sm['carState'].vEgo) and \
+        sm.all_checks(['modelV2', 'carState', 'controlsState', 'selfdriveState'])
+      valid_services = ['carControl', 'carState', 'controlsState', 'liveParameters',
+                        'modelV2', 'selfdriveState', 'carStateSP']
+      if not radar_fallback:
+        valid_services.append('radarState')
       msg = messaging.new_message('driverAssistance')
-      msg.valid = sm.all_checks()
+      msg.valid = sm.all_checks(service_list=valid_services)
       msg.driverAssistance.leftLaneDeparture = ldw.left
       msg.driverAssistance.rightLaneDeparture = ldw.right
       pm.send('driverAssistance', msg)

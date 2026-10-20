@@ -706,6 +706,16 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
     ET.NO_ENTRY: NoEntryAlert("Radar Temporarily Unavailable"),
   },
 
+  # Highway vision-first fallback: radar is auxiliary, so show a warning
+  # without triggering SOFT_DISABLE/NO_ENTRY.
+  EventName.radarDegraded: {
+    ET.WARNING: Alert(
+      "Radar Degraded",
+      "Vision-only longitudinal control",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.LOW, VisualAlert.none, AudibleAlert.none, 2.),
+  },
+
   # Every frame from the camera should be processed by the model. If modeld
   # is not processing frames fast enough they have to be dropped. This alert is
   # thrown when over 20% of frames are dropped.

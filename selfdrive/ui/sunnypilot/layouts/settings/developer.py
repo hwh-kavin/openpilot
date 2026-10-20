@@ -68,7 +68,8 @@ class DeveloperLayoutSP(DeveloperLayout):
       if not os.path.isfile(pandad_path):
         ui_state.params.put_bool("QuickBootToggle", False)
         return
-      atomic_write(PREBUILT_PATH, datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
+      with atomic_write(PREBUILT_PATH) as prebuilt_file:
+        prebuilt_file.write(datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"))
     elif os.path.isfile(PREBUILT_PATH):
       os.remove(PREBUILT_PATH)
     ui_state.params.put_bool("QuickBootToggle", state)

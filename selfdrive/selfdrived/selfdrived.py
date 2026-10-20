@@ -20,6 +20,8 @@ from openpilot.selfdrive.selfdrived.events import Events, ET
 from openpilot.selfdrive.selfdrived.helpers import ExcessiveActuationCheck
 from openpilot.selfdrive.selfdrived.state import StateMachine
 from openpilot.selfdrive.selfdrived.alertmanager import AlertManager, set_offroad_alert
+from openpilot.selfdrive.selfdrived.diagnostics import capture_diagnostics
+from openpilot.selfdrive.controls.lib.radar_fallback import highway_radar_fallback_enabled, radar_state_degraded
 
 from openpilot.system.version import get_build_metadata
 from openpilot.system.hardware import HARDWARE
@@ -31,7 +33,7 @@ from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import cycle_longitudinal_personality
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import adjust_longitudinal_personality, cycle_longitudinal_personality
 
 REPLAY = "REPLAY" in os.environ
 SIMULATION = "SIMULATION" in os.environ
@@ -395,6 +397,7 @@ class SelfdriveD(CruiseHelper):
     if self.sm.recv_frame['managerState'] and len(not_running):
       if not_running != self.not_running_prev:
         cloudlog.event("process_not_running", not_running=not_running, error=True)
+        self._capture_control_diagnostics("processNotRunning")
       self.not_running_prev = not_running
     if self.sm.recv_frame['managerState'] and (not_running - self.ignored_processes):
       self.events.add(EventName.processNotRunning)
@@ -409,16 +412,26 @@ class SelfdriveD(CruiseHelper):
       if not self.lagging_logged:
         self.lagging_logged = True
         cloudlog.event("selfdrived.lagging", frame=self.sm.frame, alive=len(self.sm.alive), error=True)
+        self._capture_control_diagnostics("selfdrivedLagging")
     else:
       self.lagging_logged = False
     ignore_gear_faults = self._ignore_gear_transition_faults(CS)
-    if self.sm['radarState'].radarErrors.canError:
+    radar_fallback = self._highway_radar_fallback_active(CS)
+    radar_errors = self.sm['radarState'].radarErrors
+    if radar_fallback:
+      # Highway vision-first mode: radar is auxiliary.  A radar fault degrades
+      # to a warning instead of SOFT_DISABLE/NO_ENTRY while vision is healthy.
+      if (not self.sm.seen.get('radarState', False) or
+          not self.sm.all_checks(['radarState']) or
+          radar_state_degraded(self.sm['radarState'])):
+        self.events.add(EventName.radarDegraded)
+    elif radar_errors.canError:
       self.events.add(EventName.canError)
-    elif self.sm['radarState'].radarErrors.radarUnavailableTemporary:
+    elif radar_errors.radarUnavailableTemporary:
       # Ford MRR (and similar) freezes scan index in R/P/N; not actionable there or briefly after D
       if not ignore_gear_faults:
         self.events.add(EventName.radarTempUnavailable)
-    elif any(self.sm['radarState'].radarErrors.to_dict().values()):
+    elif radar_state_degraded(self.sm['radarState']):
       self.events.add(EventName.radarFault)
     if not self.sm.valid['pandaStates']:
       self.events.add(EventName.usbError)
@@ -432,10 +445,11 @@ class SelfdriveD(CruiseHelper):
     # briefly after returning to D — must not surface as "Communication Issue Between Processes".
     has_disable_events = self.events.contains(ET.NO_ENTRY) and (self.events.contains(ET.SOFT_DISABLE) or self.events.contains(ET.IMMEDIATE_DISABLE))
     no_system_errors = (not has_disable_events) or (len(self.events) == num_events)
-    if not self.sm.all_checks() and no_system_errors and not ignore_gear_faults:
-      if not self.sm.all_alive():
+    checked_services = self._radar_checked_services(radar_fallback)
+    if not self.sm.all_checks(checked_services) and no_system_errors and not ignore_gear_faults:
+      if not self.sm.all_alive(checked_services):
         self.events.add(EventName.commIssue)
-      elif not self.sm.all_freq_ok():
+      elif not self.sm.all_freq_ok(checked_services):
         self.events.add(EventName.commIssueAvgFreq)
       else:
         self.events.add(EventName.commIssue)
@@ -457,6 +471,8 @@ class SelfdriveD(CruiseHelper):
           )
         except Exception:
           pass
+        reason = "commIssue" if self.events.has(EventName.commIssue) else "commIssueAvgFreq"
+        self._capture_control_diagnostics(reason)
     else:
       self.logged_comm_issue = None
 
@@ -531,13 +547,25 @@ class SelfdriveD(CruiseHelper):
 
     CruiseHelper.update(self, CS, self.events_sp, self.experimental_mode)
 
-    # decrement personality on distance button press
+    gap_button_events = [be for be in CS.buttonEvents if not be.pressed and be.type in (
+      ButtonType.gapAdjustCruise,
+      ButtonType.gapAdjustCruiseIncrease,
+      ButtonType.gapAdjustCruiseDecrease,
+    )]
     if self.CP.openpilotLongitudinalControl:
-      if any(not be.pressed and be.type == ButtonType.gapAdjustCruise for be in CS.buttonEvents):
+      if gap_button_events:
         if not self.experimental_mode_switched:
-          self.personality = cycle_longitudinal_personality(self.personality)
-          self.params.put('LongitudinalPersonality', self.personality)
-          self.events.add(EventName.personalityChanged)
+          button_type = gap_button_events[0].type
+          if button_type == ButtonType.gapAdjustCruiseIncrease:
+            next_personality = adjust_longitudinal_personality(self.personality, 1)
+          elif button_type == ButtonType.gapAdjustCruiseDecrease:
+            next_personality = adjust_longitudinal_personality(self.personality, -1)
+          else:
+            next_personality = cycle_longitudinal_personality(self.personality)
+          if next_personality != self.personality:
+            self.personality = next_personality
+            self.params.put('LongitudinalPersonality', self.personality)
+            self.events.add(EventName.personalityChanged)
         self.experimental_mode_switched = False
 
     self.icbm.run(CS, self.sm['carControl'], self.sm['longitudinalPlanSP'], self.is_metric)
@@ -567,6 +595,7 @@ class SelfdriveD(CruiseHelper):
           )
         except Exception:
           pass
+        self._capture_control_diagnostics("deviceState_stalled")
       elif ds_gap <= 2.0:
         self.ds_stall_logged = False
 
@@ -584,7 +613,8 @@ class SelfdriveD(CruiseHelper):
               lst.remove(p)
 
     if not self.initialized:
-      all_valid = CS.canValid and self.sm.all_checks()
+      radar_fallback = self._highway_radar_fallback_active(CS)
+      all_valid = CS.canValid and self.sm.all_checks(self._radar_checked_services(radar_fallback))
       timed_out = self.sm.frame * DT_CTRL > 6.
       if all_valid or timed_out or (SIMULATION and not REPLAY):
         available_streams = VisionIpcClient.available_streams("camerad", block=False)
@@ -733,6 +763,27 @@ class SelfdriveD(CruiseHelper):
       self.gear_recovery_frames += 1
       return True
     return False
+
+  def _capture_control_diagnostics(self, reason: str) -> None:
+    """Capture a non-blocking process/scheduling snapshot for field debugging."""
+    try:
+      capture_diagnostics(reason, self.sm, self.events, self.rk, self.params)
+    except Exception:
+      cloudlog.exception("control diagnostics capture failed")
+
+  def _highway_radar_fallback_active(self, CS: car.CarState) -> bool:
+    """Ford highway vision-first mode: radar is auxiliary, not control-critical."""
+    if not highway_radar_fallback_enabled(self.CP, CS.vEgo):
+      return False
+    if not CS.canValid or not self.sm.valid.get('pandaStates', False):
+      return False
+    return self.sm.all_checks(['modelV2', 'controlsState'])
+
+  def _radar_checked_services(self, radar_fallback: bool) -> list[str]:
+    services = list(self.sm.services)
+    if radar_fallback and 'radarState' in services:
+      services.remove('radarState')
+    return services
 
   def _update_locationd_reengage_state(self, CS: car.CarState, locationd_error: bool) -> None:
     if self.events.contains(EventName.pedalPressed) or self.events.contains(EventName.buttonCancel) or \

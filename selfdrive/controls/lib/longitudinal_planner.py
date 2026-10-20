@@ -13,7 +13,8 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
-from openpilot.selfdrive.controls.lib.radar_lead_filter import RadarLeadFilter, get_vision_lead, lead_from_vision
+from openpilot.selfdrive.controls.lib.radar_lead_filter import FilteredLead, RadarLeadFilter, get_vision_lead, lead_from_vision
+from openpilot.selfdrive.controls.lib.radar_fallback import highway_radar_fallback_enabled, radar_state_degraded
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
@@ -25,6 +26,12 @@ A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
+
+# BluePilot: e2e 纵向轻微负加速度死区，减少稳态巡航时模型小幅制动/补油的抖动。
+# 仅在无停车请求、无前车风险、车速足够且允许给油时生效；最多把 -0.15 m/s² 提为 0。
+E2E_LIGHT_DECEL_DEADBAND = 0.15  # m/s^2
+E2E_DEADBAND_MIN_SPEED = 5.0     # m/s (~18 km/h)
+E2E_DEADBAND_MIN_LEAD_GAP = 2.0  # s，前车时距小于该值时完全交给 MPC
 
 # BluePilot: MPC 前车参数源切换速度带（车道收敛+滤波逻辑见 radar_lead_filter）
 RADAR_LEAD_ENTER_V_MS = 60.0 * CV.KPH_TO_MS   # 低于此速度启用雷达点云前车参数
@@ -81,6 +88,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
 
+    # BluePilot: e2e 轻微负加速度死区状态（见 _apply_e2e_deadband）
+    self._e2e_deadband_active = False
+    self._mpc_lead_d_rel = float('inf')
+
     # BluePilot: MPC 前车参数的雷达点云处理（视觉车道收敛 + 滤波，与停车起步判定同源）
     self._radar_lead_filter = RadarLeadFilter()
     self._mpc_lead_status = False
@@ -90,6 +101,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self._fusion_params = None
     self._fusion_enabled_cached = True
     self._fusion_checked_t = 0.0
+    self._highway_radar_fallback_active = False
     if self._is_ford:
       try:
         self._fusion_params = Params()
@@ -120,9 +132,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     """MPC 前车参数源选择：
     - 车速 < 60 km/h 且雷达点云有效（Ford + FordStockAccFusion）时，使用
       视觉车道收敛 + dRel/vLead 滤波后的雷达点云数据（与停车起步判定同源）；
-    - 否则（≥60 km/h / 雷达无效 / 车道校验拒绝）使用 OP 视觉模型前车距离/速度。"""
+    - 否则（≥60 km/h / 雷达无效 / 车道校验拒绝）使用 OP 视觉模型前车距离/速度。
+    - 雷达数据无效或报错时绝不使用过期/不可信雷达 lead。"""
     rs = sm['radarState']
     lead = rs.leadOne
+    sm_valid = getattr(sm, 'valid', None)
+    radar_ok = (sm_valid is None or sm_valid.get('radarState', False)) and not radar_state_degraded(rs)
 
     # 雷达点云启用带（迟滞）：<60 km/h 进入，>=62 km/h 退出
     v_ego = float(sm['carState'].vEgo)
@@ -138,28 +153,67 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         self._fusion_enabled_cached = self._fusion_params.get_bool("FordStockAccFusion")
       except Exception:
         pass
-    use_radar = self._is_ford and self._fusion_enabled_cached and self._radar_lead_active
+    use_radar = self._is_ford and self._fusion_enabled_cached and self._radar_lead_active and radar_ok
 
     if use_radar and lead is not None and lead.status and lead.radar:
       filt = self._radar_lead_filter.update(lead, get_vision_lead(sm))
       if filt is not None and filt.status:
         self._mpc_lead_status = True
+        self._mpc_lead_d_rel = float(filt.dRel)
         return _RadarStateCopy(filt, rs.leadTwo)
       # 相邻车道雷达目标/滤波无效：回退视觉 lead；无可靠视觉 lead 视为无前车
       lead_copy = lead_from_vision(get_vision_lead(sm))
       self._mpc_lead_status = lead_copy.status
-      return _RadarStateCopy(lead_copy, rs.leadTwo)
+      self._mpc_lead_d_rel = float(lead_copy.dRel) if lead_copy.status else float('inf')
+      return _RadarStateCopy(lead_copy, rs.leadTwo if radar_ok else FilteredLead())
 
-    # 视觉模型前车距离/速度（无可靠视觉 lead 时回退雷达 leadOne 原样保底）
+    # 视觉模型前车距离/速度（无可靠视觉 lead 且雷达有效时回退雷达 leadOne 原样保底）
     vlead = get_vision_lead(sm)
     if vlead is not None:
       lead_copy = lead_from_vision(vlead)
       self._mpc_lead_status = lead_copy.status
-      return _RadarStateCopy(lead_copy, rs.leadTwo)
-    self._mpc_lead_status = bool(lead.status) if lead is not None else False
-    return rs
+      self._mpc_lead_d_rel = float(lead_copy.dRel) if lead_copy.status else float('inf')
+      return _RadarStateCopy(lead_copy, rs.leadTwo if radar_ok else FilteredLead())
+    if radar_ok:
+      self._mpc_lead_status = bool(lead.status) if lead is not None else False
+      self._mpc_lead_d_rel = float(lead.dRel) if self._mpc_lead_status else float('inf')
+      return rs
+    # 视觉与雷达都不可用：明确按“无前车”处理，避免使用过期雷达数据
+    self._mpc_lead_status = False
+    self._mpc_lead_d_rel = float('inf')
+    return _RadarStateCopy(FilteredLead(), FilteredLead())
+
+  def _apply_e2e_deadband(self, a_target, v_ego, should_stop):
+    """把 e2e 稳态巡航中的轻微负加速度提为 0，减少制动/补油抖动。
+
+    安全门：
+    - 无停车请求、无 FCW、车速 >= E2E_DEADBAND_MIN_SPEED
+    - 允许给油（否则本来就在滑行）
+    - 前车时距 >= E2E_DEADBAND_MIN_LEAD_GAP；更近时完全交给 MPC
+    - 只处理 (-deadband, 0)，更大的减速度原样保留
+    """
+    lead_gap = self._mpc_lead_d_rel / max(v_ego, 1e-3)
+    if (should_stop or self.fcw or v_ego < E2E_DEADBAND_MIN_SPEED or
+        not self.allow_throttle or lead_gap < E2E_DEADBAND_MIN_LEAD_GAP):
+      self._e2e_deadband_active = False
+      return a_target
+
+    # 进入/退出使用不同阈值，避免在边界附近来回切换
+    limit = E2E_LIGHT_DECEL_DEADBAND * (1.5 if self._e2e_deadband_active else 1.0)
+    if -limit < a_target < 0.0:
+      self._e2e_deadband_active = True
+      return 0.0
+
+    self._e2e_deadband_active = False
+    return a_target
 
   def update(self, sm):
+    all_checks = getattr(sm, 'all_checks', None)
+    self._highway_radar_fallback_active = bool(
+      self._is_ford and self._fusion_params is not None and all_checks is not None and
+      highway_radar_fallback_enabled(self.CP, sm['carState'].vEgo) and
+      all_checks(['modelV2', 'carState', 'controlsState', 'selfdriveState'])
+    )
     LongitudinalPlannerSP.update(self, sm)
 
     if len(sm['carControl'].orientationNED) == 3:
@@ -236,6 +290,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if self.is_e2e(sm):
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
+      output_a_target = self._apply_e2e_deadband(output_a_target, v_ego, self.output_should_stop)
       if output_a_target < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
     else:
@@ -250,7 +305,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
   def publish(self, sm, pm):
     plan_send = messaging.new_message('longitudinalPlan')
 
-    plan_send.valid = sm.all_checks(service_list=['carState', 'controlsState', 'selfdriveState', 'radarState'])
+    valid_services = ['carState', 'controlsState', 'selfdriveState']
+    if not self._highway_radar_fallback_active:
+      valid_services.append('radarState')
+    plan_send.valid = sm.all_checks(service_list=valid_services)
 
     longitudinalPlan = plan_send.longitudinalPlan
     longitudinalPlan.modelMonoTime = sm.logMonoTime['modelV2']

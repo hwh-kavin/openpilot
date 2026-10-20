@@ -33,6 +33,8 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     self.cluster_min_speed = CV.KPH_TO_MS * 1.5
     self.cluster_speed_hyst_gap = CV.KPH_TO_MS / 2.
     self.distance_button = 0
+    self.distance_increase_button = 0
+    self.distance_decrease_button = 0
     self.lc_button = 0
     # Stock ACCDATA (camera bus) longitudinal request for the low-speed stop-and-go
     # handover (<=15 km/h stock longitudinal). IPMA keeps publishing it while OP TXes ACCDATA.
@@ -159,8 +161,12 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
     # TODO: block this going to the camera otherwise it will enable stock TJA
     ret.genericToggle = bool(cp.vl["Steering_Data_FD1"]["TjaButtnOnOffPress"])
     prev_distance_button = self.distance_button
+    prev_distance_increase_button = self.distance_increase_button
+    prev_distance_decrease_button = self.distance_decrease_button
     prev_lc_button = self.lc_button
     self.distance_button = cp.vl["Steering_Data_FD1"]["AccButtnGapTogglePress"]
+    self.distance_increase_button = cp.vl["Steering_Data_FD1"]["AccButtnGapIncPress"]
+    self.distance_decrease_button = cp.vl["Steering_Data_FD1"]["AccButtnGapDecPress"]
     self.lc_button = bool(cp.vl["Steering_Data_FD1"]["TjaButtnOnOffPress"])
 
     # lock info
@@ -195,6 +201,8 @@ class CarState(CarStateBase, MadsCarState, CarStateExt):
 
     ret.buttonEvents = [
       *create_button_events(self.distance_button, prev_distance_button, {1: ButtonType.gapAdjustCruise}),
+      *create_button_events(self.distance_increase_button, prev_distance_increase_button, {1: ButtonType.gapAdjustCruiseIncrease}),
+      *create_button_events(self.distance_decrease_button, prev_distance_decrease_button, {1: ButtonType.gapAdjustCruiseDecrease}),
       *create_button_events(self.lc_button, prev_lc_button, {1: ButtonType.lkas}),
       *self.button_events,
     ]
