@@ -2576,6 +2576,18 @@ msgstr "角度：基础横向增益"
 msgid "Angle: Deviation Clip"
 msgstr "角度：偏差限幅"
 
+msgid "Angle: Enable Lane Positioning"
+msgstr "角度：启用车道定位"
+
+msgid "Angle: In-Lane Offset"
+msgstr "角度：车道内偏移"
+
+msgid "Angle: Lane Centering Strength"
+msgstr "角度：车道居中强度"
+
+msgid "Scales the correction toward the center of trusted lane lines. Higher values apply a stronger correction; 0 disables it. Only active when Angle Lane Positioning is enabled, lateral control is active, and no lane change is in progress."
+msgstr "调整向可信车道线中心修正的强度。数值越大，修正越强；设为 0 可关闭修正。仅在启用角度车道定位、横向控制有效且未处于变道过程中时生效。"
+
 msgid "Curvature: Lane Change Factor"
 msgstr "曲率：变道系数"
 

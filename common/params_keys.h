@@ -213,6 +213,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // BluePilot angle mode: deviation clip, per-mille m^-1 (5 = 0.005 m^-1); UI range 2..8
     {"FordAngleDeviationClip", {PERSISTENT | BACKUP, INT, "5"}},
     {"lane_change_factor_high_ang", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
+    // BluePilot angle-mode lane centering (curvature-domain trim; see lane_center_trim.py).
+    // Offset is left-positive (openpilot lateral convention), not the Ford wire convention.
+    {"enable_lane_positioning_ang", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"custom_path_offset_ang", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    {"lane_centering_strength_ang", {PERSISTENT | BACKUP, FLOAT, "0.25"}},
     {"FordPrefSteerAngleCurvature", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ShowTurnSignals", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"StandstillTimer", {PERSISTENT | BACKUP, BOOL, "0"}},

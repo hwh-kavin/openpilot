@@ -232,6 +232,27 @@ class SteeringLayout(Widget):
       label_callback=lambda x: f"{x / 1000:.3f}",
       description=lambda: tr("允许控制量领先实测曲率的上限（1/m）。过大则入弯过强；过小则入弯转向不足。上限 0.008。"),
     )
+    self._ford_angle_lane_positioning = toggle_item_sp(
+      param="enable_lane_positioning_ang",
+      title=lambda: tr("Angle: Enable Lane Positioning"),
+      description=lambda: tr("根据可信车道线中心修正角度模式的车道居中。"),
+    )
+    self._ford_angle_path_offset = option_item_sp(
+      title=lambda: tr("Angle: In-Lane Offset"),
+      param="custom_path_offset_ang",
+      min_value=-50, max_value=50, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f} m",
+      use_float_scaling=True,
+      description=lambda: tr("正值向左偏移，负值向右偏移；车道线不可信时仍会保留此偏置。"),
+    )
+    self._ford_angle_centering_strength = option_item_sp(
+      title=lambda: tr("Angle: Lane Centering Strength"),
+      param="lane_centering_strength_ang",
+      min_value=0, max_value=100, value_change_step=5,
+      label_callback=lambda x: f"{x / 100:.2f}",
+      use_float_scaling=True,
+      description=lambda: tr("Scales the correction toward the center of trusted lane lines. Higher values apply a stronger correction; 0 disables it. Only active when Angle Lane Positioning is enabled, lateral control is active, and no lane change is in progress."),
+    )
 
     items = [
       self._mads_toggle,
@@ -256,6 +277,9 @@ class SteeringLayout(Widget):
       self._ford_angle_lane_change,
       self._ford_angle_base_gain,
       self._ford_angle_deviation_clip,
+      self._ford_angle_lane_positioning,
+      self._ford_angle_path_offset,
+      self._ford_angle_centering_strength,
       LineSeparatorSP(40),
       self._htd_toggle,
       self._htd_turn_angle_threshold,
@@ -320,6 +344,12 @@ class SteeringLayout(Widget):
     self._ford_angle_high_speed.set_visible(ford_angle_mode)
     self._ford_angle_dampening.set_visible(ford_angle_mode)
     self._ford_angle_lane_change.set_visible(ford_angle_mode)
+    self._ford_angle_lane_positioning.set_visible(ford_angle_mode)
+    self._ford_angle_path_offset.set_visible(ford_angle_mode)
+    self._ford_angle_centering_strength.set_visible(ford_angle_mode)
+    lane_positioning_enabled = self._ford_angle_lane_positioning.action_item.get_state()
+    self._ford_angle_path_offset.action_item.set_enabled(ford_angle_mode and lane_positioning_enabled)
+    self._ford_angle_centering_strength.action_item.set_enabled(ford_angle_mode and lane_positioning_enabled)
 
   def _render(self, rect):
     if self._current_panel == PanelType.LANE_CHANGE:

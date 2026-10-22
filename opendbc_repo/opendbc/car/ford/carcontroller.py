@@ -36,13 +36,77 @@ FUSION_LEAD_MOVING_V_TRG_MARGIN_KPH = 5.0
 FUSION_STOCK_HARD_BRAKE = 1.0  # m/s^2
 # Floor accel when planner wants go but LongControl is still in stopping hold (-2 m/s^2)
 FUSION_OP_PULLAWAY_ACCEL = 0.4  # m/s^2
-# 低速防急刹（用户需求）：vEgo < 20 km/h 且前车距离（雷达收敛滤波优先、视觉
-# 兜底）> 2m 时不出现急刹，制动力度限制到柔和水平；距离 <= 2m 恢复完整制动。
-LOW_SPEED_GENTLE_BRAKE_V_MS = 20.0 * CV.KPH_TO_MS  # ~5.56 m/s
+# 低速之字形缓刹：减速后出现低于15 km/h且短于6秒的加速、随后再次减速时，
+# 在前车距离/TTC安全时限制制动jerk；近距、FCW及强制动请求始终放行。
+LOW_SPEED_GENTLE_BRAKE_V_MS = 15.0 * CV.KPH_TO_MS
 LOW_SPEED_GENTLE_BRAKE_DIST_M = 2.0
-LOW_SPEED_GENTLE_BRAKE_ACCEL = -1.0  # m/s^2，柔和制动上限
 LOW_SPEED_GENTLE_BRAKE_EMERGENCY_ACCEL = -2.5  # m/s^2，更深的紧急制动请求不拦截
+LOW_SPEED_GENTLE_BRAKE_JERK = 2.0  # m/s^3
+LOW_SPEED_GENTLE_BRAKE_TTC_S = 3.0
+LOW_SPEED_GENTLE_BRAKE_ZIGZAG_ACCEL_MAX_S = 6.0
+LOW_SPEED_GENTLE_BRAKE_ZIGZAG_ACCEL_THRESHOLD = 0.05
+_ZIGZAG_WAIT_DECEL = 0
+_ZIGZAG_WAIT_ACCEL = 1
+_ZIGZAG_IN_ACCEL = 2
 PARAMS_UPDATE_FRAMES = 100  # ~1s at 100Hz
+
+
+def update_low_speed_gentle_brake(accel: float, requested_accel: float, previous_accel: float, v_ego: float,
+                                  lead_distance: float | None, lead_v_rel: float | None,
+                                  active: bool, zigzag_phase: int, accel_duration: float,
+                                  fcw: bool, long_active: bool,
+                                  standstill: bool) -> tuple[bool, int, float, float]:
+  """Detect low-speed decel-accel-decel cycles and soften the final braking phase."""
+  closing_speed = max(0.0, -(lead_v_rel or 0.0))
+  ttc = lead_distance / closing_speed if lead_distance is not None and closing_speed > 0.0 else float('inf')
+  urgent = (
+    not long_active or standstill or lead_distance is None or
+    lead_distance <= LOW_SPEED_GENTLE_BRAKE_DIST_M or
+    ttc <= LOW_SPEED_GENTLE_BRAKE_TTC_S or fcw or
+    requested_accel <= LOW_SPEED_GENTLE_BRAKE_EMERGENCY_ACCEL
+  )
+  if urgent:
+    return False, _ZIGZAG_WAIT_DECEL, 0.0, accel
+
+  if not active:
+    if zigzag_phase == _ZIGZAG_WAIT_DECEL:
+      if requested_accel < -LOW_SPEED_GENTLE_BRAKE_ZIGZAG_ACCEL_THRESHOLD:
+        zigzag_phase = _ZIGZAG_WAIT_ACCEL
+    elif zigzag_phase == _ZIGZAG_WAIT_ACCEL:
+      if requested_accel > LOW_SPEED_GENTLE_BRAKE_ZIGZAG_ACCEL_THRESHOLD:
+        if v_ego < LOW_SPEED_GENTLE_BRAKE_V_MS:
+          zigzag_phase = _ZIGZAG_IN_ACCEL
+          accel_duration = DT_CTRL
+        else:
+          zigzag_phase = _ZIGZAG_WAIT_DECEL
+    elif zigzag_phase == _ZIGZAG_IN_ACCEL:
+      if requested_accel < -LOW_SPEED_GENTLE_BRAKE_ZIGZAG_ACCEL_THRESHOLD:
+        if accel_duration < LOW_SPEED_GENTLE_BRAKE_ZIGZAG_ACCEL_MAX_S:
+          active = True
+          zigzag_phase = _ZIGZAG_WAIT_DECEL
+        else:
+          zigzag_phase = _ZIGZAG_WAIT_ACCEL
+        accel_duration = 0.0
+      elif requested_accel > LOW_SPEED_GENTLE_BRAKE_ZIGZAG_ACCEL_THRESHOLD:
+        if v_ego >= LOW_SPEED_GENTLE_BRAKE_V_MS:
+          zigzag_phase = _ZIGZAG_WAIT_DECEL
+          accel_duration = 0.0
+        else:
+          accel_duration += DT_CTRL
+          if accel_duration >= LOW_SPEED_GENTLE_BRAKE_ZIGZAG_ACCEL_MAX_S:
+            zigzag_phase = _ZIGZAG_WAIT_DECEL
+            accel_duration = 0.0
+      else:
+        zigzag_phase = _ZIGZAG_WAIT_DECEL
+        accel_duration = 0.0
+
+  if active:
+    target_accel = accel
+    max_decel_step = LOW_SPEED_GENTLE_BRAKE_JERK * CarControllerParams.ACC_CONTROL_STEP * DT_CTRL
+    accel = max(accel, previous_accel - max_decel_step)
+    if accel == target_accel:
+      active = False
+  return active, zigzag_phase, accel_duration, accel
 
 
 def _stock_lead_moving(CS, cruise_kph: float) -> bool:
@@ -192,6 +256,10 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
     self._radar_filter = RadarLeadFilter()
     self._filtered_lead_frame = -1
     self._filtered_lead_d = None
+    self._filtered_lead_v_rel = None
+    self._low_speed_gentle_brake_active = False
+    self._low_speed_zigzag_phase = _ZIGZAG_WAIT_DECEL
+    self._low_speed_zigzag_accel_duration = 0.0
 
   def _update_stock_go_confirm(self, stock_a: float | None, allowed: bool) -> None:
     if allowed and stock_a is not None and stock_a > FUSION_STOCK_PULLAWAY_THRESH:
@@ -205,16 +273,17 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
       self._stock_go_confirm >= FUSION_STOCK_GO_DEBOUNCE_CYCLES
     )
 
-  def _get_filtered_lead_dist(self) -> float | None:
-    """前车距离（每帧缓存）：雷达点云视觉车道收敛+滤波优先，无效时视觉兜底。
+  def _get_filtered_lead_state(self, v_ego: float) -> tuple[float | None, float | None]:
+    """前车距离与相对速度（每帧缓存）：滤波雷达优先，无效时视觉兜底。
 
     RadarLeadFilter 是 EMA 状态机，每帧只能推进一次；按 self.frame 缓存结果，
     避免同帧多次调用重复推进滤波状态。无有效前车返回 None。
     """
     if self._filtered_lead_frame == self.frame:
-      return self._filtered_lead_d
+      return self._filtered_lead_d, self._filtered_lead_v_rel
     self._filtered_lead_frame = self.frame
     self._filtered_lead_d = None
+    self._filtered_lead_v_rel = None
     try:
       sm = getattr(self, 'sm', None)
       if sm is not None:
@@ -224,13 +293,16 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
             filt = self._radar_filter.update(lead, get_vision_lead(sm))
             if filt is not None and filt.status:
               self._filtered_lead_d = filt.dRel
+              self._filtered_lead_v_rel = filt.vRel
         if self._filtered_lead_d is None:
           vlead = get_vision_lead(sm)
           if vlead is not None:
             self._filtered_lead_d = float(vlead.x[0])
+            self._filtered_lead_v_rel = float(vlead.v[0]) - v_ego
     except Exception:
       self._filtered_lead_d = None
-    return self._filtered_lead_d
+      self._filtered_lead_v_rel = None
+    return self._filtered_lead_d, self._filtered_lead_v_rel
 
   def _update_fusion_params(self):
     if (self.frame % PARAMS_UPDATE_FRAMES) != 0 and self._params is not None:
@@ -393,6 +465,7 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
         self._stock_acc_session = False
 
       pulling_away = fusion_mode in ("stock_go", "op_go")
+      requested_accel = accel
 
       if CC.longActive:
         # Compensate for engine creep at low speed.
@@ -402,6 +475,7 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
         # turns mild stock_go (0.06–0.2) into braking, which deadlocks AccStopMde.
         if not pulling_away:
           accel = apply_creep_compensation(accel, CS.out.vEgo)
+        requested_accel = accel
 
         # The stock system has been seen rate limiting the brake accel to 5 m/s^3,
         # however even 3.5 m/s^3 causes some overshoot with a step response.
@@ -413,18 +487,13 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
       accel = float(np.clip(accel, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
       gas = float(np.clip(gas, CarControllerParams.ACCEL_MIN, CarControllerParams.ACCEL_MAX))
 
-      # 低速防急刹：vEgo<20km/h 且前车距离（雷达收敛滤波优先、视觉兜底）
-      # >2m 时，只限制“新发起”的普通制动到柔和水平；以下情况不拦截：
-      #   1) 上一帧已处于强制动（accel <= 柔和上限）—— 急减速穿过 20km/h
-      #      时不突然松刹，避免惯性前冲撞前车（实测问题）；
-      #   2) 本帧请求深度 >= 2.5m/s² 的紧急制动 —— 真正紧急时放行；
-      #   3) 前车距离 <= 2m —— 立即恢复完整制动；
-      #   4) 停车保持（standstill）不受限。
-      if CC.longActive and CS.out.vEgo < LOW_SPEED_GENTLE_BRAKE_V_MS and not CS.out.standstill:
-        lead_d = self._get_filtered_lead_dist()
-        if lead_d is not None and lead_d > LOW_SPEED_GENTLE_BRAKE_DIST_M:
-          if self.accel > LOW_SPEED_GENTLE_BRAKE_ACCEL and accel >= LOW_SPEED_GENTLE_BRAKE_EMERGENCY_ACCEL:
-            accel = max(accel, LOW_SPEED_GENTLE_BRAKE_ACCEL)
+      lead_d, lead_v_rel = self._get_filtered_lead_state(CS.out.vEgo)
+      (self._low_speed_gentle_brake_active, self._low_speed_zigzag_phase,
+       self._low_speed_zigzag_accel_duration, accel) = update_low_speed_gentle_brake(
+        accel, requested_accel, self.accel, CS.out.vEgo, lead_d, lead_v_rel,
+        self._low_speed_gentle_brake_active, self._low_speed_zigzag_phase,
+        self._low_speed_zigzag_accel_duration, fcw_alert, CC.longActive, CS.out.standstill,
+      )
 
       # Both gas and accel are in m/s^2, accel is used solely for braking
       if not CC.longActive or gas < CarControllerParams.MIN_GAS:
