@@ -38,7 +38,7 @@ class LateralBaseExt:
 
   def __init__(self, CP, CP_SP):
     # SubMaster for model data, live parameters, and selfdrive state.
-    self.sm = messaging.SubMaster(['modelV2', 'liveParameters', 'selfdriveState', 'radarState', 'liveDelay'])
+    self.sm = messaging.SubMaster(['modelV2', 'liveParameters', 'selfdriveState', 'radarState', 'liveDelay', 'modelDataV2SP'])
     self.VM = VehicleModel(CP)
     self.model = None
     self.lp = None
@@ -61,6 +61,12 @@ class LateralBaseExt:
     # Lane change scaling breakpoints (angle mode reads lane_change_factor_low).
     self.lane_change_factor_bp = [4.4, 40.23]  # speed breakpoints (m/s)
     self.lane_change_factor_low = 0.95
+
+    # BluePilot: Blendful (alpha) curvature nudge published by modeld_v2; the angle strategy adds
+    # it to kappa_cmd before its measured-curvature deviation clip.
+    self.blendful_curvature = 0.0
+    self.blendful_trust = 0.0
+    self.blendful_enabled = False
 
   def get_current_curvature(self, CS):
     """Measured curvature of the car right now (OP sign convention).
@@ -99,6 +105,10 @@ class LateralBaseExt:
       self.lp = self.sm['liveParameters']
     if self.sm.updated['selfdriveState']:
       self.ss = self.sm['selfdriveState']
+
+    if self.sm.valid['modelDataV2SP']:
+      self.blendful_curvature = float(self.sm['modelDataV2SP'].blendfulCurvature)
+      self.blendful_trust = float(self.sm['modelDataV2SP'].blendfulTrust)
 
     if self.lp is not None:
       x = max(self.lp.stiffnessFactor, 0.1)
