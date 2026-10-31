@@ -5,19 +5,22 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
-from openpilot.sunnypilot import get_file_hash
-from openpilot.sunnypilot.models.default_model import MODEL_HASH_PATH, VISION_ONNX_PATH, POLICY_ONNX_PATH
 import hashlib
 
+from openpilot.sunnypilot import get_file_hash
+from openpilot.sunnypilot.models.default_model import MODEL_HASH_PATH, VISION_ONNX_PATH, POLICY_ONNX_PATH, \
+                                                      _read_model_name_fields
 
-class TestDefaultModel:
-  def test_compare_onnx_hashes(self):
-    vision_hash = get_file_hash(VISION_ONNX_PATH)
-    policy_hash = get_file_hash(POLICY_ONNX_PATH)
 
-    combined_hash = hashlib.sha256((vision_hash + policy_hash).encode()).hexdigest()
+def test_compare_onnx_hashes():
+  # BluePilot: the default model is the vision + policy ONNX pair (no supercombo / big pkl here)
+  fields = _read_model_name_fields()
+  fingerprint = f"{get_file_hash(VISION_ONNX_PATH)}:{get_file_hash(POLICY_ONNX_PATH)}:" + \
+                f"{fields.get('DEFAULT_MODEL', '')}:{fields.get('DEFAULT_MODEL_REF', '')}"
+  combined_hash = hashlib.sha256(fingerprint.encode()).hexdigest()
 
-    with open(MODEL_HASH_PATH) as f:
-      current_hash = f.read().strip()
+  with open(MODEL_HASH_PATH) as f:
+    current_hash = f.read().strip()
 
-    assert combined_hash == current_hash, "Run sunnypilot/models/default_model.py to update the default model name and hash"
+  assert combined_hash == current_hash, "Run sunnypilot/models/default_model.py to update the default model name and hash"
+

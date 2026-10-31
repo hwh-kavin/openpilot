@@ -7,149 +7,170 @@ See the LICENSE.md file in the root directory for more details.
 
 import hashlib
 import os
-import pickle
 import numpy as np
 
+from openpilot.cereal import custom
 from openpilot.common.params import Params
-from cereal import custom
-from openpilot.sunnypilot.models.constants import Meta, MetaTombRaider, MetaSimPose
-from openpilot.system.hardware.hw import Paths
-from pathlib import Path
+from openpilot.common.swaglog import cloudlog
+from openpilot.common.hardware.hw import Paths
+from openpilot.selfdrive.modeld.helpers import chestnut_present
 
-# see the README.md for more details on the model selector versioning
-CURRENT_SELECTOR_VERSION = 16
-REQUIRED_MIN_SELECTOR_VERSION = 15
-
+# SET ME TO THE EXACT JSON VERSION WE SET IN SUNNYPILOT_MODELS REPO
+REQUIRED_JSON_VERSION = 21
 
 CUSTOM_MODEL_PATH = Paths.model_root()
-METADATA_PATH = Path(__file__).parent / '../models/supercombo_metadata.pkl'
-
 ModelManager = custom.ModelManagerSP
+
+ACTIVE_BUNDLE_KEYS = {
+  "qcom": "ModelManager_ActiveBundle",
+  "chestnut": "ModelManager_ActiveBundleChestnut",
+}
+_LAST_VALIDATED_RAW: dict[str, dict | None] = {}
+
+
+def _compute_hash(file_path: str) -> str | None:
+  try:
+    with open(file_path, 'rb') as file:
+      return hashlib.file_digest(file, "sha256").hexdigest().lower()
+  except FileNotFoundError:
+    return None
 
 
 async def verify_file(file_path: str, expected_hash: str) -> bool:
-  from openpilot.common.file_chunker import read_file_chunked
-  try:
-    data = read_file_chunked(file_path)
-  except FileNotFoundError:
-    return False
-  return hashlib.sha256(data).hexdigest().lower() == expected_hash.lower()
+  file_hash = _compute_hash(file_path)
+  return file_hash == expected_hash.lower() if file_hash else False
+
+
+def _verify_file(file_path: str, expected_hash: str) -> bool:
+  file_hash = _compute_hash(file_path)
+  return file_hash == expected_hash.lower() if file_hash else False
 
 
 def is_bundle_version_compatible(bundle: dict) -> bool:
   """
-  Checks whether the model bundle is compatible with the current selector version constraints.
-
-  The bundle specifies a `minimum_selector_version`, which defines the minimum selector version
+  The bundle parsed from the json specifies a `minimum_selector_version`, which defines the minimum selector version
   required to load the model. This function ensures that:
-
-    1. The model is not too old: the bundle must require at least `REQUIRED_MIN_SELECTOR_VERSION`.
-    2. The model is not too new: it must support the current selector version (`CURRENT_SELECTOR_VERSION`).
-
-  This allows the selector to enforce both a minimum and maximum range of supported models,
-  even if a model would otherwise be compatible.
-
-  :param bundle: Dictionary containing `minimum_selector_version`, as defined by the model bundle.
-  :type bundle: Dict
-  :return: True if the selector version is within the accepted range for the bundle; otherwise False.
-  :rtype: Bool
+    the bundle MUST match the `REQUIRED_JSON_VERSION` set here in helpers.
   """
-  # Upstream JSON sometimes stores this as a string (e.g. "16"); coerce before compare.
-  try:
-    min_sel = int(bundle.get("minimumSelectorVersion", 0) or 0)
-  except (TypeError, ValueError):
-    return False
-  return bool(REQUIRED_MIN_SELECTOR_VERSION <= min_sel <= CURRENT_SELECTOR_VERSION)
+  return bundle.get("minimumSelectorVersion", 0) == REQUIRED_JSON_VERSION
 
 
-def get_active_bundle(params: Params | None = None, raw_bundle_dict: dict | bytes | None = None) -> "custom.ModelManagerSP.ModelBundle | None":
-  """Gets the active model bundle from cache"""
-  params = params or Params()
-
-  try:
-    active_bundle_dict = raw_bundle_dict if raw_bundle_dict is not None else (params.get("ModelManager_ActiveBundle") or {})
-    if isinstance(active_bundle_dict, dict) and active_bundle_dict and is_bundle_version_compatible(active_bundle_dict):
-      return custom.ModelManagerSP.ModelBundle(**active_bundle_dict)
-  except Exception:
-    pass
-
-  return None
+def _bundle_artifacts(bundle: custom.ModelManagerSP.ModelBundle) -> list[tuple[str, str]]:
+  artifacts = []
+  for model in getattr(bundle, 'models', []) or []:
+    artifact = getattr(model, 'artifact', None)
+    if artifact and getattr(artifact, 'fileName', None) and getattr(artifact, 'downloadUri', None):
+      if sha256 := getattr(artifact.downloadUri, 'sha256', None):
+        artifacts.append((artifact.fileName, sha256))
+  return artifacts
 
 
-_LAST_VALIDATED_RAW: dict | bytes | None = None
+def _bundle_is_valid_locally(bundle: custom.ModelManagerSP.ModelBundle) -> bool:
+  model_root = Paths.model_root()
+  return all(_verify_file(os.path.join(model_root, file_name), expected_hash)
+             for file_name, expected_hash in _bundle_artifacts(bundle))
 
 
 def _bundle_needs_reset(active_bundle: custom.ModelManagerSP.ModelBundle, available_bundles: list[custom.ModelManagerSP.ModelBundle] | None) -> bool:
-  # None or empty: catalog unavailable (fetch/DNS failure). Do not wipe ActiveBundle —
-  # that used to clear a working RDF/C210 selection and leave calibration stuck at 0%.
-  if not available_bundles:
+  if active_bundle is None:
     return False
-  return active_bundle.ref not in {bundle.ref for bundle in available_bundles}
+
+  if available_bundles is not None:
+    matching_bundle = None
+    for bundle in available_bundles:
+      if active_bundle.ref and bundle.ref:
+        if active_bundle.ref == bundle.ref:
+          matching_bundle = bundle
+          break
+      elif active_bundle.internalName == bundle.internalName:
+        matching_bundle = bundle
+        break
+
+    if matching_bundle is None:
+      return True
+    if active_bundle.minimumSelectorVersion != matching_bundle.minimumSelectorVersion:
+      return True
+    if active_bundle.runner != matching_bundle.runner:
+      return True
+    if set(_bundle_artifacts(active_bundle)) != set(_bundle_artifacts(matching_bundle)):
+      return True
+
+  return not _bundle_is_valid_locally(active_bundle)
 
 
-def _bundle_files_loadable(active_bundle: custom.ModelManagerSP.ModelBundle) -> bool:
-  """Return True if every artifact for the bundle is present on disk and loadable."""
-  from openpilot.common.file_chunker import get_manifest_path, get_chunk_name
-
-  for model in active_bundle.models:
-    filename = model.artifact.fileName if model.artifact else None
-    if not filename:
-      continue
-    full_path = os.path.join(Paths.model_root(), filename)
-    if os.path.isfile(full_path):
-      continue
-    manifest = get_manifest_path(full_path)
-    if not os.path.isfile(manifest):
-      return False
-    try:
-      num_chunks = int(open(manifest).read().strip())
-    except (ValueError, OSError):
-      return False
-    if num_chunks <= 0 or not all(os.path.isfile(get_chunk_name(full_path, i, num_chunks)) for i in range(num_chunks)):
-      return False
-  return True
+def _parse_active_bundle(raw_bundle) -> "custom.ModelManagerSP.ModelBundle | None":
+  try:
+    if isinstance(raw_bundle, dict) and raw_bundle and is_bundle_version_compatible(raw_bundle):
+      return custom.ModelManagerSP.ModelBundle(**raw_bundle)
+  except Exception:
+    pass
+  return None
 
 
-def validate_active_bundle(params: Params, available_bundles: list[custom.ModelManagerSP.ModelBundle] | None = None) -> None:
-  from openpilot.common.swaglog import cloudlog
+def get_selected_bundle(params: Params | None = None, source: str = "qcom") -> "custom.ModelManagerSP.ModelBundle | None":
+  params = params or Params()
+  return _parse_active_bundle(params.get(ACTIVE_BUNDLE_KEYS[source]))
 
+
+def get_active_source(chestnut: bool | None = None, chestnut_active: bool | None = None,
+                      chestnut_loading: bool | None = None, offroad: bool | None = None) -> str:
+  if chestnut is None:
+    chestnut = chestnut_present()
+  state_valid = chestnut_active is not None or chestnut_loading is not None or offroad is not None
+  big_active = chestnut and (not state_valid or chestnut_active or chestnut_loading or offroad)
+  return "chestnut" if big_active else "qcom"
+
+
+def get_active_bundle(params: Params | None = None, *, chestnut: bool | None = None) -> "custom.ModelManagerSP.ModelBundle | None":
+  # no cross-slot fallback: an empty active slot means the hardware default, which
+  # only stock modeld can run - modeld_v2 requires a real bundle
+  params = params or Params()
+  return get_selected_bundle(params, get_active_source(chestnut=chestnut))
+
+
+def resolve_bundle_by_ref(
+  ref: str, source_bundles: dict[str, list[custom.ModelManagerSP.ModelBundle]],
+) -> "tuple[custom.ModelManagerSP.ModelBundle, str] | None":
+  for source, bundles in source_bundles.items():
+    for bundle in bundles:
+      if bundle.ref == ref:
+        return bundle, source
+  return None
+
+
+def _validate_active_bundle(params: Params, source: str, available_bundles: list[custom.ModelManagerSP.ModelBundle] | None = None) -> None:
   global _LAST_VALIDATED_RAW
 
-  raw_bundle = params.get("ModelManager_ActiveBundle")
+  key = ACTIVE_BUNDLE_KEYS[source]
+  raw_bundle = params.get(key)
   if not raw_bundle:
     return
 
-  active_bundle = get_active_bundle(params, raw_bundle_dict=raw_bundle)
-  missing_files = active_bundle is not None and not _bundle_files_loadable(active_bundle)
-  # Always re-check files on disk (chunks can disappear after a failed re-download).
-  # Skip the heavier catalog/ref check only when the raw bundle is unchanged.
-  ref_changed = raw_bundle != _LAST_VALIDATED_RAW
-  needs_reset = active_bundle is None or missing_files or (ref_changed and _bundle_needs_reset(active_bundle, available_bundles))
-  if needs_reset:
-    reason = "files missing" if missing_files else "invalid"
-    cloudlog.warning(f"Active model bundle {reason}; resetting to default")
-    params.remove("ModelManager_ActiveBundle")
-    params.put("ModelRunnerTypeCache", int(custom.ModelManagerSP.Runner.stock), block=True)
-    _LAST_VALIDATED_RAW = None
+  if _LAST_VALIDATED_RAW.get(key) == raw_bundle:
+    return
+
+  active_bundle = _parse_active_bundle(raw_bundle)
+  if active_bundle is None or _bundle_needs_reset(active_bundle, available_bundles):
+    cloudlog.warning(f"Active model bundle invalid for {source}; resetting to default")
+    params.remove(key)
+    _LAST_VALIDATED_RAW[key] = None
   else:
-    _LAST_VALIDATED_RAW = raw_bundle
+    _LAST_VALIDATED_RAW[key] = raw_bundle
 
 
-def get_active_model_runner(params: Params = None, force_check=False) -> int:
-  if params is None:
-    params = Params()
+def validate_active_bundles(params: Params, source_bundles: dict[str, list[custom.ModelManagerSP.ModelBundle]]) -> None:
+  # an empty list means the fetch failed, not that the catalog dropped the bundle
+  for source, bundles in source_bundles.items():
+    _validate_active_bundle(params, source, bundles or None)
+  get_active_model_runner(params, force_check=True)
 
+
+def get_active_model_runner(params: Params | None = None, force_check: bool = False) -> int:
+  params = params or Params()
   cached_runner_type = params.get("ModelRunnerTypeCache")
-  # Onroad uses the cache to avoid thrashing, but a stale non-stock cache with no
-  # ActiveBundle starts modeld_tinygrad without a pkl → crash loop → 0% calibration.
   if cached_runner_type is not None and not force_check:
-    if (cached_runner_type == int(custom.ModelManagerSP.Runner.stock) or
-        params.get("ModelManager_ActiveBundle")):
-      return cached_runner_type
-    force_check = True
-
+    return cached_runner_type
   runner_type = custom.ModelManagerSP.Runner.stock
-
   if active_bundle := get_active_bundle(params):
     runner_type = active_bundle.runner.raw
 
@@ -158,66 +179,12 @@ def get_active_model_runner(params: Params = None, force_check=False) -> int:
 
   return runner_type
 
+
 def _get_model():
   if bundle := get_active_bundle():
     drive_model = next(model for model in bundle.models if model.type == ModelManager.Model.Type.supercombo)
     return drive_model
-
   return None
-
-def load_metadata():
-  metadata_path = METADATA_PATH
-
-  if model := _get_model():
-    metadata_path = f"{CUSTOM_MODEL_PATH}/{model.metadata.fileName}"
-
-  with open(metadata_path, 'rb') as f:
-    return pickle.load(f)
-
-
-def prepare_inputs(model_metadata) -> dict[str, np.ndarray]:
-  # img buffers are managed in openCL transform code so we don't pass them as inputs
-  inputs = {
-    k: np.zeros(v, dtype=np.float32).flatten()
-    for k, v in model_metadata['input_shapes'].items()
-    if 'img' not in k
-  }
-
-  return inputs
-
-
-def load_meta_constants(model_metadata):
-  """
-  Determines and loads the appropriate meta model class based on the metadata provided. The function checks
-  specific keys and conditions within the provided metadata dictionary to identify the corresponding meta
-  model class to return.
-
-  :param model_metadata: Dictionary containing metadata about the model. It includes
-      details such as input shapes, output slices, and other configurations for identifying
-      metadata-dependent meta model classes.
-  :type model_metadata: dict
-  :return: The appropriate meta model class (Meta, MetaSimPose, or MetaTombRaider)
-      based on the conditions and metadata provided.
-  :rtype: type
-  """
-  meta = Meta  # Default Meta
-
-  if 'sim_pose' in model_metadata['input_shapes'].keys():
-    # Meta for models with sim_pose input
-    meta = MetaSimPose
-  else:
-    # Meta for Tomb Raider, it does not include sim_pose input but has the same meta slice as previous models
-    meta_slice = model_metadata['output_slices']['meta']
-    meta_tf_slice = slice(5868, 5921, None)
-
-    if (
-            meta_slice.start == meta_tf_slice.start and
-            meta_slice.stop == meta_tf_slice.stop and
-            meta_slice.step == meta_tf_slice.step
-    ):
-      meta = MetaTombRaider
-
-  return meta
 
 
 # The following method(s) are modeld helper methods

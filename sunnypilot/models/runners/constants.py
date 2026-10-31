@@ -1,7 +1,7 @@
 import os
 import numpy as np
-from openpilot.system.hardware.hw import Paths
-from cereal import custom
+from openpilot.common.hardware.hw import Paths
+from openpilot.cereal import custom
 
 # Type definitions for clarity
 NumpyDict = dict[str, np.ndarray]

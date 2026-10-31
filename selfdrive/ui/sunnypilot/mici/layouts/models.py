@@ -63,7 +63,7 @@ class ModelsLayoutMici(NavScroller):
     self.select_model_btn.set_click_callback(self._show_folders)
 
     self.cancel_download_btn = BigButton(tr("cancel download"))
-    self.cancel_download_btn.set_click_callback(lambda: ui_state.params.remove("ModelManager_DownloadIndex"))
+    self.cancel_download_btn.set_click_callback(lambda: ui_state.params.remove("ModelManager_DownloadRef"))
 
     self.blendful_toggle = BigParamControl(tr("blendful (alpha)"), "Blendful")
 
@@ -120,7 +120,7 @@ class ModelsLayoutMici(NavScroller):
     prev_ref = self.model_manager.activeBundle.ref if (
       self.model_manager.activeBundle and self.model_manager.activeBundle.ref
     ) else "Default"
-    ui_state.params.put("ModelManager_DownloadIndex", bundle.index)
+    ui_state.params.put("ModelManager_DownloadRef", bundle.ref)
     if bundle.ref != prev_ref:
       ui_state.params.remove("CalibrationParams")
       ui_state.params.remove("LiveTorqueParameters")
@@ -188,7 +188,8 @@ class ModelsLayoutMici(NavScroller):
       self._download_progress = self._download_progress + "." if len(self._download_progress) < 3 else ""
 
     is_downloading = (manager.selectedBundle
-                      and manager.selectedBundle.status == custom.ModelManagerSP.DownloadStatus.downloading)
+                      and manager.selectedBundle.status in (custom.ModelManagerSP.DownloadStatus.downloading,
+                                                           custom.ModelManagerSP.DownloadStatus.verifying))
     if self._was_downloading and not is_downloading:
       device.set_override_interactive_timeout(None)
     self._was_downloading = is_downloading
@@ -203,7 +204,8 @@ class ModelsLayoutMici(NavScroller):
       self.current_model_info.info_header.set_text(tr("error") + self._download_progress)
       self.current_model_info.info_text.set_text(tr("download failed"))
 
-    elif manager.selectedBundle and manager.selectedBundle.status == custom.ModelManagerSP.DownloadStatus.downloading:
+    elif manager.selectedBundle and manager.selectedBundle.status in (custom.ModelManagerSP.DownloadStatus.downloading,
+                                                                     custom.ModelManagerSP.DownloadStatus.verifying):
       self.cancel_download_btn.set_visible(True)
       device.set_override_interactive_timeout(5)
       progress = 0.0
@@ -211,7 +213,8 @@ class ModelsLayoutMici(NavScroller):
       for model in manager.selectedBundle.models:
         count += 1
         p = model.artifact.downloadProgress
-        if p.status == custom.ModelManagerSP.DownloadStatus.downloading:
+        if p.status in (custom.ModelManagerSP.DownloadStatus.downloading,
+                        custom.ModelManagerSP.DownloadStatus.verifying):
           progress += p.progress
         elif p.status in (custom.ModelManagerSP.DownloadStatus.downloaded,
                           custom.ModelManagerSP.DownloadStatus.cached):

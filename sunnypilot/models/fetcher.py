@@ -11,62 +11,24 @@ from requests.exceptions import (SSLError, RequestException, HTTPError)
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.models.helpers import is_bundle_version_compatible
-
-from cereal import custom
+from openpilot.cereal import custom
 
 
 class ModelParser:
   """Handles parsing of model data into cereal objects"""
 
   @staticmethod
-  def _sanitize_url(url: str) -> str:
-    """Fix common URL issues in model bundle data."""
-    if not url:
-      return url
-    # Force HTTPS for GitLab URLs
-    url = url.replace("http://gitlab.com/", "https://gitlab.com/")
-    # Fix known path typos (e.g. "recompile" -> "recompiled")
-    url = url.replace("/recompile18/", "/recompiled18/")
-    return url
-
-  @staticmethod
   def _parse_download_uri(download_uri_data) -> custom.ModelManagerSP.DownloadUri:
     download_uri = custom.ModelManagerSP.DownloadUri()
-    download_uri.uri = ModelParser._sanitize_url(download_uri_data.get("url", ""))
+    download_uri.uri = download_uri_data.get("url")
     download_uri.sha256 = download_uri_data.get("sha256")
     return download_uri
-
-  # Known corrections for model bundle data with broken URLs/SHA256 in the source JSON.
-  # Keyed by model ref; each entry may contain download_uri_base and/or chunk_sha256.
-  # IMPORTANT: chunk_sha256 must match the bytes currently served at download_uri_base.
-  # Wrong overrides cause hash validation to fail after a successful download, the
-  # manager deletes the model files, and calibration stays at 0% (no cameraOdometry).
-  _BUNDLE_FIXES: dict[str, dict] = {
-    # RDF Model (August 05, 2026): upstream JSON SHAs are correct for the hosted
-    # chunks; do not override them. Keep this entry only if a URL rewrite is needed.
-  }
-
-  @staticmethod
-  def _parse_chunk(chunk_data) -> custom.ModelManagerSP.Chunk:
-    chunk = custom.ModelManagerSP.Chunk()
-    chunk.fileName = chunk_data.get("file_name")
-    chunk.sha256 = chunk_data.get("sha256")
-    return chunk
 
   @staticmethod
   def _parse_artifact(artifact_data) -> custom.ModelManagerSP.Artifact:
     artifact = custom.ModelManagerSP.Artifact()
     artifact.fileName = artifact_data.get("file_name")
     artifact.downloadUri = ModelParser._parse_download_uri(artifact_data.get("download_uri", {}))
-
-    if "chunks" in artifact_data:
-      artifact.chunks = [ModelParser._parse_chunk(chunk_data) for chunk_data in artifact_data["chunks"]]
-      # Do NOT write chunk manifests here. Parsing the remote catalog must be
-      # side-effect free: writing manifests without chunk files makes modeld
-      # think a model is present (_pkl_exists), then crash on load and stall
-      # calibration at 0%. Manifests are written by ModelManagerSP after a
-      # successful download.
-
     return artifact
 
   @staticmethod
@@ -89,23 +51,6 @@ class ModelParser:
 
   @staticmethod
   def _parse_bundle(bundle) -> custom.ModelManagerSP.ModelBundle:
-    # Apply known data corrections for bundles with broken URLs/SHA256 in source JSON
-    bundle_ref = bundle.get("ref")
-    if bundle_ref and bundle_ref in ModelParser._BUNDLE_FIXES:
-      fix = ModelParser._BUNDLE_FIXES[bundle_ref]
-      # Fix download URL
-      for model in bundle.get("models", []):
-        artifact = model.get("artifact", {})
-        download_uri = artifact.get("download_uri", {})
-        if "download_uri_base" in fix:
-          download_uri["url"] = fix["download_uri_base"]
-        # Fix chunk SHA256 values
-        chunk_fixes = fix.get("chunk_sha256", {})
-        for chunk in artifact.get("chunks", []):
-          chunk_name = chunk.get("file_name")
-          if chunk_name and chunk_name in chunk_fixes:
-            chunk["sha256"] = chunk_fixes[chunk_name]
-
     model_bundle = custom.ModelManagerSP.ModelBundle()
     model_bundle.index = int(bundle["index"])
     model_bundle.internalName = bundle["short_name"]
@@ -131,11 +76,11 @@ class ModelParser:
 class ModelCache:
   """Handles caching of model data to avoid frequent remote fetches"""
 
-  def __init__(self, params: Params, cache_timeout: int = int(3600 * 1e9)):
+  def __init__(self, params: Params, cache_timeout: int = int(3600 * 1e9), suffix: str = ""):
     self.params = params
     self.cache_timeout = cache_timeout
-    self._LAST_SYNC_KEY = "ModelManager_LastSyncTime"
-    self._CACHE_KEY = "ModelManager_ModelsCache"
+    self._LAST_SYNC_KEY = f"ModelManager_LastSyncTime{suffix}"
+    self._CACHE_KEY = f"ModelManager_ModelsCache{suffix}"
 
   def _is_expired(self) -> bool:
     """Checks if the cache has expired"""
@@ -167,32 +112,53 @@ class ModelCache:
 
 class ModelFetcher:
   """Handles fetching and caching of model data from remote source"""
-  MODEL_URL = "https://raw.githubusercontent.com/sunnypilot/sunnypilot-models/refs/heads/gh-pages/docs/driving_models_v18.json"
+  MODEL_URL = "https://raw.githubusercontent.com/sunnypilot/sunnypilot-models/refs/heads/gh-pages/docs/driving_models_v25.json"
+  MODEL_URL_CHESTNUT = "https://raw.githubusercontent.com/sunnypilot/sunnypilot-models/refs/heads/gh-pages/docs/driving_models_chestnut_v28.json"
+
+  MODEL_SOURCES = {
+    "qcom": (MODEL_URL, ""),
+    "chestnut": (MODEL_URL_CHESTNUT, "_Chestnut"),
+  }
 
   def __init__(self, params: Params):
     self.params = params
-    self.model_cache = ModelCache(params)
     self.model_parser = ModelParser()
+    self.model_caches = {
+      source: ModelCache(params, suffix=suffix)
+      for source, (_, suffix) in self.MODEL_SOURCES.items()
+    }
+    self._refetched: set[str] = set()
+    self.params.put("ModelManager_ActiveJson", {
+      "qcom": self.MODEL_URL,
+      "chestnut": self.MODEL_URL_CHESTNUT,
+    }, block=True)
 
-  def _fetch_and_cache_models(self) -> list[custom.ModelManagerSP.ModelBundle] | None:
+  @staticmethod
+  def active_source(chestnut_present: bool) -> str:
+    return "chestnut" if chestnut_present else "qcom"
+
+  def _fetch_and_cache_models(self, source: str) -> list[custom.ModelManagerSP.ModelBundle] | None:
     """Fetches fresh model data from remote and updates cache.
     Returns None on transport errors. Raises on 404 and other fatal HTTP errors.
     """
+    model_url, _ = self.MODEL_SOURCES[source]
     try:
-      response = requests.get(self.MODEL_URL, timeout=10)
+      response = requests.get(model_url, timeout=10)
 
       # Explicitly handle 404 differently
       if response.status_code == 404:
-        cloudlog.error(f"Models URL returned 404 Not Found: {self.MODEL_URL}")
-        raise HTTPError(f"404 Not Found: {self.MODEL_URL}", response=response)
+        cloudlog.error(f"Models URL returned 404 Not Found: {model_url}")
+        raise HTTPError(f"404 Not Found: {model_url}", response=response)
 
       # Raise for any other 4xx/5xx
       response.raise_for_status()
 
       json_data = response.json()
-      self.model_cache.set(json_data)
-      cloudlog.debug("Successfully updated models cache")
-      return self.model_parser.parse_models(json_data)
+      parsed = self.model_parser.parse_models(json_data)
+      if parsed:
+        self.model_caches[source].set(json_data)
+        cloudlog.debug(f"Successfully updated models cache for {source}")
+      return parsed
 
     except ConnectionError as e:
       cloudlog.warning(f"DNS/connection error while fetching models: {e}")
@@ -205,15 +171,40 @@ class ModelFetcher:
 
     return None
 
-  def get_available_bundles(self) -> list[custom.ModelManagerSP.ModelBundle]:
-    """Gets the list of available models, with smart cache handling"""
-    cached_data, is_expired = self.model_cache.get()
+  @staticmethod
+  def _cache_matches_source(source: str, cached_data: dict) -> bool:
+    bundles = cached_data.get("bundles", [])
+    if source == "chestnut":
+      return any(bundle.get("is_big") is True for bundle in bundles)
+    return not any(bundle.get("is_big") is True for bundle in bundles)
+
+  def get_bundles_for_source(self, source: str) -> list[custom.ModelManagerSP.ModelBundle]:
+    if source not in self.MODEL_SOURCES:
+      cloudlog.warning(f"Unknown model source: {source}")
+      return []
+
+    cached_data, is_expired = self.model_caches[source].get()
 
     if cached_data and not is_expired:
-      cloudlog.debug("Using valid cached models data")
-      return self.model_parser.parse_models(cached_data)
+      # a source is refetched over a mismatch at most once per process: if the fresh
+      # manifest still mismatches, the URL is authoritative and the cache is trusted
+      if self._cache_matches_source(source, cached_data) or source in self._refetched:
+        try:
+          parsed = self.model_parser.parse_models(cached_data)
+        except Exception:
+          cloudlog.warning(f"Failed to parse cached models for {source}; refetching", exc_info=True)
+        else:
+          if parsed:
+            cloudlog.debug(f"Using valid cached models data for source {source}")
+            return parsed
+          # a source-matching cache that yields no valid bundles is stale (e.g. an old
+          # manifest version) - do not trust it, refetch so the source is repopulated
+          cloudlog.warning(f"Cached models for {source} have no valid bundles; refetching")
+      else:
+        self._refetched.add(source)
+        cloudlog.warning(f"Cached models for {source} not valid; refetching once")
 
-    fetched_bundles = self._fetch_and_cache_models()
+    fetched_bundles = self._fetch_and_cache_models(source)
     if fetched_bundles is not None:
       return fetched_bundles
 
@@ -221,19 +212,35 @@ class ModelFetcher:
       cloudlog.warning("Failed to fetch fresh data and no cache available")
 
     cloudlog.warning("Failed to fetch fresh data. Using expired cache as fallback")
-    return self.model_parser.parse_models(cached_data)
+    try:
+      return self.model_parser.parse_models(cached_data)
+    except Exception:
+      return []
+
+
+def get_cached_bundles(params: Params, source: str) -> list[custom.ModelManagerSP.ModelBundle]:
+
+  if source not in ModelFetcher.MODEL_SOURCES:
+    cloudlog.warning(f"Unknown model source: {source}")
+    return []
+  _, suffix = ModelFetcher.MODEL_SOURCES[source]
+  cached_data = params.get(f"ModelManager_ModelsCache{suffix}")
+  if not cached_data:
+    return []
+  try:
+    return ModelParser.parse_models(cached_data)
+  except Exception as e:
+    cloudlog.warning(f"Failed to parse cached models for source {source}: {e}")
+    return []
+
 
 if __name__ == "__main__":
+  from openpilot.selfdrive.modeld.helpers import chestnut_present
   params = Params()
   model_fetcher = ModelFetcher(params)
-  bundles = model_fetcher.get_available_bundles()
+  bundles = model_fetcher.get_bundles_for_source(ModelFetcher.active_source(chestnut_present()))
   for bundle in bundles:
     for model in bundle.models:
       model_overrides = {override.key: override.value for override in bundle.overrides}
-      # Print model details
       print(f"Bundle: {bundle.internalName}, Type: {model.type}, Status: {bundle.status}, Overrides: {model_overrides}")
-      # Print artifact details
       print(f"Artifact: {model.artifact.fileName}, Download URI: {model.artifact.downloadUri.uri}")
-      # Print metadata details
-      if model.artifact.chunks:
-        print(f"Contains {len(model.artifact.chunks)} chunks.")

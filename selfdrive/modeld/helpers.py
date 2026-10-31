@@ -24,3 +24,8 @@ def usbgpu_present() -> bool:
     except Exception:
       pass
   return False
+
+
+def chestnut_present() -> bool:
+  """BluePilot: no chestnut (external big-model accelerator) on this fork."""
+  return False

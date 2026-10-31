@@ -73,7 +73,7 @@ class ModelsLayout(Widget):
       callback=self._clear_cache
     )
 
-    self.cancel_download_item = button_item(tr("Cancel Download"), tr("Cancel"), "", lambda: ui_state.params.remove("ModelManager_DownloadIndex"))
+    self.cancel_download_item = button_item(tr("Cancel Download"), tr("Cancel"), "", lambda: ui_state.params.remove("ModelManager_DownloadRef"))
 
     self.lane_turn_value_control = option_item_sp(tr("Adjust Lane Turn Speed"), "LaneTurnValue", 500, 2000,
                                                   tr("Set the maximum speed for lane turn desires. Default is 19 mph."),
@@ -126,7 +126,8 @@ class ModelsLayout(Widget):
 
   def _is_downloading(self):
     return (self.model_manager and self.model_manager.selectedBundle and
-            self.model_manager.selectedBundle.status == custom.ModelManagerSP.DownloadStatus.downloading)
+            self.model_manager.selectedBundle.status in (custom.ModelManagerSP.DownloadStatus.downloading,
+                                                       custom.ModelManagerSP.DownloadStatus.verifying))
 
   @staticmethod
   def calculate_cache_size():
@@ -174,13 +175,14 @@ class ModelsLayout(Widget):
     status_changed = self.prev_download_status != self.download_status
     self.prev_download_status = self.download_status
 
-    self.cancel_download_item.set_visible(bool(self.model_manager.selectedBundle) and ui_state.params.get("ModelManager_DownloadIndex") is not None)
+    self.cancel_download_item.set_visible(bool(self.model_manager.selectedBundle) and ui_state.params.get("ModelManager_DownloadRef") is not None)
 
     if (current_time := time.monotonic()) - self.last_cache_calc_time > 0.5:
       self.last_cache_calc_time = current_time
       self.clear_cache_item.action_item.set_value(f"{self.calculate_cache_size():.2f} MB")
 
-    if self.download_status == custom.ModelManagerSP.DownloadStatus.downloading:
+    if self.download_status in (custom.ModelManagerSP.DownloadStatus.downloading,
+                               custom.ModelManagerSP.DownloadStatus.verifying):
       device._reset_interactive_timeout()
 
     for model in bundle.models:
@@ -188,8 +190,12 @@ class ModelsLayout(Widget):
         label.set_visible(True)
         p = model.artifact.downloadProgress
         text, show, color = f"pending - {bundle.displayName}", False, rl.GRAY
-        if p.status == custom.ModelManagerSP.DownloadStatus.downloading:
-          text, show = f"{int(p.progress)}% - {bundle.displayName}", True
+        if p.status in (custom.ModelManagerSP.DownloadStatus.downloading,
+                        custom.ModelManagerSP.DownloadStatus.verifying):
+          text, show = (f"{int(p.progress)}% - {bundle.displayName}" if p.status == custom.ModelManagerSP.DownloadStatus.downloading
+                        else f"{tr('verifying')} - {bundle.displayName}"), True
+        elif p.status == custom.ModelManagerSP.DownloadStatus.verifying:
+          text, show = f"{tr('verifying')} - {bundle.displayName}", True
         elif p.status in (custom.ModelManagerSP.DownloadStatus.downloaded, custom.ModelManagerSP.DownloadStatus.cached):
           status_text = tr("from cache" if p.status == custom.ModelManagerSP.DownloadStatus.cached else "downloaded")
           text, color = f"{bundle.displayName} - {status_text if status_changed else tr('ready')}", ON_COLOR
@@ -215,7 +221,7 @@ class ModelsLayout(Widget):
       ui_state.params.remove("ModelManager_ActiveBundle")
       ui_state.params.put("ModelRunnerTypeCache", int(custom.ModelManagerSP.Runner.stock), block=True)
     elif selected_bundle := next((bundle for bundle in self.model_manager.availableBundles if bundle.ref == selected_ref), None):
-      ui_state.params.put("ModelManager_DownloadIndex", selected_bundle.index)
+      ui_state.params.put("ModelManager_DownloadRef", selected_bundle.ref)
 
     # Always recalibrate when the driving model changes (Default↔custom or same-generation swaps).
     # Previously only prompted when activeBundle.generation differed — Default→RDFM never reset,
