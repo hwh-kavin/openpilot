@@ -38,6 +38,7 @@ class UIStateSP:
     self.sunnylink_state = SunnylinkState()
 
     self.active_bundle = None
+    self.active_runner_tinygrad: bool = False
     self.blindspot: bool = False
     self.chevron_metrics = None
     self.custom_interactive_timeout: int = 0
@@ -146,6 +147,8 @@ class UIStateSP:
 
     self._enforce_constraints()
     self.active_bundle = self.params.get("ModelManager_ActiveBundle")
+    # runner the manager launches; Blendful only exists in the tinygrad modeld (modeld_v2)
+    self.active_runner_tinygrad = self.params.get("ModelRunnerTypeCache") == custom.ModelManagerSP.Runner.tinygrad
     self.blindspot = self.params.get_bool("BlindSpot")
     self.chevron_metrics = self.params.get("ChevronInfo")
     self.custom_interactive_timeout = self.params.get("InteractivityTimeout", return_default=True)

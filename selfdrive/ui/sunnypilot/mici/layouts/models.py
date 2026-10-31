@@ -9,7 +9,7 @@ import pyray as rl
 
 from cereal import custom
 from openpilot.sunnypilot.models.default_model import DEFAULT_MODEL
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.models import ModelsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state, device
 from openpilot.system.ui.lib.application import FontWeight, gui_app
@@ -65,7 +65,9 @@ class ModelsLayoutMici(NavScroller):
     self.cancel_download_btn = BigButton(tr("cancel download"))
     self.cancel_download_btn.set_click_callback(lambda: ui_state.params.remove("ModelManager_DownloadIndex"))
 
-    self.main_items = [self.current_model_info, self.select_model_btn, self.cancel_download_btn]
+    self.blendful_toggle = BigParamControl(tr("blendful (alpha)"), "Blendful")
+
+    self.main_items = [self.current_model_info, self.select_model_btn, self.cancel_download_btn, self.blendful_toggle]
     self._scroller.add_widgets(self.main_items)
 
   @property
@@ -169,6 +171,15 @@ class ModelsLayoutMici(NavScroller):
     self.cancel_download_btn.set_visible(False)
     self.current_model_info.current_model_header._shimmer = False
     self.current_model_info.info_header._shimmer = False
+
+    blendful_allowed = ui_state.active_runner_tinygrad
+    if blendful_allowed:
+      self.blendful_toggle.set_checked(ui_state.params.get_bool("Blendful"))
+      self.blendful_toggle.set_enabled(True)
+    else:
+      self.blendful_toggle.set_checked(False)
+      self.blendful_toggle.set_enabled(False)
+    self.blendful_toggle.set_value("" if blendful_allowed else tr("custom model only"))
 
     manager = self.model_manager
     self._download_frame += 1
