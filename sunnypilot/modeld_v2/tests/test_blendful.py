@@ -7,8 +7,8 @@ See the LICENSE.md file in the root directory for more details.
 import numpy as np
 
 from openpilot.common.realtime import DT_MDL
-from openpilot.sunnypilot.modeld_v2.blendful import Blendful
-from openpilot.sunnypilot.modeld_v2.constants import ModelConstants
+from openpilot.sunnypilot.selfdrive.controls.lib.blendful import Blendful
+from openpilot.selfdrive.modeld.constants import ModelConstants
 
 X = np.array(ModelConstants.X_IDXS)
 BUILD, RELEASE = 0.5, 2.0
@@ -109,3 +109,23 @@ class TestBlendful:
     assert self.bf.trust == 0.0
     assert abs(out[0]) < abs(start)
     assert abs(out[-1]) < 1e-6
+
+
+def test_stock_modeld_hook_is_transparent():
+  """The stock modeld path must only report the delta, never apply it to its own action."""
+  from openpilot.cereal import log
+  from openpilot.selfdrive.modeld.modeld import get_action_from_model as stock_action
+
+  prev = log.ModelDataV2.Action()
+  model_output = {'action': np.array([[0.02, 0.5]], dtype=np.float32)}
+  base = stock_action(model_output, prev, DT_MDL, DT_MDL, 20.0)
+
+  seen = []
+
+  def probe(curvature):
+    seen.append(curvature)
+    return 0.0
+
+  probed = stock_action(model_output, prev, DT_MDL, DT_MDL, 20.0, probe)
+  assert len(seen) == 1 and seen[0] == base.desiredCurvature
+  assert probed.desiredCurvature == base.desiredCurvature

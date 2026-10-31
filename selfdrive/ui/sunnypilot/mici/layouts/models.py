@@ -172,14 +172,9 @@ class ModelsLayoutMici(NavScroller):
     self.current_model_info.current_model_header._shimmer = False
     self.current_model_info.info_header._shimmer = False
 
-    blendful_allowed = ui_state.active_runner_tinygrad
-    if blendful_allowed:
-      self.blendful_toggle.set_checked(ui_state.params.get_bool("Blendful"))
-      self.blendful_toggle.set_enabled(True)
-    else:
-      self.blendful_toggle.set_checked(False)
-      self.blendful_toggle.set_enabled(False)
-    self.blendful_toggle.set_value("" if blendful_allowed else tr("custom model only"))
+    self.blendful_toggle.set_checked(ui_state.params.get_bool("Blendful"))
+    self.blendful_toggle.set_enabled(True)
+    self.blendful_toggle.set_value("")
 
     manager = self.model_manager
     self._download_frame += 1

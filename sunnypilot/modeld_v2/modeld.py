@@ -44,7 +44,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, 
 
 from openpilot.sunnypilot.modeld_v2.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState, get_curvature_from_output
 from openpilot.sunnypilot.modeld_v2.constants import Plan
-from openpilot.sunnypilot.modeld_v2.blendful import Blendful
+from openpilot.sunnypilot.selfdrive.controls.lib.blendful import Blendful
 from openpilot.sunnypilot.modeld_v2.meta_helper import load_meta_constants
 from openpilot.sunnypilot.modeld_v2.camera_offset_helper import CameraOffsetHelper
 from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, make_split_input_queues

@@ -8,7 +8,7 @@ import numpy as np
 
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
-from openpilot.sunnypilot.modeld_v2.constants import ModelConstants
+from openpilot.selfdrive.modeld.constants import ModelConstants
 
 LANE_WIDTH_DEFAULT = 3.6  # m
 LANE_WIDTH_CLIP = (2.8, 4.5)  # m
