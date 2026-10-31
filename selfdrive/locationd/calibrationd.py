@@ -85,6 +85,24 @@ class Calibrator:
       except Exception:
         cloudlog.exception("Error reading cached CalibrationParams")
 
+    # BluePilot: an out-of-range calibration is no longer a soft disable onroad (see events.py), so a
+    # drive can persist one. Never boot with it: drop the cached values and collect a fresh
+    # calibration instead of staying invalid until the user resets manually. Offroad only -- a
+    # mid-drive calibrationd restart must not jump the calibration under an engaged drive.
+    try:
+      cached_out_of_range = (len(rpy_init) == 3 and valid_blocks >= INPUTS_NEEDED and
+                             not is_calibration_valid(np.asarray(rpy_init)))
+    except Exception:
+      cached_out_of_range = False
+    if cached_out_of_range and not self.params.get_bool("IsOnroad"):
+      cloudlog.warning("Stored calibration out of range (pitch %.3f, yaw %.3f rad); recalibrating from scratch",
+                       float(rpy_init[1]), float(rpy_init[2]))
+      self.params.remove("CalibrationParams")
+      rpy_init = RPY_INIT
+      wide_from_device_euler = WIDE_FROM_DEVICE_EULER_INIT
+      height = HEIGHT_INIT
+      valid_blocks = 0
+
     self.reset(rpy_init, valid_blocks, wide_from_device_euler, height)
     self.update_status()
 

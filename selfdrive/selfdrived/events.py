@@ -634,9 +634,11 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
   # Usually this can only be solved by removing the mount from the windshield completely,
   # and attaching while making sure the device is pointed straight forward and is level.
   # See https://comma.ai/setup for more information
+  # BluePilot: an invalid mount angle no longer soft-disables an engaged drive. The alert stays up and
+  # re-engagement is blocked (NO_ENTRY); calibrationd discards an out-of-range cached calibration at
+  # the next start and calibrates from scratch, so the driver doesn't have to reset manually.
   EventName.calibrationInvalid: {
     ET.PERMANENT: calibration_invalid_alert,
-    ET.SOFT_DISABLE: soft_disable_alert("Calibration Invalid: Remount Device & Recalibrate"),
     ET.NO_ENTRY: NoEntryAlert("Calibration Invalid: Remount Device & Recalibrate"),
   },
 

@@ -6,7 +6,8 @@ import cereal.messaging as messaging
 from cereal import log
 from openpilot.common.params import Params
 from openpilot.selfdrive.locationd.calibrationd import Calibrator, INPUTS_NEEDED, INPUTS_WANTED, BLOCK_SIZE, MIN_SPEED_FILTER, \
-                                                         MAX_YAW_RATE_FILTER, SMOOTH_CYCLES, HEIGHT_INIT, MAX_ALLOWED_PITCH_SPREAD, MAX_ALLOWED_YAW_SPREAD
+                                                         MAX_YAW_RATE_FILTER, SMOOTH_CYCLES, HEIGHT_INIT, MAX_ALLOWED_PITCH_SPREAD, MAX_ALLOWED_YAW_SPREAD, \
+                                                         YAW_LIMITS
 
 
 def process_messages(c, cam_odo_calib, cycles,
@@ -34,7 +35,7 @@ class TestCalibrationd:
   def test_read_saved_params(self):
     msg = messaging.new_message('liveCalibration')
     msg.liveCalibration.validBlocks = random.randint(1, 10)
-    msg.liveCalibration.rpyCalib = [random.random() for _ in range(3)]
+    msg.liveCalibration.rpyCalib = [0.0, random.uniform(-0.05, 0.1), random.uniform(-0.03, 0.03)]
     msg.liveCalibration.height = [random.random() for _ in range(1)]
     Params().put("CalibrationParams", msg.to_bytes(), block=True)
     c = Calibrator(param_put=True)
@@ -42,6 +43,35 @@ class TestCalibrationd:
     np.testing.assert_allclose(msg.liveCalibration.rpyCalib, c.rpy)
     np.testing.assert_allclose(msg.liveCalibration.height, c.height)
     assert msg.liveCalibration.validBlocks == c.valid_blocks
+
+  def test_out_of_range_saved_params_discarded_offroad(self):
+    msg = messaging.new_message('liveCalibration')
+    msg.liveCalibration.validBlocks = INPUTS_NEEDED
+    msg.liveCalibration.rpyCalib = [0.0, 0.0, float(YAW_LIMITS[1]) + 0.01]
+    msg.liveCalibration.height = [HEIGHT_INIT.item()]
+    Params().put("CalibrationParams", msg.to_bytes(), block=True)
+
+    c = Calibrator(param_put=True)
+
+    assert c.valid_blocks == 0
+    np.testing.assert_allclose(c.rpy, np.zeros(3))
+    assert c.cal_status == log.LiveCalibrationData.Status.uncalibrated
+    assert Params().get("CalibrationParams") is None
+
+  def test_out_of_range_saved_params_kept_onroad(self):
+    msg = messaging.new_message('liveCalibration')
+    msg.liveCalibration.validBlocks = INPUTS_NEEDED
+    msg.liveCalibration.rpyCalib = [0.0, 0.0, float(YAW_LIMITS[1]) + 0.01]
+    msg.liveCalibration.height = [HEIGHT_INIT.item()]
+    Params().put("CalibrationParams", msg.to_bytes(), block=True)
+    Params().put_bool("IsOnroad", True, block=True)
+
+    c = Calibrator(param_put=True)
+
+    # a mid-drive calibrationd restart must not jump the calibration
+    assert c.valid_blocks == INPUTS_NEEDED
+    np.testing.assert_allclose(c.rpy, [0.0, 0.0, YAW_LIMITS[1] + 0.01])
+    assert c.cal_status == log.LiveCalibrationData.Status.invalid
 
 
   def test_calibration_basics(self):

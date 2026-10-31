@@ -23,6 +23,14 @@ for event_types in EVENTS.values():
     ALERTS.append(alert)
 
 
+def test_calibration_invalid_does_not_soft_disable():
+  # BluePilot: an invalid mount angle must not end an engaged drive; it only blocks re-engagement
+  # and is recalibrated automatically at the next start.
+  event_types = EVENTS[log.OnroadEvent.EventName.calibrationInvalid]
+  assert ET.SOFT_DISABLE not in event_types
+  assert ET.NO_ENTRY in event_types
+
+
 class TestAlerts:
 
   @classmethod
