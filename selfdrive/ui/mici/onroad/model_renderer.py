@@ -152,6 +152,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     if ui_state.status != UIStatus.DISENGAGED:
       self._draw_lane_lines()
       self._draw_path(sm)
+      self.blendful.draw(self._rect)
 
     # if render_lead_indicator and radar_state:
     #   self._draw_lead_indicator()
@@ -203,6 +204,7 @@ class ModelRenderer(Widget, ModelRendererSP):
     # Update road edges using raw points
     for road_edge in self._road_edges:
       road_edge.projected_points = self._map_line_to_polygon(road_edge.raw_points, line_width_factor, 0.0, max_idx)
+    self.blendful.update(self, max_idx)
 
     # Update path using raw points
     if lead and lead.status:

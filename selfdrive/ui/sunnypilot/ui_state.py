@@ -25,6 +25,15 @@ class OnroadTimerStatus(Enum):
 
 
 class UIStateSP:
+  @staticmethod
+  def lateral_active(_ui_state) -> bool:
+    """Whether lateral control is engaged right now (MADS-aware)."""
+    if _ui_state.sm.valid.get("selfdriveStateSP", False):
+      mads = _ui_state.sm["selfdriveStateSP"].mads
+      if mads.available:
+        return mads.enabled and mads.state != MADSState.paused
+    return _ui_state.status.value in ("engaged", "lat_only")
+
   def __init__(self):
     self.params = Params()
     self.CP_SP: custom.CarParamsSP | None = None
@@ -32,7 +41,8 @@ class UIStateSP:
     self.is_sp_release: bool = self.params.get_bool("IsReleaseSpBranch")
     self.sm_services_ext = [
       "modelManagerSP", "selfdriveStateSP", "longitudinalPlanSP", "backupManagerSP",
-      "gpsLocation", "liveTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "liveDelay"
+      "gpsLocation", "liveTorqueParameters", "carStateSP", "liveMapDataSP", "carParamsSP", "liveDelay",
+      "modelDataV2SP"
     ]
 
     self.sunnylink_state = SunnylinkState()
