@@ -17,6 +17,10 @@ from openpilot.system.ui.lib.text_measure import measure_text_cached
 
 BLENDFUL_COLOR = (0, 200, 255)
 FULL_BAR = 1.0
+# the ribbon is always visible while Blendful is on, brighter the more it is trusted
+BASE_ALPHA = 0.25
+RIBBON_HALF_WIDTH = 0.22
+PARAM_RELOAD_FRAMES = 60
 
 
 class BlendfulRenderer:
@@ -25,21 +29,30 @@ class BlendfulRenderer:
     self._rect_relative = rect_relative
     self._center_points = np.empty((0, 2), dtype=np.float32)
     self._trust = 0.0
+    self._enabled = ui_state.params.get_bool("Blendful")
+    self._frame = 0
     self._font = gui_app.font(FontWeight.BOLD)
     self._pull_display = FirstOrderFilter(0.0, 0.5, DT_MDL)
     self._trust_display = FirstOrderFilter(0.0, 0.5, DT_MDL)
     self._alpha = FirstOrderFilter(0.0, 0.3, DT_MDL)
 
+  def _clear(self, fade: bool = True) -> None:
+    if fade:
+      self._alpha.update(0.0)
+    self._center_points = np.empty((0, 2), dtype=np.float32)
+
   def update(self, renderer, max_idx: int, *map_args) -> None:
     sm = ui_state.sm
+    self._frame += 1
+    if self._frame % PARAM_RELOAD_FRAMES == 0:
+      self._enabled = ui_state.params.get_bool("Blendful")
+
     if not sm.valid.get('modelDataV2SP', False):
-      self._alpha.update(0.0)
-      self._center_points = np.empty((0, 2), dtype=np.float32)
+      self._clear()
       return
 
     blendful = sm['modelDataV2SP']
     if sm.updated.get('modelDataV2SP', False):
-      self._alpha.update(float(blendful.blendfulTrust > 0.0))
       if blendful.blendfulTrust > 0.0:
         self._trust = blendful.blendfulTrust
       if self._readout:
@@ -49,18 +62,22 @@ class BlendfulRenderer:
 
     left, right = renderer._lane_lines[1].raw_points, renderer._lane_lines[2].raw_points
     stds = list(sm['modelV2'].laneLineStds)
-    if self._alpha.x < 0.01 or len(left) == 0 or len(right) != len(left) or len(stds) < 3:
-      self._center_points = np.empty((0, 2), dtype=np.float32)
+    if not self._enabled or len(left) == 0 or len(right) != len(left) or len(stds) < 3:
+      self._clear()
       return
 
     l_prob, r_prob = blendful.blendfulLeftProb, blendful.blendfulRightProb
-    if blendful.blendfulTrust > 0.0 and l_prob + r_prob > 0.0:
-      half_width = np.clip(right[:, 1] - left[:, 1], *LANE_WIDTH_CLIP) / 2 if l_prob * r_prob > 0.5 else blendful.blendfulLaneWidth / 2
-      l_var = stds[1] ** 2 / max(l_prob, 1e-4)
-      r_var = stds[2] ** 2 / max(r_prob, 1e-4)
-      center = left.copy()
-      center[:, 1] = (r_var * (left[:, 1] + half_width) + l_var * (right[:, 1] - half_width)) / (l_var + r_var)
-      self._center_points = renderer._map_line_to_polygon(center, 0.15, 0.0, max_idx, *map_args)
+    if l_prob + r_prob <= 0.0:
+      self._clear()
+      return
+
+    half_width = np.clip(right[:, 1] - left[:, 1], *LANE_WIDTH_CLIP) / 2 if l_prob * r_prob > 0.5 else blendful.blendfulLaneWidth / 2
+    l_var = stds[1] ** 2 / max(l_prob, 1e-4)
+    r_var = stds[2] ** 2 / max(r_prob, 1e-4)
+    center = left.copy()
+    center[:, 1] = (r_var * (left[:, 1] + half_width) + l_var * (right[:, 1] - half_width)) / (l_var + r_var)
+    self._center_points = renderer._map_line_to_polygon(center, RIBBON_HALF_WIDTH, 0.0, max_idx, *map_args)
+    self._alpha.update(1.0)
 
   def _color(self, rgb, alpha: float) -> rl.Color:
     return rl.Color(*rgb, int(alpha * self._alpha.x))
@@ -68,10 +85,12 @@ class BlendfulRenderer:
   def draw(self, rect: rl.Rectangle) -> None:
     if not UIStateSP.lateral_active(ui_state):
       return
-    if self._center_points.size and self._trust > 0.05:
+    if self._center_points.size and self._alpha.x > 0.01:
       points = self._center_points + (rect.x, rect.y) if self._rect_relative else self._center_points
-      draw_polygon(rect, points, self._color(BLENDFUL_COLOR, np.clip(self._trust, 0.2, 1.0) * 255))
-    if self._center_points.size and self._readout:
+      # dim guide ribbon when the lane lines are weak, solid once Blendful trusts them
+      alpha = (BASE_ALPHA + (1.0 - BASE_ALPHA) * float(np.clip(self._trust * 2.0, 0.0, 1.0))) * self._alpha.x
+      draw_polygon(rect, points, self._color(BLENDFUL_COLOR, alpha * 255))
+    if self._center_points.size and self._readout and self._trust > 0.05:
       self._draw_readout(rect)
 
   def _draw_readout(self, rect: rl.Rectangle) -> None:
