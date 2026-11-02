@@ -17,12 +17,14 @@ import os
 import random
 import re
 import requests
+import socket
 import tempfile
 import threading
 import time
 import unittest
 from typing import Any
 from unittest import mock
+from urllib.parse import urlparse
 
 from openpilot.cereal import custom
 from openpilot.sunnypilot.models import manager as manager_module
@@ -293,6 +295,32 @@ class TestManagerDownload(ManagerDownloadTestBase):
     assert self.read_path() == WHOLE_BODY
     assert self.piece_requests().count(piece_range(2)) == 2
     assert self.piece_requests().count(piece_range(4)) == 2
+
+  def test_transient_probe_failure_is_retried(self):
+    self.server.fail_times = {(0, 0): 1}
+    self.download_file()
+    assert self.read_path() == WHOLE_BODY
+    assert self.server.request_ranges.count((0, 0)) == 2
+
+  def test_mirror_url_rewrites_known_host(self):
+    url = 'https://huggingface.co/datasets/x/y/resolve/main/f.pkl?download=true'
+    assert manager_module._mirror_url(url) == 'https://hf-mirror.com/datasets/x/y/resolve/main/f.pkl?download=true'
+    assert manager_module._mirror_url('https://example.com/f.pkl') is None
+
+  def test_probe_falls_back_to_mirror(self):
+    artifact = self.make_artifact()
+    dead = socket.socket()
+    dead.bind(('127.0.0.1', 0))
+    dead_port = dead.getsockname()[1]
+    dead.close()
+    live_netloc = urlparse(self.base_url).netloc
+    artifact.downloadUri.uri = f'http://127.0.0.1:{dead_port}/{FILE_NAME}'
+
+    with mock.patch.object(manager_module, 'HOST_MIRRORS', {f'127.0.0.1:{dead_port}': live_netloc}):
+      asyncio.run(self.manager._download_file(artifact.downloadUri.uri, self.path, artifact))
+
+    assert self.read_path() == WHOLE_BODY, 'the pieces must follow the mirror that answered the probe'
+    assert sorted(self.piece_requests()) == [piece_range(i) for i in range(NUM_PIECES)]
 
   def test_permanent_failure_is_not_retried(self):
     self.server.fail_ranges = {piece_range(1): 404}

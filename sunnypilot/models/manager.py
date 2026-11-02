@@ -11,6 +11,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 from openpilot.common.params import Params
@@ -25,6 +26,8 @@ from openpilot.sunnypilot.models.helpers import (ACTIVE_BUNDLE_KEYS, get_active_
 
 # (connect, read) seconds. read is per-request inactivity, not a total cap
 DOWNLOAD_TIMEOUT = (30, 30)
+# the probe blocks the first progress report, so it gives up on a stalled host and fails over sooner
+PROBE_TIMEOUT = (10, 30)
 # HuggingFace throttles each connection to ~1-2 MB/s but not the connection count; 12 saturates the device link
 MAX_CONCURRENT_PIECES = 12
 PIECE_SIZE = 8 * 1024 * 1024
@@ -36,6 +39,9 @@ REPORT_INTERVAL = 0.5  # seconds between progress publications
 NO_COMPRESSION = {"Accept-Encoding": "identity"}
 SPEED_SMOOTHING = 0.7  # weight of the previous speed sample in the published speed
 SPEED_FLOOR = 0.05 * 1024 ** 2  # bytes/s; anything slower would only display as 0.0 MB/s, so it reads as no rate
+# some networks poison or block these hosts; a read-only mirror serves the same artifacts, and the
+# sha256 check still guards integrity
+HOST_MIRRORS = {"huggingface.co": "hf-mirror.com"}
 
 
 class DownloadCancelled(Exception):
@@ -79,12 +85,50 @@ def _content_range_total(response: requests.Response) -> int | None:
 
 
 def _probe_size(url: str) -> tuple[int, bool]:
-  with requests.get(url, headers={**NO_COMPRESSION, "Range": "bytes=0-0"}, stream=True, timeout=DOWNLOAD_TIMEOUT) as response:
+  with requests.get(url, headers={**NO_COMPRESSION, "Range": "bytes=0-0"}, stream=True, timeout=PROBE_TIMEOUT) as response:
     response.raise_for_status()
     total = _content_range_total(response)
     if total is not None:
       return total, True
     return int(response.headers.get("Content-Length", 0)), False
+
+
+def _probe_with_retries(url: str) -> tuple[int, bool]:
+  for attempt in range(PIECE_ATTEMPTS):
+    try:
+      return _probe_size(url)
+    except requests.RequestException as e:
+      if not _is_transient(e) or attempt == PIECE_ATTEMPTS - 1:
+        raise
+      cloudlog.warning(f"retrying size probe after {type(e).__name__}: {e}")
+      time.sleep(PIECE_BACKOFF * (1 + attempt))
+
+
+def _mirror_url(url: str) -> str | None:
+  parts = urlsplit(url)
+  # netloc first so a mapping can pin a host:port pair, hostname covers the plain host
+  mirror = HOST_MIRRORS.get(parts.netloc) or HOST_MIRRORS.get(parts.hostname or "")
+  if mirror is None:
+    return None
+  return urlunsplit((parts.scheme, mirror, parts.path, parts.query, parts.fragment))
+
+
+def _probe(url: str) -> tuple[int, bool, str]:
+  """Sizes the artifact and returns the URL that answered it.
+
+  A blocked primary host fails the same way every attempt, so with a mirror present the primary
+  gets one try and the mirror the retries; the pieces then follow whichever host answered.
+  """
+  mirror = _mirror_url(url)
+  if mirror is None:
+    return (*_probe_with_retries(url), url)
+  try:
+    return (*_probe_size(url), url)
+  except requests.RequestException as e:
+    if not _is_transient(e):
+      raise
+    cloudlog.warning(f"size probe failed on {urlsplit(url).netloc} ({type(e).__name__}: {e}); trying {mirror}")
+  return (*_probe_with_retries(mirror), mirror)
 
 
 def _fetch_piece(url: str, path: str, index: int, start: int, end: int | None, progress: _Progress,
@@ -212,7 +256,7 @@ class ModelManagerSP:
     self._download_start_times[artifact.fileName] = time.monotonic()
     loop = asyncio.get_running_loop()
 
-    total, ranged = await loop.run_in_executor(None, _probe_size, url)
+    total, ranged, url = await loop.run_in_executor(None, _probe, url)
     pieces: list[tuple[int, int | None]] = list(_piece_ranges(total, PIECE_SIZE)) if ranged else [(0, None)]
     await loop.run_in_executor(None, _prepare_target, path, total)
     progress = _Progress()
