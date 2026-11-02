@@ -9,7 +9,7 @@ from enum import IntEnum
 
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.system.ui.lib.multilang import tr
-from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp, option_item_sp, multiple_button_item_sp, LineSeparatorSP
+from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, simple_button_item_sp, option_item_sp, LineSeparatorSP
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 from openpilot.system.ui.widgets import Widget
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.steering_sub_layouts.lane_change_settings import LaneChangeSettingsLayout
@@ -251,7 +251,8 @@ class SteeringLayout(Widget):
       min_value=0, max_value=100, value_change_step=5,
       label_callback=lambda x: f"{x / 100:.2f}",
       use_float_scaling=True,
-      description=lambda: tr("Scales the correction toward the center of trusted lane lines. Higher values apply a stronger correction; 0 disables it. Only active when Angle Lane Positioning is enabled, lateral control is active, and no lane change is in progress."),
+      description=lambda: tr("Scales the correction toward the center of trusted lane lines. Higher values apply a stronger correction; " +
+                            "0 disables it. Only active when Angle Lane Positioning is enabled, lateral control is active, and no lane change is in progress."),
     )
 
     items = [
@@ -345,11 +346,11 @@ class SteeringLayout(Widget):
     self._ford_angle_dampening.set_visible(ford_angle_mode)
     self._ford_angle_lane_change.set_visible(ford_angle_mode)
     self._ford_angle_lane_positioning.set_visible(ford_angle_mode)
-    self._ford_angle_path_offset.set_visible(ford_angle_mode)
-    self._ford_angle_centering_strength.set_visible(ford_angle_mode)
     lane_positioning_enabled = self._ford_angle_lane_positioning.action_item.get_state()
-    self._ford_angle_path_offset.action_item.set_enabled(ford_angle_mode and lane_positioning_enabled)
-    self._ford_angle_centering_strength.action_item.set_enabled(ford_angle_mode and lane_positioning_enabled)
+    # the in-lane offset and centering strength only apply while lane positioning is on
+    for item in (self._ford_angle_path_offset, self._ford_angle_centering_strength):
+      item.set_visible(ford_angle_mode and lane_positioning_enabled)
+      item.action_item.set_enabled(ford_angle_mode)
 
   def _render(self, rect):
     if self._current_panel == PanelType.LANE_CHANGE:

@@ -111,7 +111,7 @@ _STEER_DT = CarControllerParams.STEER_STEP * DT_CTRL  # 20 Hz lateral tick (matc
 # Must stay <= ford.h's FORD_BP_SHADOW_MAX_ANGLE_ERROR (400 CAN units = 0.008 1/m).
 _ANGLE_KAPPA_DEVIATION = 0.005  # default clip; live value from FordAngleDeviationClip param
 # Sharp-curve boost ratio on top of the base gain (1.60 / 1.25 = 1.28). Fixed; only the base
-# (FordAngleBaseGain) is user-tunable.
+# (FordAngleBaseGain, default 1.10) is user-tunable.
 # 2026-08-30: 1.28 -> 1.20 — reduce apex overshoot / inside cutting on sharp multi-lane turns.
 _ANGLE_GAIN_HIGH_C_RATIO = 1.20
 _STALL_HOLD_S = 0.5          # accumulated clip-binding time before a pulse fires
@@ -158,7 +158,7 @@ class LateralAngleExt:
     self.high_speed_curv_factor = 1.0
     self.user_dampening_factor = 1.0
     # User-tunable angle-mode base gain + deviation clip (read from Params in update_angle_params).
-    self.angle_base_gain = 1.25
+    self.angle_base_gain = 1.10
     self.angle_deviation_clip = _ANGLE_KAPPA_DEVIATION
     self.lane_center_trim = LaneCenterTrim()
     self.enable_lane_positioning_ang = False
@@ -522,7 +522,7 @@ class LateralAngleExt:
 
 
 
-    # Speed-interpolated gain: at low speed the base is FordAngleBaseGain (default 1.25); at high
+    # Speed-interpolated gain: at low speed the base is FordAngleBaseGain (default 1.10); at high
     # speed the params take effect. κ·v·gain implies a lookahead of v·gain metres; the PSCM needs a
     # slightly longer effective lookahead than 1.0 s at these speeds. 1.0/1.30 understeered; 1.5/1.95
     # over-corrected (line-cutting / lane runout). Tune FordAngleBaseGain on-road.
