@@ -29,3 +29,14 @@ def usbgpu_present() -> bool:
 def chestnut_present() -> bool:
   """BluePilot: no chestnut (external big-model accelerator) on this fork."""
   return False
+
+
+def load_oob(path, chestnut: bool = False):
+  """Load a model compiled with tinygrad's --out-of-band artifact format."""
+  import sys
+  from openpilot.common.hardware import TICI
+  from tinygrad import Context
+  device = 'QCOM' if TICI else 'METAL' if sys.platform == 'darwin' else 'CPU:LLVM'
+  with Context(DEV=device):
+    from tinygrad_repo.examples.openpilot.helpers import load_pickle
+    return load_pickle(path, out_of_band=True)

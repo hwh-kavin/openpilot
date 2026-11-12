@@ -2,7 +2,14 @@
 import os
 os.environ['GMMU'] = '0' # for usbgpu fast loading, noop for qcom
 from tinygrad.tensor import Tensor
+from tinygrad.device import Buffer
+from tinygrad.dtype import DType, dtypes
+from tinygrad.engine.realize import lower_and_compile
+from tinygrad.helpers import round_up
+from tinygrad.uop.ops import UOp
 import time
+import base64
+import math
 import pickle
 from collections.abc import Callable
 import numpy as np
@@ -25,7 +32,7 @@ from openpilot.selfdrive.modeld.compile_modeld import make_input_queues, WARP_IN
 from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_pose_msg, PublishState
 from openpilot.common.file_chunker import read_file_chunked, get_manifest_path
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
-from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices
+from openpilot.selfdrive.modeld.helpers import usbgpu_present, modeld_pkl_path, get_tg_input_devices, load_oob, MODELS_DIR
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
@@ -81,49 +88,69 @@ class FrameMeta:
       self.frame_id, self.timestamp_sof, self.timestamp_eof = vipc.frame_id, vipc.timestamp_sof, vipc.timestamp_eof
 
 
+def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int) -> Tensor:
+  view = buffer.view(math.prod(shape) * dtype.itemsize, offset).ensure_allocated()
+  return Tensor(UOp.from_buffer(view, dtype)).reshape(shape)
+
+
 class ModelState(ModelStateBase):
   prev_desire: np.ndarray  # for tracking the rising edge of the pulse
 
-  def __init__(self, cam_w: int, cam_h: int, usbgpu: bool):
+  def __init__(self, cam_w: int, cam_h: int, usbgpu: bool = False):
     ModelStateBase.__init__(self)
     self.LAT_SMOOTH_SECONDS = LAT_SMOOTH_SECONDS
-    input_devices = get_tg_input_devices(PROCESS_NAME, usbgpu)
-    self.WARP_DEV, self.QUEUE_DEV = input_devices['WARP_DEV'], input_devices['QUEUE_DEV']
-    jits = pickle.loads(read_file_chunked(modeld_pkl_path(usbgpu)))
-    vision_metadata = jits['metadata']['vision']
-    self.vision_input_shapes = vision_metadata['input_shapes']
-    self.vision_input_names = list(self.vision_input_shapes.keys())
-    self.vision_output_slices = vision_metadata['output_slices']
-
-    policy_metadata = jits['metadata']['on_policy']
-    self.policy_input_shapes = policy_metadata['input_shapes']
-    self.policy_output_slices = policy_metadata['output_slices']
+    self.LONG_SMOOTH_SECONDS = LONG_SMOOTH_SECONDS
+    jits = load_oob(modeld_pkl_path(False))
+    self.model_device = jits['input_specs']['new_img'][2]
+    self.input_shapes = {name: (shape, np.dtype(dtype)) for name, (shape, dtype, _) in jits['input_specs'].items()}
+    self.state_pairs = {name: f'next_{name}' for name in self.input_shapes if f'next_{name}' in jits['metadata']['output_shapes']}
+    self.vision_input_names = ('img', 'big_img')
+    self.output_slices = pickle.loads(base64.b64decode(jits['metadata']['metadata']['output_slices']))
 
     self.prev_desire = np.zeros(ModelConstants.DESIRE_LEN, dtype=np.float32)
 
-    self.frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
-    self.input_queues, self.npy = make_input_queues(self.vision_input_shapes, self.policy_input_shapes, self.frame_skip, device=self.QUEUE_DEV)
-    self.full_frames: dict[str, Tensor] = {}
-    self._blob_cache: dict[int, Tensor] = {}
+    stride, y_height, uv_height, _ = get_nv12_info(cam_w, cam_h)
+    self.frame_copy_size = stride * (y_height + uv_height)
+    self.pack_inputs()
+    with open(MODELS_DIR / f'driving_warp_{cam_w}x{cam_h}_tinygrad.pkl', 'rb') as f:
+      self.run_warp = pickle.load(f)['run']
+    self.run_warp.captured._linear = lower_and_compile(self.run_warp.captured._linear)
+    self.run_model = jits['run']
+    self.run_model.captured._linear = lower_and_compile(self.run_model.captured._linear)
+    self.outputs = {name: Tensor(np.zeros(shape, dtype=dtype), device=device).realize() for name, (shape, dtype, device) in jits['output_specs'].items()}
+    for name, next_name in self.state_pairs.items():
+      state = self.input_queues[name]
+      self.outputs[next_name] = input_view(state._buffer(), state.shape, state.dtype, 0)
     self.parser = Parser()
-    self.frame_buf_params = {k: get_nv12_info(cam_w, cam_h) for k in ('img', 'big_img')}
-    self.run_policy = jits['run_policy']
-    self.warp_enqueue = jits[(cam_w,cam_h)]
+
+  def pack_inputs(self) -> None:
+    # Pack host inputs into one upload to reduce USB transfer overhead.
+    self.input_queues = {name: Tensor(np.zeros(shape, dtype=dtype), device=self.model_device).realize()
+                         for name, (shape, dtype) in self.input_shapes.items() if name in self.state_pairs}
+    shapes = {'tfm': (2, 3, 3)} | {name: shape for name, (shape, _) in self.input_shapes.items()
+                                   if name not in self.state_pairs and name != 'new_img'}
+    npy_size = sum(round_up(math.prod(shape) * 4, 128) for shape in shapes.values())
+    self.packed_input = np.zeros(npy_size + 2 * self.frame_copy_size, dtype=np.uint8)
+    self.input_host = Tensor(self.packed_input, device='NPY')._buffer()
+    self.input_device = Tensor(self.packed_input, device=self.model_device)._buffer()
+    self.npy = {}
+    offset = 0
+    for name, shape in shapes.items():
+      self.npy[name] = np.ndarray(shape, dtype=np.float32, buffer=self.packed_input, offset=offset)
+      self.input_queues[name] = input_view(self.input_device, shape, dtypes.float32, offset)
+      offset += round_up(self.npy[name].nbytes, 128)
+    self.frames = self.packed_input[npy_size:].reshape(2, self.frame_copy_size)
+    self.warp_inputs = {'input_frame': input_view(self.input_device, self.frames.shape, dtypes.uint8, npy_size),
+                        'M_inv': self.input_queues.pop('tfm')}
 
   def slice_outputs(self, model_outputs: np.ndarray, output_slices: dict[str, slice]) -> dict[str, np.ndarray]:
-    parsed_model_outputs = {k: model_outputs[np.newaxis, v] for k,v in output_slices.items()}
-    return parsed_model_outputs
+    return {k: model_outputs[np.newaxis, v] for k,v in output_slices.items()}
 
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
-          inputs: dict[str, np.ndarray], prepare_only: bool) -> dict[str, np.ndarray] | None:
-    for key in bufs.keys():
-      ptr = np.frombuffer(bufs[key].data, dtype=np.uint8).ctypes.data
-      yuv_size = self.frame_buf_params[key][3]
-      # There is a ringbuffer of imgs, just cache tensors pointing to all of them
-      cache_key = (key, ptr)
-      if cache_key not in self._blob_cache:
-        self._blob_cache[cache_key] = Tensor.from_blob(ptr, (yuv_size,), dtype='uint8', device=self.WARP_DEV)
-      self.full_frames[key] = self._blob_cache[cache_key]
+          inputs: dict[str, np.ndarray], prepare_only: bool = False) -> dict[str, np.ndarray] | None:
+    for i, key in enumerate(self.vision_input_names):
+      np.copyto(self.frames[i], np.frombuffer(bufs[key].data, dtype=np.uint8, count=self.frame_copy_size))
+      self.npy['tfm'][i] = transforms[key]
 
     # Model decides when action is completed, so desire input is just a pulse triggered on rising edge
     inputs['desire_pulse'][0] = 0
@@ -131,27 +158,19 @@ class ModelState(ModelStateBase):
     self.prev_desire[:] = inputs['desire_pulse']
     self.npy['traffic_convention'][:] = inputs['traffic_convention']
     self.npy['action_t'][:] = inputs['action_t']
-    self.npy['tfm'][:,:] = transforms['img'][:,:]
-    self.npy['big_tfm'][:,:] = transforms['big_img'][:,:]
-
-    img, big_img = self.warp_enqueue(**{k: self.input_queues[k] for k in WARP_INPUTS}, frame=self.full_frames['img'], big_frame=self.full_frames['big_img'])
 
     if prepare_only:
       return None
 
-    vision_output, on_policy_output = self.run_policy(
-      **{k: self.input_queues[k] for k in POLICY_INPUTS}, img=img, big_img=big_img
-    )
-
-    vision_output = vision_output.numpy().flatten()
-    on_policy_output = on_policy_output.numpy().flatten()
-    vision_outputs_dict = self.parser.parse_vision_outputs(self.slice_outputs(vision_output, self.vision_output_slices))
-    policy_outputs_dict = self.parser.parse_policy_outputs(self.slice_outputs(on_policy_output, self.policy_output_slices))
-    combined_outputs_dict = {**vision_outputs_dict, **policy_outputs_dict}
+    self.input_device.copy_from(self.input_host)
+    self.input_queues['new_img'] = self.run_warp(**self.warp_inputs)
+    self.run_model(output_buffers=self.outputs, **self.input_queues)
+    model_output = self.outputs['outputs'].numpy()[0]
+    outputs_dict = self.parser.parse_outputs(self.slice_outputs(model_output, self.output_slices))
 
     if SEND_RAW_PRED:
-      combined_outputs_dict['raw_pred'] = np.concatenate([vision_output.copy(), on_policy_output.copy()])
-    return combined_outputs_dict
+      outputs_dict['raw_pred'] = model_output.copy()
+    return outputs_dict
 
 
 def main(demo=False):

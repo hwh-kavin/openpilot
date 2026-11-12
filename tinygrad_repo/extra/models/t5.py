@@ -62,8 +62,7 @@ class T5LayerNorm:
     # w/o mean and there is no bias. Additionally we want to make sure that the accumulation for
     # half-precision inputs is done in fp32
 
-    variance = hidden_states.cast(dtypes.float32).pow(2).mean(-1, keepdim=True)
-    hidden_states = hidden_states * Tensor.rsqrt(variance + self.variance_epsilon)
+    hidden_states = hidden_states.cast(dtypes.float32).rmsnorm(eps=self.variance_epsilon)
 
     # convert into half-precision if necessary
     if self.weight.dtype in [dtypes.float16, dtypes.bfloat16]:
@@ -164,12 +163,10 @@ class T5Attention:
     relative_buckets += Tensor.where(is_small, relative_position, relative_position_if_large)
     return relative_buckets
 
-  def compute_bias(self, query_length, key_length, device=None) -> Tensor:
+  def compute_bias(self, query_length, key_length) -> Tensor:
     """Compute binned relative position bias"""
-    if device is None:
-      device = self.relative_attention_bias.weight.device
-    context_position = Tensor.arange(query_length, dtype=dtypes.long, device=device)[:, None]
-    memory_position = Tensor.arange(key_length, dtype=dtypes.long, device=device)[None, :]
+    context_position = Tensor.arange(query_length, dtype=dtypes.long)[:, None]
+    memory_position = Tensor.arange(key_length, dtype=dtypes.long)[None, :]
     relative_position = memory_position - context_position  # shape (query_length, key_length)
     relative_position_bucket = self._relative_position_bucket(
         relative_position,  # shape (query_length, key_length)
@@ -212,7 +209,7 @@ class T5Attention:
     scores = Tensor.matmul(query_states, key_states.transpose(3, 2))
 
     if position_bias is None:
-      position_bias = self.compute_bias(key_length, key_length, device=scores.device)
+      position_bias = self.compute_bias(key_length, key_length)
 
     scores += position_bias
     attn_weights = Tensor.softmax(scores.float(), axis=-1).cast(scores.dtype)  # (batch_size, n_heads, seq_length, key_length)

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # compare kernels created by HEAD against master
 import os, multiprocessing, logging, pickle, sqlite3, difflib, warnings, functools, base64, codecs
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import replace
 from typing import Callable, Any
 
@@ -48,9 +49,9 @@ def replay_to_program(p:UOp, ast:UOp, renderer:Renderer) -> tuple[str, str, tupl
     if sink_arg.beam: sink_arg = replace(sink_arg, opts_to_apply=p.src[0].arg.applied_opts)
     input_ast = ast.replace(arg=replace(sink_arg, name=p.src[0].arg.name))
   p2 = to_program(input_ast, renderer=renderer)
-  device = p.src[1].arg
+  device = renderer.target.device
   def to_str(ret:UOp) -> str:
-    src = ret.src[3].arg
+    src = next(x.arg for x in ret.src if x.op is Ops.SOURCE)
     # PYTHON renderer pickles UOps, first unpickle and decode here
     if device.startswith("PYTHON"): return "\n".join([str(x) for x in pickle.loads(base64.b64decode(src))])
     return src
@@ -77,7 +78,8 @@ def diff(offset:int, fxns:dict[str, Callable[..., tuple|None]]) -> None:
       break
     name, loc = "", ""
     try:
-      name, args, kwargs, ctx_vals, loc, ret = pickle.loads(row[0])
+      name, args, kwargs, ctx_vals, ret = pickle.loads(row[0])
+      loc = ctx_vals["PROCESS_REPLAY_LOC"].value
       ctx_vars = {k:v.value for k,v in ctx_vals.items() if k not in ("DEBUG", "CAPTURE_PROCESS_REPLAY")
                   and (var:=ContextVar._cache.get(k)) is not None and var.value != v.value}
       if (replayer:=fxns.get(name)) is None: continue
@@ -107,12 +109,9 @@ def _pmap(fxns:dict[str, Callable]) -> None:
   finally:
     cur.close()
 
-  with multiprocessing.get_context("spawn").Pool(multiprocessing.cpu_count()) as pool:
-    bar = tqdm(total=row_count)
-    for _ in pool.imap_unordered(functools.partial(diff, fxns=fxns), range(0, row_count, s:=min(PAGE_SIZE, row_count))): bar.update(s)
-    pool.close()
-    pool.join()
-    pool.terminate()
+  with ProcessPoolExecutor(multiprocessing.cpu_count(), mp_context=multiprocessing.get_context("spawn")) as pool:
+    with tqdm(total=row_count) as bar:
+      for _ in pool.map(functools.partial(diff, fxns=fxns), range(0, row_count, s:=min(PAGE_SIZE, row_count))): bar.update(min(s, row_count-bar.n))
 
 # *** main loop
 

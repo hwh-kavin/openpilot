@@ -7,6 +7,7 @@ from tinygrad.viz import serve as viz
 from tinygrad.viz.serve import fmt_colored
 from tinygrad.uop.ops import RewriteTrace
 from tinygrad.helpers import temp, ansistrip, colored, time_to_str, ansilen, ProfilePointEvent, ProfileRangeEvent, TracingKey, unwrap, NO_COLOR, DEBUG
+from tinygrad.helpers import Context
 
 # profile decoder used in CLI and tests
 def decode_profile(data:bytes) -> dict:
@@ -17,7 +18,8 @@ def decode_profile(data:bytes) -> dict:
     off += struct.calcsize(fmt)
     return vals
   total_dur, global_peak, index_len, layout_len = u("<IQII")
-  strings, dtypes, markers = json.loads(ret[off:off+index_len]).values()
+  index = json.loads(ret[off:off+index_len])
+  strings, markers = index["strings"], index["markers"]
   off += index_len
   layout:dict[str, dict] = {}
   # 0 means None, otherwise it's an enum value
@@ -41,12 +43,13 @@ def decode_profile(data:bytes) -> dict:
           v["events"].append({"event":"freq", "ts":ts, "value":value})
         else:
           alloc, ts, key = u("<BII")
-          if alloc: v["events"].append({"event":"alloc", "ts":ts, "key":key, "arg": {"dtype":strings[u("<I")[0]], "sz":u("<Q")[0]}})
+          if alloc: v["events"].append({"event":"alloc", "ts":ts, "key":key, "arg": {"nbytes":u("<Q")[0]}})
           else: v["events"].append({"event":"free", "ts":ts, "key":key, "arg": {"users":[(k, strings[rep], num, mode) \
               for k,rep,num,mode in [u("<IIIB") for _ in range(u("<I")[0])]]}})
   return {"dur":total_dur, "peak":global_peak, "layout":layout, "markers":markers}
 
 def to_str(k:str, v) -> str:
+  if isinstance(v, str): return f"{k} {v}"
   if k == "FLOPS" or k.startswith("B/s"): return f"{v*1e-9:.0f} G{k}" if v < 1e13 else f"{v*1e-12:.0f} T{k}"
   if k == "B": return next((f"{v/s:.0f} {u}" for s,u in ((1e9,"GB"),(1e6,"MB"),(1e3,"KB")) if v>=s), f"{v:.0f} B")
   return f"{k}={v}"
@@ -63,21 +66,27 @@ def get(data:dict, key:str):
   match = difflib.get_close_matches(key, [ansistrip(k) for k in data], n=1, cutoff=0.6)
   raise RuntimeError(f'item "{key}" not found in list'+(f", did you mean {match[0]!r}?" if match else ''))
 
+def fmt_top(k:dict) -> str:
+  return f"{fmt_colored(k['name'])}{' ' * max(0, 38-ansilen(k['name']))} {time_to_str(k['dur_ms']*1e-3, w=9)} {k['count']:7d} {k['pct']:6.2f}%"+\
+      (" "*4+fmt_data(k['fmt']) if k['fmt'] else "")
+
+def fmt_all(k:dict) -> str:
+  if k["device"] in {"MARKER", "SOURCE"}: return f"--- {k['device']} {k['name']}"+(f"/{k['st_ms']:9.2f}ms" if k['st_ms'] else "")
+  ptm = colored(time_to_str(k["dur_ms"]*1e-3, w=9), "yellow" if k["dur_ms"] > 10 else None)
+  name = f"*** {k['device'][:7]:7s} "+k["name"]+" "*(46-ansilen(k["name"]))
+  return f"{name} tm {ptm}/{k['st_ms']:9.2f}ms"+(f" ({fmt_data(k['fmt'])})" if k["fmt"] else "")
+
+@Context(ALLOW_DEVICE_USAGE=0)
 def main(args) -> None:
   viz.load_rewrites(viz_data:=viz.VizData(viz.load_pickle(args.rewrites_path, default=RewriteTrace([], [], {}))))
 
   def emit(val, to_str=str) -> str: return json.dumps(val if isinstance(val, dict) else {"value":val}) if args.json else to_str(val)
 
-  def print_step(step:dict, print_graph=False, reconstruct_matches=False) -> None:
-    data = viz.get_render(viz_data, step["query"])
+  def print_step(step:dict, reconstruct_matches=False) -> None:
+    data = viz.get_render(viz_data, step["query"], update_sink=False)
     if isinstance(data.get("value"), Iterator):
       for m in data["value"]:
-        if print_graph and "graph" in m and not args.json:
-          for k,v in m["graph"].items():
-            print(f"[{k}] {' '.join((lines:=v['label'].splitlines())[:5])}{'...' if len(lines) > 5 else ''}"+(f" tag={v['tag']}" if v['tag'] else ''))
-            if v["src"]:
-              print("  src: "+", ".join([f"{i}->[{x}]" for i,x in v["src"][:5]])+(f", ... and {len(v['src'])-5} more" if len(v["src"]) > 5 else ""))
-        elif "uop" in m: print(emit(m["graph"] if print_graph else m["uop"]))
+        if "uop" in m: print(emit(''.join(t["st"] for t in m["uop"])))
         if not reconstruct_matches: return None
         if m.get("diff"):
           loc = pathlib.Path(m["upat"][0][0])
@@ -88,7 +97,7 @@ def main(args) -> None:
   profile_bytes = viz.get_profile(viz_data, viz.load_pickle(args.profile_path, default=[]))
   if profile_bytes is None: raise RuntimeError(f"empty profile in {args.profile_path}")
   profile = decode_profile(profile_bytes)
-  profile["layout"].update([(f'{c["name"][5:]}{" SQTT" if s["name"].endswith("PKTS") else ""} {s["name"]}', s["data"]) for c in viz_data.ctxs
+  profile["layout"].update([(f'{c["name"][5:]}{" SQTT" if s["name"].endswith("PKTS") else ""} {s["name"]}', s["_data"]) for c in viz_data.ctxs
                             if c["name"].startswith("SQTT") for s in c["steps"] if s["name"].endswith(("PMC", "PKTS"))])
   if args.list and not args.src: return print("\n".join(emit(fmt_colored(k)) for k in ["ALL"]+list(profile["layout"])))
 
@@ -145,7 +154,8 @@ def main(args) -> None:
   else:
     timelines = [(n,l) for n,l in profile["layout"].items() if isinstance(l, dict) and l.get("event_type") == 0]
     markers = profile.get("markers", [])
-    interval:tuple[int, int]|None = None if not args.interval else (marker_st(markers, args.interval[0]), marker_st(markers, args.interval[1]))
+    interval:tuple[int, int]|None = None
+    if (rng:=args.interval): interval = (marker_st(markers, rng[0]), marker_st(markers, rng[1]) if len(rng) > 1 else profile["dur"])
     def produce_top_kernels() -> Iterator[dict]:
       tagged = ((n,e) for n,l in timelines for e in l["events"]) if not args.src else ((args.src[0],e) for e in unwrap(data)["events"])
       agg:dict[tuple[str,str], tuple[float, int, int|None, dict[str, float]]] = {} # map (device, kernel name) to (total time, count, ref, est)
@@ -188,14 +198,6 @@ def main(args) -> None:
             elif not file.startswith("<") and not fxn.startswith("<"): fmt["loc"] = line
         yield {"device":dev, "name":fmt_colored(e["name"]), "dur_ms":e["dur"]*1e-3, "st_ms":e["st"]*1e-3, "fmt":fmt, "ref":e["ref"],
                "ext":"\n".join(ext)}
-    def fmt_top(k:dict) -> str:
-      return f"{fmt_colored(k['name'])}{' ' * max(0, 38-ansilen(k['name']))} {time_to_str(k['dur_ms']*1e-3, w=9)} {k['count']:7d} {k['pct']:6.2f}%"+\
-          (" "*4+fmt_data(k['fmt']) if k['fmt'] else "")
-    def fmt_all(k:dict) -> str:
-      if k["device"] in {"MARKER", "SOURCE"}: return f"--- {k['device']} {k['name']}"+(f"/{k['st_ms']:9.2f}ms" if k['st_ms'] else "")
-      ptm = colored(time_to_str(k["dur_ms"]*1e-3, w=9), "yellow" if k["dur_ms"] > 10 else None)
-      name = f"*** {k['device'][:7]:7s} "+k["name"]+" "*(46-ansilen(k["name"]))
-      return f"{name} tm {ptm}/{k['st_ms']:9.2f}ms"+(f" ({fmt_data(k['fmt'])})" if k["fmt"] else "")
     fmt_row = fmt_top if args.t else fmt_all
     seen_refs:set[int] = set()
     def render_event(k:dict, ls=args.list) -> None:
@@ -208,7 +210,7 @@ def main(args) -> None:
           if DEBUG >= 4 and s["name"] == "View Source": print_step(s)
           if DEBUG >= 5 or ls: print(emit(" "*s["depth"]+s["name"]+(f" - {s['match_count']}" if s.get('match_count', 0) else '')))
           if DEBUG >= 6 or (DEBUG >= 5 and s["name"] == "View Kernel Graph") or (s["name"] in args.src):
-            print_step(s, print_graph=True, reconstruct_matches=s["name"] in args.src)
+            print_step(s, reconstruct_matches=s["name"] in args.src)
           if DEBUG >= 7: print_step(s, reconstruct_matches=True)
       elif DEBUG >= 3 and k.get("ext"): print(emit(k["ext"]))
     for k in (produce_top_kernels if args.t else produce_all_kernels)(): render_event(k)
@@ -217,7 +219,7 @@ def get_arg_parser() -> argparse.ArgumentParser:
   parser = argparse.ArgumentParser(prog="python -m tinygrad.viz.cli")
   parser.add_argument("-s", "--src", nargs="+", default=[], metavar="NAME", help="Select a data source (default: all)")
   parser.add_argument("--list", "--ls", dest="list", action="store_true", help="List sources")
-  parser.add_argument("--interval", nargs=2, metavar=("START", "END"), help="Optional start and end marker")
+  parser.add_argument("--interval", nargs="+", metavar=("START", "END"), help="Optional start and end marker")
   parser.add_argument("-t", nargs="?", type=int, const=20, metavar="COUNT", help="Aggregate top kernels (optional count, default 20)")
   parser.add_argument("--profile-path", type=str, metavar="PATH", help="Optional path to profile.pkl (default: latest profile)",
                       default=temp("profile.pkl", append_user=True))

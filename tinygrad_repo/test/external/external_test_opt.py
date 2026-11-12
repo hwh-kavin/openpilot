@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from tinygrad import GlobalCounters, Tensor, Device
-from tinygrad.helpers import getenv
+from tinygrad.helpers import getenv, Context
 from tinygrad.nn.state import get_parameters
 from tinygrad.engine.realize import capturing, run_linear
 from tinygrad.tensor import _to_np_dtype
@@ -13,9 +13,9 @@ class CLCache:
   def __init__(self, allowed=None, strict=False, preclear=True, var_vals=None):
     self.allowed, self.strict, self.preclear, self.var_vals = allowed, strict, preclear, var_vals if var_vals is not None else {}
     self.count = 0
-  def add_linear(self, linear, var_vals):
+  def add_linear(self, linear):
     self.count += len(linear.src)
-    run_linear(linear, var_vals)
+    run_linear(linear, {})
   def __enter__(self):
     if self.preclear:
       gc.collect()
@@ -38,11 +38,7 @@ from extra.models.vit import ViT
 
 @unittest.skipUnless(Device.DEFAULT == "CL", "Not Implemented")
 class TestInferenceMinKernels(unittest.TestCase):
-  def setUp(self):
-    self.training_old = Tensor.training
-    Tensor.training = False
-  def tearDown(self):
-    Tensor.training = self.training_old
+  def setUp(self): self.enterContext(Context(TRAINING=0))
 
   def test_convnext(self):
     model = ConvNeXt()

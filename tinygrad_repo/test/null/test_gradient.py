@@ -4,7 +4,7 @@ import torch
 from tinygrad import Tensor
 from tinygrad.dtype import dtypes
 from tinygrad.uop.ops import UOp
-from tinygrad.gradient import compute_gradient
+from tinygrad.mixin.gradient import compute_gradient
 
 class TestGradient(unittest.TestCase):
   def _cmp_nan_okay(self, x, y):
@@ -14,10 +14,10 @@ class TestGradient(unittest.TestCase):
   def _test_one_input_function(self, f:Callable, jf:Callable|None=None):
     if jf is None: jf = f
     x = UOp.variable('x', -math.inf, math.inf, dtype=dtypes.float)
-    gx = compute_gradient(f(x), UOp.const(dtypes.float, 1.0), set([x]))[x]
+    gx = compute_gradient(f(x), UOp.const(1.0), set([x]))[x]
 
     for val in [-5., -2.0, 0.0, 2.0, 5.]:
-      tg_out = gx.substitute({x: x.const_like(val)}).ssimplify()
+      tg_out = gx.substitute({x: UOp.const(val)}).ssimplify()
       tx = torch.tensor([val], dtype=torch.float, requires_grad=True)
       torch_out = torch.autograd.grad(jf(tx), tx)[0].item()
       self._cmp_nan_okay(tg_out, torch_out)
@@ -26,13 +26,13 @@ class TestGradient(unittest.TestCase):
     if jf is None: jf = f
     x = UOp.variable('x', -math.inf, math.inf, dtype=dtypes.float)
     y = UOp.variable('y', -math.inf, math.inf, dtype=dtypes.float)
-    grads = compute_gradient(f(x, y), UOp.const(dtypes.float, 1.0), set([x, y]))
+    grads = compute_gradient(f(x, y), UOp.const(1.0), set([x, y]))
     gx, gy = grads[x], grads[y]
 
     for valx in [-5., -2.0, 0.0, 2.0, 5.]:
       for valy in [-5., -2.0, 0.0, 2.0, 5.]:
         # Substitute the values into the gradient expressions
-        substitutions = {x: x.const_like(valx), y: y.const_like(valy)}
+        substitutions = {x: UOp.const(valx), y: UOp.const(valy)}
         tg_out_x = gx.substitute(substitutions).ssimplify()
         tg_out_y = gy.substitute(substitutions).ssimplify()
 
@@ -78,6 +78,34 @@ class TestRealizeMeansRealize(unittest.TestCase):
     x = Tensor.uniform(16, 3, 3, 3).realize()
     y = x * 2
     y.sum().gradient(x)[0].realize()
+
+class TestTensorGradient(unittest.TestCase):
+  def test_cast_before_view(self):
+    x = Tensor([1.0, 1, 1, 1])
+    x_reshaped = x.reshape(2,2)
+    x_casted = x_reshaped.cast(dtypes.float16)
+    x_casted.mean().gradient(x_reshaped)
+
+  def test_non_float_tensor_raise(self):
+    x = Tensor([1, 2, 3])
+    with self.assertRaises(RuntimeError): x.sum().gradient(x)
+    with self.assertRaises(RuntimeError): x.float().sum().gradient(x)
+
+  def test_const_target_raise(self):
+    t = Tensor(2.0)
+    with self.assertRaises(RuntimeError): (t * 2.0).gradient(t)
+
+  def test_setitem_on_grad_used_tensor_raises(self):
+    x = Tensor([1.0, 2.0, 3.0, 4.0]).realize()
+    _ = (x * 2.0).sum()
+    with self.assertRaises(RuntimeError):
+      x[0] = 99.0
+
+  def test_bare_const_skipped_by_backward(self):
+    Tensor.manual_seed(0)
+    w = Tensor(1.0)
+    (Tensor.rand(()) + w).backward()
+    self.assertIsNone(w.grad)
 
 if __name__ == '__main__':
   unittest.main()

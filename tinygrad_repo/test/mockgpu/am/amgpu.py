@@ -1,13 +1,10 @@
 # mypy: ignore-errors
 from __future__ import annotations
-import ctypes, ctypes.util, struct, functools, os, mmap
-from tinygrad.runtime.autogen.am import am
+import ctypes, struct, functools, os, mmap
+from tinygrad.runtime.autogen.am import am, smu_14_0_2
+from tinygrad.runtime.autogen import libc
 from tinygrad.runtime.support.amd import AMDReg, import_asic_regs
 from test.mockgpu.amd.amdgpu import AMDGPU
-
-libc = ctypes.CDLL(ctypes.util.find_library("c"))
-libc.mmap.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_long]
-libc.mmap.restype = ctypes.c_void_p
 
 VRAM_SIZE = 512 << 20
 
@@ -147,7 +144,10 @@ class MockSMU(MockIPBlock):
 
   def write(self, reg:int, val:int):
     super().write(reg, val)
-    if reg == self._c2pmsg_66 or reg == self._c2pmsg_75: self._msg_pending = True
+    if reg == self._c2pmsg_66 or reg == self._c2pmsg_75:
+      self._msg_pending = True
+      if val == smu_14_0_2.PPSMC_MSG_GetDpmFreqByIndex:
+        self.mmio.regs[self._c2pmsg_82] = 2 if self.mmio.regs.get(self._c2pmsg_82, 0) & 0xffff == 0xff else 1000
     if (reg == self._c2pmsg_90 or reg == self._c2pmsg_54) and val == 0: self._msg_pending = False
 
 class MockSDMA(MockIPBlock):
@@ -263,11 +263,11 @@ class MockMMIOInterface:
 class MockAMGPU(AMDGPU):
   def __init__(self, gpuid:int=0):
     super().__init__(gpuid)
-    self.vram_fd = os.memfd_create("vram")
+    self.vram_fd = libc.memfd_create(b"vram", libc.MFD_CLOEXEC)
     os.ftruncate(self.vram_fd, VRAM_SIZE)
     self.vram_addr = libc.mmap(0, VRAM_SIZE, mmap.PROT_READ | mmap.PROT_WRITE, mmap.MAP_SHARED, self.vram_fd, 0)
     self.vram = (ctypes.c_ubyte * VRAM_SIZE).from_address(self.vram_addr)
-    self.doorbell_fd = os.memfd_create("doorbell")
+    self.doorbell_fd = libc.memfd_create(b"doorbell", libc.MFD_CLOEXEC)
     os.ftruncate(self.doorbell_fd, 0x2000)
     self.arch = "rdna4"
     self._sysmem_map:dict[int,int] = {}

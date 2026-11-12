@@ -4,15 +4,13 @@ import unittest
 from tinygrad.tensor import Tensor
 from tinygrad.nn.state import get_parameters
 from tinygrad.nn.optim import Adam, SGD
-from tinygrad.helpers import DEBUG
+from tinygrad.helpers import DEBUG, Context
 from extra.lr_scheduler import MultiStepLR, ReduceLROnPlateau, CosineAnnealingLR, OneCycleLR
 from extra.training import train, evaluate
 from extra.datasets import fetch_mnist
 
 np.random.seed(1337)
 Tensor.manual_seed(1337)
-
-X_train, Y_train, X_test, Y_test = fetch_mnist()
 
 class TinyBobNet:
   def __init__(self):
@@ -26,6 +24,7 @@ class TinyBobNet:
     return x.dot(self.l1).relu().dot(self.l2).log_softmax()
 
 def lr_scheduler_training(sched_fn=None, args=None):
+  X_train, Y_train, X_test, Y_test = fetch_mnist()
   model = TinyBobNet()
   optim = Adam(model.parameters(), lr=0.01)
   if sched_fn is not None: sched = sched_fn(optim, **args)
@@ -53,11 +52,7 @@ def get_lrs(optim, sched, epochs, steps=1, accs=None):
   return lrs
 
 class TestLrScheduler(unittest.TestCase):
-  def setUp(self):
-    self.old_training = Tensor.training
-    Tensor.training = True
-  def tearDown(self):
-    Tensor.training = self.old_training
+  def setUp(self): self.enterContext(Context(TRAINING=1))
 
   def _test_lr_scheduler(self, tinygrad_sched, torch_sched, epochs, opts, atol, rtol, adam=True):
     accs = opts.pop('accs', None)

@@ -2,8 +2,8 @@ from __future__ import annotations
 from typing import Final, ClassVar, Callable, Literal
 import math, struct, ctypes, functools
 from dataclasses import dataclass, fields
-from tinygrad.helpers import ceildiv, getenv, prod, round_up, OSX
-from enum import Enum, auto
+from tinygrad.helpers import getenv, DEFAULT_FLOAT, DEFAULT_INT
+from enum import IntEnum, auto
 
 class ConstFloat(float):
   """Float subclass that distinguishes -0.0 from 0.0 and where nan == nan."""
@@ -17,6 +17,7 @@ class ConstFloat(float):
     if self is other: return True
     if isinstance(other, float) and math.isnan(self) and math.isnan(other): return True
     return float.__eq__(self, other)
+  def __ne__(self, other): return res if (res:=self.__eq__(other)) is NotImplemented else not res  # float.__ne__ disagrees with __eq__ on nan
   def __hash__(self): return hash(self.bits)
   def __repr__(self): return f"ConstFloat({float.__repr__(self)})"
   def __str__(self): return float.__repr__(self)
@@ -26,9 +27,7 @@ class InvalidType:
   def __new__(cls):
     if cls._instance is None: cls._instance = object.__new__(cls)
     return cls._instance
-  def __eq__(self, other): return self is other
-  def __lt__(self, other): return self is not other
-  def __gt__(self, other): return self is not other
+  def __eq__(self, other): return self is other if isinstance(other, InvalidType) else NotImplemented  # foreign types get the reflected eq
   def __hash__(self): return id(self)
   def __repr__(self): return "Invalid"
   def __reduce__(self): return (InvalidType, ())  # unpickle returns the singleton
@@ -49,9 +48,10 @@ class DTypeMetaClass(type):
     DTypeMetaClass.dcache[args] = ret = super().__call__(*args)
     return ret
 
-class AddrSpace(Enum):
-  def __repr__(self): return str(self)
-  GLOBAL = auto(); LOCAL = auto(); REG = auto()  # noqa: E702
+class AddrSpace(IntEnum):
+  def __str__(self): return repr(self)
+  def __repr__(self): return f"{self.__class__.__name__}.{self.name}"
+  GLOBAL = auto(); LOCAL = auto(); REG = auto(); ALU = auto()  # noqa: E702
 
 @dataclass(frozen=True, eq=False)
 class DType(metaclass=DTypeMetaClass):
@@ -59,113 +59,55 @@ class DType(metaclass=DTypeMetaClass):
   bitsize: int
   name: str
   fmt: FmtStr|None
-  count: int
-  _scalar: DType|None
   @property
   def itemsize(self) -> int: return (self.bitsize + 7) // 8
   @staticmethod
-  def new(priority:int, bitsize:int, name:str, fmt:FmtStr|None): return DType(priority, bitsize, name, fmt, 1, None)
+  def new(priority:int, bitsize:int, name:str, fmt:FmtStr|None): return DType(priority, bitsize, name, fmt)
   def __reduce__(self): return type(self), tuple(getattr(self, f.name) for f in fields(self))
-  def __repr__(self): return f"dtypes.{INVERSE_DTYPES_DICT[self.scalar().name]}"+(f".vec({self.count})" if self.count != 1 else "")
-  def __lt__(self, o:DType): return (self.priority, self.bitsize, self.name, self.fmt, self.count) < (o.priority, o.bitsize, o.name, o.fmt, o.count)
-  @property
-  def base(self): return self
-  @property
-  def vcount(self): return self.count
-  @functools.cache  # pylint: disable=method-cache-max-size-none
-  def vec(self, sz:int) -> DType:
-    assert self.count == 1, f"can't vectorize {self} with size {sz}"
-    if sz == 1 or self == dtypes.void: return self  # void doesn't vectorize, and sz=1 is scalar
-    return DType(self.priority, self.bitsize*sz, f"{INVERSE_DTYPES_DICT[self.name]}{sz}", None, sz, self)
-  def ptr(self, size=-1, addrspace=AddrSpace.GLOBAL) -> PtrDType:
-    return PtrDType(self.priority, self.bitsize, self.name, self.fmt, self.count, None, self, addrspace, 1, size)
-  def scalar(self) -> DType: return self._scalar if self._scalar is not None else self
-  def nbytes(self) -> int: raise RuntimeError("only ptr types have nbytes")
+  def __repr__(self): return f"dtypes.{self.name}"
+  def __lt__(self, o:DType): return (self.priority, self.bitsize, self.name, self.fmt) < (o.priority, o.bitsize, o.name, o.fmt)
   @functools.cached_property
   def min(self):
-    if dtypes.is_int(self): return 0 if dtypes.is_unsigned(self) else -2**(self.scalar().bitsize-1)
-    return -float("inf") if dtypes.is_float(self) else False
+    if dtypes.is_int(self): return 0 if dtypes.is_unsigned(self) else -2**(self.bitsize-1)
+    return -self.max if dtypes.is_float(self) else False
   @functools.cached_property
   def max(self):
-    if dtypes.is_int(self): return 2**(self.scalar().bitsize)-1+self.min
+    if dtypes.is_int(self): return 2**(self.bitsize)-1+self.min
+    # e4m3 and the fnuz fp8s have no inf: their largest value is the largest normal
+    if self in dtypes.fp8s and self is not dtypes.fp8e5m2: return fp8_to_float(_fp8_cfg[self][5], self)
     return float("inf") if dtypes.is_float(self) else True
-  def const(self, val: tuple[ConstType, ...]|ConstType):
-    if isinstance(val, tuple):
-      assert len(val) == self.count, f"mismatch {val} {self}"
-      return tuple(map(self.const, val))
+  def const(self, val: ConstType):
     if isinstance(val, InvalidType): return val
     # NOTE: float('nan') != float('nan'), so we canonicalize here
     if isinstance(val, float) and math.isnan(val): val = math.nan
     # int is the default. wrap floats in ConstFloat to distinguish -0.0 from 0.0 in cache
-    return ConstFloat(float(val)) if dtypes.is_float(self) else bool(val) if dtypes.is_bool(self) else int(val)
+    return ConstFloat(truncate.get(self, float)(float(val))) if dtypes.is_float(self) else bool(val) if dtypes.is_bool(self) else int(val)
 
-@dataclass(frozen=True, eq=False)
-class PtrDType(DType):
-  _base: DType
-  addrspace: AddrSpace
-  v: int
-  size: int = -1  # -1 is unlimited size
-  @property
-  def base(self): return self._base
-  @functools.cache  # pylint: disable=method-cache-max-size-none
-  def vec(self, sz:int) -> DType:
-    assert self.v == 1, f"can't vectorize ptr {self} with size {sz}"
-    if sz == 1: return self  # sz=1 is a scalar
-    if isinstance(self, ImageDType):
-      return ImageDType(self.priority, self.bitsize, self.name, self.fmt, self.count, self, self._base, self.addrspace, sz, self.size, self.shape)
-    return type(self)(self.priority, self.bitsize, self.name, self.fmt, self.count, self, self._base, self.addrspace, sz, self.size)
-  def ptr(self, size=-1, addrspace=AddrSpace.GLOBAL) -> PtrDType: raise RuntimeError("can't make a pointer from a pointer")
-  def nbytes(self) -> int:
-    if self.size == -1: raise RuntimeError("can't get nbytes of a pointer with unlimited size")
-    return self.size*self.itemsize
-  @property
-  def vcount(self): return self.v
-  def __repr__(self):
-    return f"{self.base.__repr__()}.ptr({self.size}{', '+str(self.addrspace) if self.addrspace != AddrSpace.GLOBAL else ''})" + \
-      (f'.vec({self.v})' if self.v != 1 else '')
 
-@dataclass(frozen=True, eq=False)
-class ImageDType(PtrDType):
-  shape: tuple[int, ...] = ()   # shape of the Image
-  def ptr(self, size=-1, addrspace=AddrSpace.GLOBAL) -> PtrDType:
-    assert addrspace == AddrSpace.GLOBAL, "images can't be local"
-    return self
-  def __repr__(self): return f"dtypes.{self.name}({self.shape})" + (f'.vec({self.v})' if self.v != 1 else '')
-
-  # for 1d images on macos, we need to round pitch up to 256 pixels to make CL happy
-  @property
-  def pitch(self): return (round_up(self.shape[1], 256) if OSX else self.shape[1]) * 4 * self.itemsize
-
-  # get list of (height, width) that do not require pitch padding
-  @staticmethod
-  def valid_dims(ptr:PtrDType, arch:str) -> list[tuple[int,int]]:
-    if (ALIGN:=next((int(p.split('=')[1]) for p in arch.split(',') if p.startswith("IMAGE_PITCH_ALIGNMENT=")), 0)) == 0: return []
-    MAXW, pxls = 16384, ptr.size // 4
-    if ptr.base not in (dtypes.half, dtypes.float) or ptr.size > 4*MAXW*MAXW: return []
-    # height=1 images just need to abide by alignment requirements in bytes, not pixels!
-    if ptr.size % (ALIGN * 4) != 0: return [] if ptr.nbytes() % (64 if OSX else ALIGN) != 0 or pxls > MAXW else [(1, pxls)]
-    return [(pxls//ALIGN//k, ALIGN*k) for k in range(ceildiv(pxls//ALIGN, MAXW), min(pxls//ALIGN, MAXW//ALIGN)+1) if (pxls//ALIGN)%k == 0]
-
-class dtypes:
+class DTypes:
   @staticmethod
   @functools.cache
-  def is_float(x: DType) -> bool: return x.scalar() in dtypes.floats or isinstance(x, ImageDType)
+  def is_float(x: DType) -> bool: return x in (dtypes.floats + (dtypes.weakfloat,))
   @staticmethod # static methods on top, or bool in the type info will refer to dtypes.bool
   @functools.cache
-  def is_int(x: DType) -> bool: return x.scalar() in (dtypes.ints + (dtypes.weakint,))
+  def is_int(x: DType) -> bool: return x in (dtypes.ints + (dtypes.weakint,))
   @staticmethod
   @functools.cache
-  def is_unsigned(x: DType) -> bool: return x.scalar() in dtypes.uints
+  def is_unsigned(x: DType) -> bool: return x in dtypes.uints
   @staticmethod
-  def is_bool(x: DType) -> bool: return x.scalar() == dtypes.bool
+  def is_bool(x: DType) -> bool: return x == dtypes.bool
   @staticmethod
   def from_py(x) -> DType:
     # NOTE: isinstance(True, int) is True, so bool must be checked before int
-    if isinstance(x, bool): return dtypes.bool
-    if isinstance(x, float): return dtypes.default_float
-    if isinstance(x, int): return dtypes.default_int
+    if isinstance(x, (bool, InvalidType)): return dtypes.bool
+    if isinstance(x, float): return dtypes.weakfloat
+    if isinstance(x, int): return dtypes.weakint
     # put this in the last is faster because there are more items than lists/tuples to check
-    if isinstance(x, (list, tuple)): return max(dtypes.from_py(xi) for xi in x) if x else dtypes.default_float
+    if isinstance(x, (list, tuple)):
+      dt = max(dtypes.from_py(xi) for xi in x) if x else dtypes.weakfloat
+      if dt is not dtypes.weakint: return strong_dtype(dt)
+      ints = [xi for xi in x if isinstance(xi, int)]  # a vconst also holds Invalid
+      return commit_int(min(ints), max(ints))
     raise RuntimeError(f"Could not infer dtype of {x} with type {type(x)}")
   @staticmethod
   def finfo(dtype:DType) -> tuple[int, int]:
@@ -174,41 +116,35 @@ class dtypes:
     return {dtypes.float16: (5, 10), dtypes.bfloat16: (8, 7), dtypes.float32: (8, 23), dtypes.float64: (11, 52),
             dtypes.fp8e4m3: (4, 3), dtypes.fp8e5m2: (5, 2), dtypes.fp8e4m3fnuz: (4, 3), dtypes.fp8e5m2fnuz: (5, 2)}[dtype]
   void: Final[DType] = DType.new(-1, 0, "void", None)
-  weakint: Final[DType] = DType.new(0, 800, "weakint", None)
+  weakint: Final[DType] = DType.new(0, 800, "weakint", None)  # the weak int position in the promo lattice
   bool: Final[DType] = DType.new(0, 1, "bool", '?')
-  int8: Final[DType] = DType.new(1, 8, "signed char", 'b')
-  uint8: Final[DType] = DType.new(2, 8, "unsigned char", 'B')
-  int16: Final[DType] = DType.new(3, 16, "short", 'h')
-  uint16: Final[DType] = DType.new(4, 16, "unsigned short", 'H')
-  int32: Final[DType] = DType.new(5, 32, "int", 'i')
-  uint32: Final[DType] = DType.new(6, 32, "unsigned int", 'I')
-  int64: Final[DType] = DType.new(7, 64, "long", 'q')
-  uint64: Final[DType] = DType.new(8, 64, "unsigned long", 'Q')
-  _uint128: Final[DType] = DType.new(8, 128, "uint128", None)
-  _uint256: Final[DType] = DType.new(8, 256, "uint256", None)
-  fp8e4m3: Final[DType] = DType.new(9, 8, "float8_e4m3", None)
-  fp8e5m2: Final[DType] = DType.new(10, 8, "float8_e5m2", None)
-  fp8e4m3fnuz: Final[DType] = DType.new(9, 8, "float8_e4m3fnuz", None)
-  fp8e5m2fnuz: Final[DType] = DType.new(10, 8, "float8_e5m2fnuz", None)
-  float16: Final[DType] = DType.new(11, 16, "half", 'e')
-  # bfloat16 has higher priority than float16, so least_upper_dtype(dtypes.int64, dtypes.uint64) = dtypes.float16
-  bfloat16: Final[DType] = DType.new(12, 16, "__bf16", None)
-  float32: Final[DType] = DType.new(13, 32, "float", 'f')
-  float64: Final[DType] = DType.new(14, 64, "double", 'd')
+  i8: Final[DType] = DType.new(1, 8, "i8", 'b')
+  u8: Final[DType] = DType.new(2, 8, "u8", 'B')
+  i16: Final[DType] = DType.new(3, 16, "i16", 'h')
+  u16: Final[DType] = DType.new(4, 16, "u16", 'H')
+  i32: Final[DType] = DType.new(5, 32, "i32", 'i')
+  u32: Final[DType] = DType.new(6, 32, "u32", 'I')
+  i64: Final[DType] = DType.new(7, 64, "i64", 'q')
+  u64: Final[DType] = DType.new(8, 64, "u64", 'Q')
+  weakfloat: Final[DType] = DType.new(9, 800, "weakfloat", None)
+  fp8e4m3: Final[DType] = DType.new(10, 8, "fp8e4m3", None)
+  fp8e5m2: Final[DType] = DType.new(11, 8, "fp8e5m2", None)
+  fp8e4m3fnuz: Final[DType] = DType.new(10, 8, "fp8e4m3fnuz", None)
+  fp8e5m2fnuz: Final[DType] = DType.new(11, 8, "fp8e5m2fnuz", None)
+  f16: Final[DType] = DType.new(12, 16, "f16", 'e')
+  bf16: Final[DType] = DType.new(13, 16, "bf16", None)
+  f32: Final[DType] = DType.new(14, 32, "f32", 'f')
+  f64: Final[DType] = DType.new(15, 64, "f64", 'd')
 
-  # dtype aliases
-  half = float16; float = float32; double = float64 # noqa: E702
-  uchar = uint8; ushort = uint16; uint = uint32; ulong = uint64 # noqa: E702
-  char = int8; short = int16; int = int32; long = int64 # noqa: E702
+  # legacy dtype aliases
+  float16 = half = f16; bfloat16 = bf16; float32 = float = f32; float64 = double = f64 # noqa: E702
+  uint8 = uchar = u8; uint16 = ushort = u16; uint32 = uint = u32; uint64 = ulong = u64 # noqa: E702
+  int8 = char = i8; int16 = short = i16; int32 = int = i32; int64 = long = i64 # noqa: E702
 
-  # NOTE: these are image dtypes
-  @staticmethod
-  def imageh(shp): return ImageDType(100, 16, "imageh", 'e', 1, None, dtypes.float32, AddrSpace.GLOBAL, 1, prod(shp), shp)
-  @staticmethod
-  def imagef(shp): return ImageDType(100, 32, "imagef", 'f', 1, None, dtypes.float32, AddrSpace.GLOBAL, 1, prod(shp), shp)
-
-  default_float: ClassVar[DType] = float32
-  default_int: ClassVar[DType] = int32
+  @property
+  def default_float(self) -> DType: return to_dtype(DEFAULT_FLOAT.value)
+  @property
+  def default_int(self) -> DType: return to_dtype(DEFAULT_INT.value)
 
   fp8_ocp = (fp8e4m3, fp8e5m2)
   fp8_fnuz = (fp8e4m3fnuz, fp8e5m2fnuz)
@@ -221,21 +157,31 @@ class dtypes:
   uints = (uint8, uint16, uint32, uint64)
   sints = (int8, int16, int32, int64)
   ints = uints + sints
-  all = floats + ints + (bool, weakint) # noqa: A003
+  weaks = (weakint, weakfloat)
+  all = floats + ints + (bool,) # noqa: A003
 
-if (env_default_float := getenv("DEFAULT_FLOAT", "")):
-  dtypes.default_float = getattr(dtypes, env_default_float.lower())
-  assert dtypes.is_float(dtypes.default_float), f"{env_default_float} is not a float dtype"
+dtypes = DTypes()
 
 DTypeLike = str|DType
 def to_dtype(dtype:DTypeLike) -> DType: return dtype if isinstance(dtype, DType) else getattr(dtypes, dtype.lower())
+assert dtypes.is_float(dtypes.default_float), f"{DEFAULT_FLOAT.value} is not a float dtype"
+assert dtypes.is_int(dtypes.default_int), f"{DEFAULT_INT.value} is not an int dtype"
+def strong_dtype(dtype:DType) -> DType:
+  return {dtypes.weakint: dtypes.default_int, dtypes.weakfloat: dtypes.default_float}.get(dtype, dtype)
+def commit_int(lo:int|float, hi:int|float, default_int:DType|None=None) -> DType:
+  if lo == hi and not dtypes.long.min <= lo <= dtypes.ulong.max: raise OverflowError(f"{lo} does not fit any int")
+  ladder = (dtypes.default_int if default_int is None else default_int, dtypes.int, dtypes.long, dtypes.ulong)
+  return next((dt for dt in ladder if dt.min <= lo and hi <= dt.max), dtypes.long)
+def weak_dtype(dtype:DType) -> DType:
+  return dtypes.weakfloat if dtypes.is_float(dtype) else dtypes.weakint if dtypes.is_int(dtype) else dtype
 
 # https://jax.readthedocs.io/en/latest/jep/9407-type-promotion.html
 # we don't support complex type
 promo_lattice = { dtypes.bool: [dtypes.weakint], dtypes.weakint: [dtypes.int8, dtypes.uint8],
   dtypes.int8: [dtypes.int16], dtypes.int16: [dtypes.int32], dtypes.int32: [dtypes.int64],
-  dtypes.int64: [dtypes.uint64], dtypes.uint8: [dtypes.int16, dtypes.uint16], dtypes.uint16: [dtypes.int32, dtypes.uint32],
-  dtypes.uint32: [dtypes.int64, dtypes.uint64], dtypes.uint64: [dtypes.fp8e4m3, dtypes.fp8e5m2, dtypes.fp8e4m3fnuz, dtypes.fp8e5m2fnuz],
+  dtypes.int64: [dtypes.weakfloat], dtypes.uint8: [dtypes.int16, dtypes.uint16], dtypes.uint16: [dtypes.int32, dtypes.uint32],
+  dtypes.uint32: [dtypes.int64, dtypes.uint64], dtypes.uint64: [dtypes.weakfloat],
+  dtypes.weakfloat: [dtypes.fp8e4m3, dtypes.fp8e5m2, dtypes.fp8e4m3fnuz, dtypes.fp8e5m2fnuz],
   dtypes.fp8e4m3: [dtypes.float16, dtypes.bfloat16], dtypes.fp8e5m2: [dtypes.float16, dtypes.bfloat16],
   dtypes.fp8e4m3fnuz: [dtypes.float16, dtypes.bfloat16], dtypes.fp8e5m2fnuz: [dtypes.float16, dtypes.bfloat16],
   dtypes.float16: [dtypes.float32], dtypes.bfloat16: [dtypes.float32], dtypes.float32: [dtypes.float64], }
@@ -245,31 +191,24 @@ def _get_recursive_parents(dtype:DType) -> set[DType]:
   return set.union(*[_get_recursive_parents(d) for d in promo_lattice[dtype]], {dtype}) if dtype != dtypes.float64 else {dtypes.float64}
 @functools.cache
 def least_upper_dtype(*ds:DType) -> DType:
-  return min(set.intersection(*[_get_recursive_parents(d.scalar()) for d in ds])) \
-      if not (images:=[d for d in ds if isinstance(d, ImageDType)]) else images[0]
-def least_upper_float(dt:DType) -> DType: return dt if dtypes.is_float(dt) else least_upper_dtype(dt, dtypes.default_float)
+  return min(set.intersection(*[_get_recursive_parents(d) for d in ds]))
+def least_upper_float(dt:DType) -> DType:
+  return dtypes.weakfloat if dt is dtypes.weakint else dt if dtypes.is_float(dt) else least_upper_dtype(dt, dtypes.default_float)
 
-DTYPES_DICT = {k: v for k, v in dtypes.__dict__.items() if isinstance(v, DType) and not k.startswith(("default", "void", "weakint", "_"))}
-INVERSE_DTYPES_DICT = {**{v.name:k for k,v in DTYPES_DICT.items()}, "void": "void", "weakint":"weakint"}
+DTYPES_DICT = {k: v for k, v in DTypes.__dict__.items() if isinstance(v, DType) and not k.startswith(("void", "weak", "_"))}
 
 @functools.cache
 def can_lossless_cast(dt0:DType, dt1:DType) -> bool:
   # return if dt1 preserves value of dt0
   # similar to https://numpy.org/doc/stable/reference/generated/numpy.can_cast.html
   if dt0 == dt1 or dt0 == dtypes.bool: return True
-  match dt1:
-    case dtypes.weakint: return dt0 in dtypes.ints
-    case dtypes.double: return dt0 in (dtypes.float, dtypes.half, dtypes.bfloat16, *dtypes.fp8s,
-      dtypes.uint32, dtypes.uint16, dtypes.uint8, dtypes.int32, dtypes.int16, dtypes.int8)
-    case dtypes.float: return dt0 in (dtypes.half, dtypes.bfloat16, *dtypes.fp8s, dtypes.uint16, dtypes.uint8, dtypes.int16, dtypes.int8)
-    case dtypes.half: return dt0 in (*dtypes.fp8s, dtypes.uint8, dtypes.int8)
-    case dtypes.uint64: return dt0 in (dtypes.uint32, dtypes.uint16, dtypes.uint8)
-    case dtypes.uint32: return dt0 in (dtypes.uint16, dtypes.uint8)
-    case dtypes.uint16: return dt0 in (dtypes.uint8,)
-    case dtypes.int64: return dt0 in (dtypes.uint32, dtypes.uint16, dtypes.uint8, dtypes.int32, dtypes.int16, dtypes.int8)
-    case dtypes.int32: return dt0 in (dtypes.uint16, dtypes.uint8, dtypes.int16, dtypes.int8)
-    case dtypes.int16: return dt0 in (dtypes.uint8, dtypes.int8)
-    case _: return False
+  if dtypes.is_int(dt1): return dtypes.is_int(dt0) and dt1.min <= dt0.min and dt0.max <= dt1.max
+  if dt1 not in dtypes.floats: return False
+  e1, m1 = dtypes.finfo(dt1)
+  if dtypes.is_int(dt0): return dt0.bitsize - (dt0 in dtypes.sints) <= m1 + 1
+  if dt0 not in dtypes.floats: return False
+  e0, m0 = dtypes.finfo(dt0)
+  return e0 <= e1 and m0 <= m1 and (e0, m0) != (e1, m1)
 
 def sum_acc_dtype(dt:DType):
   # default acc dtype for sum
@@ -283,7 +222,7 @@ def float_to_fp16(x):
 
 def float_to_bf16(x):
   if not math.isfinite(x): return x
-  u = struct.unpack('I', struct.pack('f', x))[0]
+  u = struct.unpack('I', struct.pack('f', truncate[dtypes.float](x)))[0]
   u = (u + 0x7FFF + ((u >> 16) & 1)) & 0xFFFF0000
   return struct.unpack('f', struct.pack('I', u))[0]
 
@@ -299,7 +238,6 @@ _fp8_cfg = {
 def float_to_fp8(x: float, dtype: DType) -> int:
   assert dtype in dtypes.fp8s, "Only for fp8s"
   if dtype in dtypes.fp8_fnuz and not math.isfinite(x): return 0x80
-  if dtype in dtypes.fp8_fnuz and x == 0.0: return 0x00
   # e4m3 don't support inf, return 0x7f(+NaN) and 0xff(-NaN) to match jax
   # NaN is unordered, can't compare with zero, use math.copysign to get sign
   if dtype == dtypes.fp8e4m3 and not math.isfinite(x): return 0x7f if math.copysign(1, x) > 0 else 0xff
@@ -319,7 +257,7 @@ def float_to_fp8(x: float, dtype: DType) -> int:
     res, half = mantissa >> shift, half_ulp << shift
     round_bits = (xbits | (1 << 52)) & ((half << 1) - 1)
     if round_bits > half or (round_bits == half and res & 1): res += 1
-  return 0 if dtype in dtypes.fp8_fnuz and res == 0 else int(res | sign)  # fnuz has no negative zero
+  return 0 if dtype in dtypes.fp8_fnuz and res == 0 else res | sign  # fnuz has no negative zero
 
 def fp8_to_float(x: int, dtype: DType) -> float:
   assert dtype in dtypes.fp8s, "Only for fp8s"
@@ -354,6 +292,12 @@ truncate: dict[DType, Callable] = {dtypes.bool: bool,
   **{getattr(dtypes, n): (lambda x, c=getattr(ctypes, f'c_{n}'): c(x).value)
      for n in ('float', 'double', 'int8', 'int16', 'int32', 'int64', 'uint8', 'uint16', 'uint32', 'uint64')}}
 
+def bitcast(x, in_dtype:DType, out_dtype:DType):
+  assert in_dtype.itemsize == out_dtype.itemsize, "bitcast itemsize mismatch"
+  packed = struct.pack(storage_fmt_for_dtype(in_dtype), to_storage_scalar(x, in_dtype))
+  out_val = struct.unpack(storage_fmt_for_dtype(out_dtype), packed)[0]
+  return from_storage_scalar(out_val, out_dtype)
+
 # numpy and torch dtype interop
 
 def _to_np_dtype(dtype:DType) -> type|None:
@@ -367,6 +311,7 @@ def _from_np_dtype(npdtype:'np.dtype') -> DType: # type: ignore [name-defined] #
 @functools.cache
 def _to_torch_dtype(dtype:DType) -> 'torch.dtype'|None:  # type: ignore [name-defined] # noqa: F821
   import numpy as np, torch
+  dtype = strong_dtype(dtype)
   if dtype == dtypes.uint64: return torch.uint64
   if dtype == dtypes.bfloat16: return torch.bfloat16
   if dtype in dtypes.fp8s: return torch.uint8

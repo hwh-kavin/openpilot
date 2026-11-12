@@ -4,7 +4,8 @@ from tinygrad.helpers import getenv, DEBUG, getbits, round_up
 from tinygrad.runtime.autogen import pci
 from tinygrad.runtime.support.memory import TLSFAllocator, MemoryManager, AddrSpace
 from tinygrad.runtime.support.nv.ip import NV_FLCN, NV_FLCN_COT, NV_GSP
-from tinygrad.runtime.support.system import PCIDevice, MMIOInterface
+from tinygrad.runtime.support.system import PCIDevice
+from tinygrad.runtime.support.memory import MMIOInterface
 
 NV_DEBUG = getenv("NV_DEBUG", 0)
 
@@ -66,7 +67,7 @@ class NVPageTableEntry:
     return self.read_fields(entry_id)[f'address{small}{sys}'] << 12
 
 class NVMemoryManager(MemoryManager):
-  va_allocator = TLSFAllocator((1 << 44), base=0x1000000000) # global for all devices.
+  va_allocator = TLSFAllocator((1 << 44), base=0x1000000000)
 
   def on_range_mapped(self): self.dev.NV_VIRTUAL_FUNCTION_PRIV_MMU_INVALIDATE.write((1 << 0) | (1 << 1) | (1 << 6) | (1 << 31))
 
@@ -94,14 +95,11 @@ class NVDev:
   def rreg(self, addr:int) -> int: return self.mmio[addr // 4]
 
   def _early_ip_init(self):
-    self.reg_names:set[str] = set()
-    self.reg_offsets:dict[str, tuple[int, int]] = {}
-
     self.include("nv_ref", "")
     self.include("dev_fb", "tu102")
     self.include("dev_gc6_island", "ga102")
 
-    if (needs_reset:=self.reg("NV_PFB_PRI_MMU_WPR2_ADDR_HI").read() != 0):
+    if self.reg("NV_PFB_PRI_MMU_WPR2_ADDR_HI").read() != 0:
       self.pci_dev.write_config_flush(pci.PCI_COMMAND, self.pci_dev.read_config(pci.PCI_COMMAND, 2) & ~pci.PCI_COMMAND_MASTER, 2)
       if DEBUG >= 2: print(f"nv {self.devfmt}: WPR2 is up. Issuing a full reset.", flush=True)
       self.pci_dev.reset()
@@ -117,7 +115,7 @@ class NVDev:
     self.flcn:NV_FLCN|NV_FLCN_COT = NV_FLCN_COT(self) if self.fmc_boot else NV_FLCN(self)
     self.gsp:NV_GSP = NV_GSP(self)
 
-    if needs_reset: self.flcn.wait_for_reset()
+    self.flcn.wait_for_reset()
 
   def _early_mmu_init(self):
     self.include("dev_vm", "tu102")

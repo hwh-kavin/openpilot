@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 import unittest, os, subprocess
 from unittest.mock import patch
-from tinygrad import Tensor
+from tinygrad import Tensor, dtypes
 from tinygrad.device import Device, Compiler, enumerate_devices_str
 from tinygrad.helpers import diskcache_get, diskcache_put, getenv, Context, Target, WIN, OSX, DEV
 from tinygrad.runtime.support.c import DLL
@@ -64,16 +64,23 @@ class TestDevice(unittest.TestCase):
     result = subprocess.run(['python3', '-c', 'from tinygrad import Device; Device[Device.DEFAULT].renderer'],
                             env={**os.environ, "DEV": "CPU", "CPU_LLVM": "1"}, capture_output=True)
     self.assertNotEqual(result.returncode, 0)
-    self.assertIn(b"deprecated", result.stderr)
+    self.assertIn(b"deprecated, use DEV=CPU:LLVM instead", result.stderr)
+
+  def test_run_as_module(self):
+    # python -m tinygrad.device executes device.py again as __main__ after `import tinygrad` already ran it
+    result = subprocess.run(['python3', '-c', 'import runpy, tinygrad; runpy.run_module("tinygrad.device")'], capture_output=True)
+    self.assertEqual(result.returncode, 0, result.stderr.decode())
 
   @unittest.skipIf(WIN, "skipping windows test") # TODO: subprocess causes memory violation?
   def test_env_overwrite_default_compiler(self):
     if Device.DEFAULT == "CPU":
-      from tinygrad.runtime.support.compiler_cpu import CPULLVMCompiler, ClangCompiler
-      try: _, _ = CPULLVMCompiler(), ClangCompiler()
+      from tinygrad.runtime.support.compiler_cpu import ClangCompiler
+      from tinygrad.runtime.support.compiler_llvm import CPULLVMCompiler
+      try: _, _ = CPULLVMCompiler(arch:=Device["CPU"].renderer.target.arch.split(",")), ClangCompiler(arch)
       except Exception as e: self.skipTest(f"skipping compiler test: not all compilers: {e}")
 
-      imports = "from tinygrad import Device; from tinygrad.runtime.support.compiler_cpu import CPULLVMCompiler, ClangCompiler"
+      imports = ("from tinygrad import Device; from tinygrad.runtime.support.compiler_cpu import ClangCompiler; "
+                 "from tinygrad.runtime.support.compiler_llvm import CPULLVMCompiler")
       subprocess.run([f'python3 -c "{imports}; assert isinstance(Device[Device.DEFAULT].compiler, CPULLVMCompiler)"'],
                         shell=True, check=True, env={**os.environ, "DEV": "CPU:LLVM"})
       subprocess.run([f'python3 -c "{imports}; assert isinstance(Device[Device.DEFAULT].compiler, ClangCompiler)"'],
@@ -81,11 +88,13 @@ class TestDevice(unittest.TestCase):
       subprocess.run([f'python3 -c "{imports}; assert isinstance(Device[Device.DEFAULT].compiler, ClangCompiler)"'],
                         shell=True, check=True, env={**os.environ, "DEV": "CPU:CLANG"})
     elif Device.DEFAULT == "AMD":
-      from tinygrad.runtime.support.compiler_amd import HIPCompiler, AMDLLVMCompiler
+      from tinygrad.runtime.support.compiler_amd import HIPCompiler
+      from tinygrad.runtime.support.compiler_llvm import AMDLLVMCompiler
       try: _, _ = HIPCompiler(Device[Device.DEFAULT].arch), AMDLLVMCompiler(Device[Device.DEFAULT].arch)
       except Exception as e: self.skipTest(f"skipping compiler test: not all compilers: {e}")
 
-      imports = "from tinygrad import Device; from tinygrad.runtime.support.compiler_amd import HIPCompiler, AMDLLVMCompiler"
+      imports = ("from tinygrad import Device; from tinygrad.runtime.support.compiler_amd import HIPCompiler; "
+                 "from tinygrad.runtime.support.compiler_llvm import AMDLLVMCompiler")
       subprocess.run([f'python3 -c "{imports}; assert isinstance(Device[Device.DEFAULT].compiler, AMDLLVMCompiler)"'],
                         shell=True, check=True, env={**os.environ, "DEV": "AMD:LLVM"})
       subprocess.run([f'python3 -c "{imports}; assert isinstance(Device[Device.DEFAULT].compiler, HIPCompiler)"'],
@@ -96,8 +105,9 @@ class TestDevice(unittest.TestCase):
 
   @unittest.skipIf(WIN, "skipping windows test")
   def test_env_online(self):
-    from tinygrad.runtime.support.compiler_cpu import CPULLVMCompiler, ClangCompiler
-    try: _, _ = CPULLVMCompiler(), ClangCompiler()
+    from tinygrad.runtime.support.compiler_cpu import ClangCompiler
+    from tinygrad.runtime.support.compiler_llvm import CPULLVMCompiler
+    try: _, _ = CPULLVMCompiler(arch:=Device["CPU"].renderer.target.arch.split(",")), ClangCompiler(arch)
     except Exception as e: self.skipTest(f"skipping compiler test: not all compilers: {e}")
 
     with Context(DEV="CPU:LLVM"):
@@ -111,9 +121,9 @@ class TestDevice(unittest.TestCase):
 
   @unittest.skipIf(Device.DEFAULT != "CPU", "only run on CPU")
   def test_compiler_autodetect_fallback(self):
-    from tinygrad.runtime.support.compiler_cpu import CPULLVMCompiler
+    from tinygrad.runtime.support.compiler_llvm import CPULLVMCompiler
 
-    try: CPULLVMCompiler()
+    try: CPULLVMCompiler(Device["CPU"].renderer.target.arch.split(","))
     except Exception as e: self.skipTest(f"skipping: LLVM not available: {e}")
 
     dev = Device["CPU"]
@@ -121,9 +131,15 @@ class TestDevice(unittest.TestCase):
     with patch("tinygrad.renderer.cstyle.ClangRenderer.__init__", side_effect=RuntimeError("broken")):
       self.assertIsInstance(dev.renderer.compiler, CPULLVMCompiler)
 
+  def test_null_cast_all_dtypes(self):
+    with Context(DEV="NULL"):
+      for dt in dtypes.all:
+        with self.subTest(dtype=dt):
+          Tensor.empty(32, dtype=dtypes.f32).cast(dt).realize().cast(dtypes.f32).realize()
+
   def test_dev_contextvar(self):
     orig_dev = Device.DEFAULT
-    with Context(DEV="CPU"): self.assertEqual(Tensor.empty(1).device, "CPU")
+    with Context(DEV="PYTHON"): self.assertEqual(Tensor.empty(1).device, "PYTHON")
     with Context(DEV="NULL"): self.assertEqual(Tensor.empty(1).device, "NULL")
     self.assertEqual(Tensor.empty(1).device, orig_dev)
 
@@ -132,7 +148,6 @@ class TestDevVar(unittest.TestCase):
     for d, t in [("AMD", Target(device="AMD", renderer="")), ("AMD:LLVM", Target(device="AMD", renderer="LLVM")),
                  (":LLVM", Target(device="", renderer="LLVM")), ("AMD::gfx1100", Target(device="AMD", arch="gfx1100")),
                  ("AMD:LLVM:gfx1100", Target(device="AMD", renderer="LLVM", arch="gfx1100")), ("::gfx1100", Target(arch="gfx1100")),
-                 ("CPU:LLVM:arm64,native,AMX", Target(device="CPU", renderer="LLVM", arch="arm64,native,AMX")),
                  ("USB+", Target(interface="USB")), ("USB+AMD", Target(device="AMD", interface="USB")),
                  ("PCI:0+AMD", Target(device="AMD", interface="PCI", indices="0")), (":0+AMD", Target(device="AMD", indices="0")),
                  ("PCI:0,1+AMD", Target(device="AMD", interface="PCI", indices="0,1")),

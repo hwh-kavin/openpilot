@@ -1,7 +1,7 @@
-import random, ctypes
+import random
 import numpy as np
 from tinygrad.device import Buffer, Device
-from tinygrad.helpers import Context, getenv, from_mv
+from tinygrad.helpers import Context, getenv
 from tinygrad.dtype import dtypes
 from tinygrad.tensor import Tensor, _to_np_dtype
 from tinygrad.engine.realize import BufferXfer, get_runner, ExecItem
@@ -25,11 +25,11 @@ def gen_prg(device, inputs_cnt):
   return prg
 
 def alloc_rawbuffer(device, fill=False):
-  rawbuf = Buffer(device, BUF_LEN, dtypes.int).ensure_allocated()
+  rawbuf = Buffer(device, BUF_LEN * dtypes.int.itemsize).ensure_allocated()
   if fill:
     with Context(DEBUG=0):
-      data = np.random.randint(-10000, 10000, size=rawbuf.size, dtype=_to_np_dtype(rawbuf.dtype))
-      rawbuf.copyin(Tensor(data).realize().uop.base.realized.as_memoryview())
+      data = np.random.randint(-10000, 10000, size=BUF_LEN, dtype=_to_np_dtype(dtypes.int))
+      rawbuf.copy_from(Tensor(data).realize().uop.base.realized)
   return rawbuf
 
 def gen_kernel_ji(device, deps):
@@ -84,9 +84,7 @@ def run_jit(jis, all_buffers, input_buffers, var_vals):
   with Context(DEBUG=0):
     for rawbuf in all_buffers:
       if rawbuf in input_buffers: continue
-      mv = memoryview(bytearray(rawbuf.nbytes))
-      ctypes.memset(from_mv(mv), 0, len(mv))
-      rawbuf.copyin(mv)
+      rawbuf.copy_from(Buffer("PYTHON", rawbuf.nbytes, initial_value=bytes(rawbuf.nbytes)))
 
   for ei in jis: ei.run(var_vals, jit=True)
 
@@ -97,7 +95,7 @@ def run_jit(jis, all_buffers, input_buffers, var_vals):
 
 def fuzz_graph(jis, all_buffers, input_buffers):
   ground_thruth_bufs = run_jit(jis, input_buffers, all_buffers, {})
-  ground_truth_np = [np.frombuffer(x, _to_np_dtype(all_buffers[i].dtype)) for i,x in enumerate(ground_thruth_bufs)]
+  ground_truth_np = [np.frombuffer(x, _to_np_dtype(dtypes.int)) for x in ground_thruth_bufs]
 
   for _ in range(getenv("FUZZ_GRAPH_SPLIT_RUNS", 64)):
     max_split_points = len(jis) // 3
@@ -113,7 +111,7 @@ def fuzz_graph(jis, all_buffers, input_buffers):
 
     for _ in range(getenv("FUZZ_GRAPH_SPLIT_RETRY_RUNS", 4)):
       test_bufs = run_jit(graphed_jit, input_buffers, all_buffers, {})
-      test_bufs_np = [np.frombuffer(x, _to_np_dtype(all_buffers[i].dtype)) for i,x in enumerate(test_bufs)]
+      test_bufs_np = [np.frombuffer(x, _to_np_dtype(dtypes.int)) for x in test_bufs]
       for i in range(len(ground_thruth_bufs)): np.testing.assert_equal(ground_truth_np[i], test_bufs_np[i])
 
 if __name__ == "__main__":

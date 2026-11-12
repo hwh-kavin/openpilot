@@ -1,76 +1,16 @@
 import unittest, pickle
 from tinygrad.tensor import Tensor
-from tinygrad.dtype import dtypes, DType, ImageDType, PtrDType, to_dtype, Invalid, InvalidType
-
-class TestImageDType(unittest.TestCase):
-  def test_image_scalar(self):
-    assert dtypes.imagef((10,10)).base.scalar() == dtypes.float32
-    assert dtypes.imageh((10,10)).base.scalar() == dtypes.float32
-  def test_image_vec(self):
-    assert dtypes.imagef((10,10)).base.vec(4) == dtypes.float32.vec(4)
-    assert dtypes.imageh((10,10)).base.vec(4) == dtypes.float32.vec(4)
-
-class TestPtrDType(unittest.TestCase):
-  def test_vec_double(self):
-    dt1 = dtypes.float.vec(4).ptr().vec(4)
-    dt2 = dtypes.float.vec(4).ptr().vec(4)
-    self.assertEqual(dt1, dt2)
-    self.assertEqual(str(dt1), str(dt2))
-
-  def test_scalar(self):
-    dt = dtypes.float.vec(4).ptr().scalar()
-    self.assertEqual(dt.base, dtypes.float.vec(4))
-
-    dt = dtypes.float.vec(4).ptr().vec(4).scalar()
-    self.assertEqual(dt.base, dtypes.float.vec(4))
-
-    dt = dtypes.float.vec(4).scalar()
-    self.assertEqual(dt, dtypes.float)
-
-  def test_serialize(self):
-    dt = dtypes.float.vec(4).ptr().vec(4)
-    self.assertEqual(dt, eval(str(dt)))
-
-  def test_vec_ptr_sz(self):
-    dt = dtypes.float.ptr(1024).vec(4)
-    self.assertEqual(dt, eval(str(dt)))
-    self.assertEqual(str(dt), "dtypes.float.ptr(1024).vec(4)")
-
-  def test_vcount(self):
-    dt = dtypes.float.ptr().vec(4)
-    self.assertEqual(dt.vcount, 4)
-    self.assertEqual(dt.v, 4)
-    self.assertEqual(dt.count, 1)
-
-    dt = dtypes.float.vec(4).ptr()
-    self.assertEqual(dt.vcount, 1)
-    self.assertEqual(dt.v, 1)
-    self.assertEqual(dt.count, 4)
-
-    dt = dtypes.float.vec(4).ptr().vec(4)
-    self.assertEqual(dt.vcount, 4)
-    self.assertEqual(dt.v, 4)
-    self.assertEqual(dt.count, 4)
+from tinygrad.dtype import dtypes, DType, to_dtype, Invalid, InvalidType
 
 class TestEqStrDType(unittest.TestCase):
-  def test_image_ne(self):
-    if ImageDType is None: raise unittest.SkipTest("no ImageDType support")
-    assert dtypes.float == dtypes.float32, "float doesn't match?"
-    assert dtypes.imagef((1,2,4)) != dtypes.imageh((1,2,4)), "different image dtype doesn't match"
-    assert dtypes.imageh((1,2,4)) != dtypes.imageh((1,4,2)), "different shape doesn't match"
-    assert dtypes.imageh((1,2,4)) == dtypes.imageh((1,2,4)), "same shape matches"
-    assert isinstance(dtypes.imageh((1,2,4)), ImageDType)
-  def test_ptr_eq(self):
-    assert dtypes.float32.ptr() == dtypes.float32.ptr()
-    assert not (dtypes.float32.ptr() != dtypes.float32.ptr())
-  def test_ptr_nbytes(self):
-    assert dtypes.float16.ptr(32).nbytes() == 32 * dtypes.float16.itemsize
-  def test_ptr_nbytes_unlimited(self):
-    self.assertRaises(RuntimeError, lambda: dtypes.float32.ptr().nbytes())
   def test_strs(self):
-    if PtrDType is None: raise unittest.SkipTest("no PtrDType support")
-    self.assertEqual(str(dtypes.imagef((1,2,4))), "dtypes.imagef((1, 2, 4))")
-    self.assertEqual(str(dtypes.float32.ptr(16)), "dtypes.float.ptr(16)")
+    self.assertEqual(str(dtypes.float32), "dtypes.f32")
+
+  def test_roundtrip(self):
+    for dt in (*dtypes.all, dtypes.void, *dtypes.weaks):
+      with self.subTest(dtype=dt):
+        self.assertIs(eval(repr(dt)), dt)
+        self.assertIs(pickle.loads(pickle.dumps(dt)), dt)
 
 class TestToDtype(unittest.TestCase):
   def test_dtype_to_dtype(self):
@@ -122,7 +62,11 @@ class TestCanLosslessCast(unittest.TestCase):
     self.assertFalse(can_lossless_cast(dtypes.int64, dtypes.double))
     # half has more mantissa bits
     self.assertTrue(can_lossless_cast(dtypes.int8, dtypes.half))
-    self.assertFalse(can_lossless_cast(dtypes.int8, dtypes.bfloat16))
+    self.assertTrue(can_lossless_cast(dtypes.int8, dtypes.bfloat16))
+    self.assertTrue(can_lossless_cast(dtypes.uint8, dtypes.bfloat16))
+    self.assertFalse(can_lossless_cast(dtypes.int16, dtypes.bfloat16))
+    self.assertTrue(can_lossless_cast(dtypes.fp8e4m3fnuz, dtypes.bfloat16))
+    self.assertFalse(can_lossless_cast(dtypes.fp8e4m3, dtypes.fp8e4m3fnuz))
 
 class TestInvalidSingleton(unittest.TestCase):
   def test_singleton(self):
@@ -130,6 +74,12 @@ class TestInvalidSingleton(unittest.TestCase):
     self.assertIs(InvalidType(), Invalid)
   def test_pickle(self):
     self.assertIs(pickle.loads(pickle.dumps(Invalid)), Invalid)
+
+class TestBitCast(unittest.TestCase):
+  def test_shape_change_bitcast_exceptions(self):
+    with self.assertRaises(RuntimeError):
+      # should fail because 3 int8 is 3 bytes but float16 is two and 3 isn't a multiple of 2
+      Tensor.empty((3,), dtype=dtypes.int8).bitcast(dtypes.float16).shape
 
 if __name__ == "__main__":
   unittest.main()

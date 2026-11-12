@@ -14,23 +14,19 @@ USBGPU = "USBGPU" in os.environ
 if USBGPU:
   os.environ['DEV'] = 'AMD'
   os.environ['AMD_IFACE'] = 'USB'
-import pickle
 import time
 from collections.abc import Callable
 import numpy as np
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
-from cereal import custom
 from opendbc.car.structs import car
 from setproctitle import setproctitle
 from openpilot.cereal.messaging import PubMaster, SubMaster
 from msgq.visionipc import VisionIpcClient, VisionStreamType, VisionBuf
 from opendbc.car.car_helpers import get_demo_car_params
 
-from tinygrad.tensor import Tensor
 from tinygrad.device import Device
 
-from openpilot.common.file_chunker import open_file_chunked
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
 from openpilot.common.filter_simple import FirstOrderFilter
@@ -38,7 +34,6 @@ from openpilot.common.realtime import config_realtime_process, DT_MDL
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
 from openpilot.common.transformations.model import get_warp_matrix
 from openpilot.system import sentry
-from openpilot.system.camerad.cameras.nv12_info import get_nv12_info
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper
 from openpilot.selfdrive.controls.lib.drive_helpers import get_accel_from_plan, smooth_value
 
@@ -47,7 +42,8 @@ from openpilot.sunnypilot.modeld_v2.constants import Plan
 from openpilot.sunnypilot.selfdrive.controls.lib.blendful import Blendful
 from openpilot.sunnypilot.modeld_v2.meta_helper import load_meta_constants
 from openpilot.sunnypilot.modeld_v2.camera_offset_helper import CameraOffsetHelper
-from openpilot.sunnypilot.modeld_v2.compile_modeld import derive_frame_skip, make_split_input_queues
+from openpilot.sunnypilot.modeld_v2.helpers import load_model
+from openpilot.sunnypilot.modeld_v2.model_adapters import get_model_adapter
 
 from openpilot.sunnypilot.livedelay.helpers import get_lat_delay
 from openpilot.sunnypilot.modeld_v2.modeld_base import ModelStateBase
@@ -89,37 +85,6 @@ def _find_driving_pkl(bundle):
   return None
 
 
-def _normalize_captured_tensors(obj) -> None:
-  """Ensure pickled TinyJit return tensors have slots expected by the current Tensor API.
-
-  Packed models compiled on nearby tinygrad builds may restore Tensors without
-  requires_grad/grad initialized (slots left unset). That breaks .numpy().
-  """
-  if isinstance(obj, Tensor):
-    if not hasattr(obj, 'requires_grad'):
-      object.__setattr__(obj, 'requires_grad', False)
-    if not hasattr(obj, 'grad'):
-      object.__setattr__(obj, 'grad', None)
-  elif isinstance(obj, dict):
-    for value in obj.values():
-      _normalize_captured_tensors(value)
-  elif isinstance(obj, (list, tuple)):
-    for value in obj:
-      _normalize_captured_tensors(value)
-  else:
-    captured = getattr(obj, 'captured', None)
-    if captured is not None:
-      _normalize_captured_tensors(captured.ret)
-
-
-def _reset_to_stock_runner(reason: str) -> None:
-  """Drop ActiveBundle so manager starts stock modeld (needed for calibration)."""
-  cloudlog.error(reason)
-  params = Params()
-  params.remove("ModelManager_ActiveBundle")
-  params.put("ModelRunnerTypeCache", int(custom.ModelManagerSP.Runner.stock), block=True)
-
-
 class FrameMeta:
   frame_id: int = 0
   timestamp_sof: int = 0
@@ -152,84 +117,34 @@ class ModelState(ModelStateBase):
 
     pkl_path = _find_driving_pkl(model_bundle)
     if pkl_path is None:
-      # Stale ActiveBundle / runner cache: refuse to crash-loop. Fall back to stock
-      # so calibrationd can receive cameraOdometry again.
-      _reset_to_stock_runner("No driving pkl found for active bundle; resetting to stock runner")
+      # Never drop the user's selection here: surface the failure in the logs instead of
+      # silently reverting to the default model.
       raise FileNotFoundError("No driving pkl found — select the model again or use Default")
     self._init_combined(pkl_path, cam_w, cam_h, model_bundle)
 
   def _init_combined(self, pkl_path, cam_w, cam_h, bundle):
     cloudlog.warning(f"loading combined pkl: {pkl_path}")
-    # TODO-SP: switch to load_oob from openpilot/selfdrive/helpers on next full recompile of all models
-    try:
-      jits = pickle.load(open_file_chunked(pkl_path))
-    except Exception as e:
-      # RDF and other nearby-tinygrad pickles used to fail here (Ops.COPY buffer attach).
-      # If load still fails, drop the broken active model so stock modeld can calibrate.
-      cloudlog.exception(f"failed to load driving pkl {pkl_path}: {e}")
-      _reset_to_stock_runner(f"failed to load driving pkl {pkl_path}; resetting to stock runner")
-      raise
+    # Models in the manifest are packed as SPTGPLN1 ("plain tinygrad") artifacts now.
+    # load_model() rebuilds the JITs for this tinygrad and caches them next to the pkl.
+    jits = load_model(pkl_path)
 
     self.DEV = Device.DEFAULT
     self.WARP_DEV = 'CPU' if USBGPU else self.DEV
     self.QUEUE_DEV = self.DEV
 
-    metadata = jits['metadata']
-
-    self._run_policy = jits[(cam_w, cam_h)]['run_policy']
-    self._warp_enqueue = jits[(cam_w, cam_h)]['warp_enqueue']
-    _normalize_captured_tensors(self._run_policy)
-    _normalize_captured_tensors(self._warp_enqueue)
-
-    # Packed input layout is the current model architecture (selector v16+ / recompiled18).
-    # Fall back to unpacked queues only for older captured JITs without packed_npy_inputs.
-    captured = getattr(self._run_policy, 'captured', None)
-    if captured is not None:
-      use_packed = 'packed_npy_inputs' in getattr(captured, 'expected_names', [])
-    else:
-      use_packed = True
-
-    if 'model' in metadata:
-      model_metadata = metadata['model']
-      self.vision_output_slices = model_metadata['output_slices']
-      self.policy_output_slices = {}
-      self._policy_slices_list = []
-      self._combined_model_type = 'supercombo'
-      self._vision_input_names = [key for key in model_metadata['input_shapes'] if 'img' in key]
-      from openpilot.sunnypilot.modeld_v2.compile_modeld import make_supercombo_input_queues
-      frame_skip = derive_frame_skip({}, model_metadata['input_shapes'])
-      self.input_queues, self.numpy_inputs = make_supercombo_input_queues(model_metadata['input_shapes'],
-                                                                          frame_skip, device=self.QUEUE_DEV, use_packed=use_packed)
-    else:
-      vision_metadata = metadata['vision']
-      policy_keys = [k for k in metadata if k != 'vision']
-      if policy_keys == ['policy']:
-        self._combined_model_type = 'split'
-      else:
-        self._combined_model_type = 'multi_policy'
-      self.vision_output_slices = vision_metadata['output_slices']
-      self._policy_keys = policy_keys
-      self._policy_slices_list = [metadata[k]['output_slices'] for k in policy_keys]
-      self.policy_output_slices = self._policy_slices_list[0]
-      self._has_on_policy = any('on' in k.lower() for k in policy_keys)
-      first_policy_metadata = metadata[policy_keys[0]]
-      vision_input_shapes = vision_metadata['input_shapes']
-      policy_input_shapes = first_policy_metadata['input_shapes']
-      self._vision_input_names = [k for k in vision_input_shapes if 'img' in k]
-      frame_skip = derive_frame_skip(vision_input_shapes, policy_input_shapes)
-      self.input_queues, self.numpy_inputs = make_split_input_queues(vision_input_shapes, policy_input_shapes,
-                                                                     frame_skip, device=self.QUEUE_DEV, use_packed=use_packed)
-
-    # Unpacked legacy models may want a synthetic action_t; packed models keep
-    # traffic_convention inside packed_npy_inputs and must not inject extra JIT args.
-    expected_names = set(getattr(getattr(self._run_policy, 'captured', None), 'expected_names', None) or [])
-    if ('traffic_convention' in self.numpy_inputs and 'action_t' not in self.input_queues and
-        'action_t' in expected_names):
-      self.input_queues['action_t'] = Tensor(np.zeros_like(self.numpy_inputs['traffic_convention']), device='NPY').realize()
-
-    self._desire_key = next(key for key in self.numpy_inputs if key.startswith('desire'))
-    self._road_key = next(key for key in self._vision_input_names if 'big' not in key)
-    self._wide_key = next(key for key in self._vision_input_names if 'big' in key)
+    self.adapter = get_model_adapter(jits, cam_w, cam_h, self.DEV, self.QUEUE_DEV, self.WARP_DEV, chestnut=False)
+    self.vision_output_slices = self.adapter.vision_output_slices
+    self.policy_output_slices = self.adapter.policy_output_slices
+    self._policy_slices_list = self.adapter._policy_slices_list
+    self._combined_model_type = self.adapter._combined_model_type
+    self._vision_input_names = self.adapter._vision_input_names
+    self.numpy_inputs = self.adapter.numpy_inputs
+    self._policy_keys = self.adapter._policy_keys
+    self._has_on_policy = self.adapter._has_on_policy
+    self._desire_key = self.adapter._desire_key
+    self._road_key = self.adapter._road_key
+    self._wide_key = self.adapter._wide_key
+    self.frame_buf_params = self.adapter.frame_buf_params
 
     is_20hz = bundle.is20hz if bundle else self._combined_model_type in ('split', 'multi_policy')
     if is_20hz:
@@ -247,63 +162,6 @@ class ModelState(ModelStateBase):
       self.parser = CombinedParser()
 
     self.prev_desire = np.zeros(self.constants.DESIRE_LEN, dtype=np.float32)
-    self.full_frames: dict = {}
-    self._blob_cache: dict = {}
-    nv12_info = get_nv12_info(cam_w, cam_h)
-    self.frame_buf_params = dict.fromkeys(self._vision_input_names, nv12_info)
-
-    yuv_size = self.frame_buf_params[self._road_key][3]
-    self._warp_enqueue(
-      **self.input_queues,
-      frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.WARP_DEV).contiguous().realize(),
-      big_frame=Tensor(np.zeros(yuv_size, dtype=np.uint8), device=self.WARP_DEV).contiguous().realize())
-
-    # Some recompiled tinygrad pickles load but never update outputs (CapturedJit ret
-    # frozen). That publishes constant cameraOdometry.trans≈0 so calibration stays 0%.
-    if not self._outputs_respond_to_frames():
-      _reset_to_stock_runner(
-        f"driving pkl {pkl_path} produces frozen outputs on this tinygrad; resetting to stock runner")
-      raise RuntimeError("Incompatible tinygrad model pickle (frozen outputs)")
-
-  def _outputs_respond_to_frames(self) -> bool:
-    """True if two different synthetic frames change model outputs."""
-    class _FakeBuf:
-      def __init__(self, data: np.ndarray):
-        self.data = data
-
-    def _run_with_fill(fill: int) -> np.ndarray | None:
-      bufs = {
-        name: _FakeBuf(np.full(self.frame_buf_params[name][3], fill, dtype=np.uint8))
-        for name in self.vision_input_names
-      }
-      transforms = {name: np.eye(3, dtype=np.float32) for name in self.vision_input_names}
-      inputs: dict[str, np.ndarray] = {
-        self.desire_key: np.zeros(self.constants.DESIRE_LEN, dtype=np.float32),
-        'traffic_convention': np.array([1.0, 0.0], dtype=np.float32),
-      }
-      if 'lateral_control_params' in self.numpy_inputs:
-        inputs['lateral_control_params'] = np.array([10.0, 0.1], dtype=np.float32)
-      if 'action_t' in self.numpy_inputs:
-        inputs['action_t'] = np.array([0.1, 0.1], dtype=np.float32)
-      out = self.run(bufs, transforms, inputs, prepare_only=False)
-      if out is None or 'pose' not in out:
-        return None
-      # Use a wide slice of outputs so a broken pose head alone still fails the check.
-      chunks = [out['pose'].reshape(-1)]
-      for key in ('plan', 'lane_lines', 'hidden_state'):
-        if key in out:
-          chunks.append(out[key].reshape(-1)[:64])
-      return np.concatenate(chunks)
-
-    try:
-      a = _run_with_fill(0)
-      b = _run_with_fill(255)
-    except Exception:
-      cloudlog.exception("tinygrad model smoke test raised")
-      return False
-    if a is None or b is None:
-      return False
-    return bool(np.max(np.abs(a - b)) > 1e-4)
 
   @property
   def mlsim(self) -> bool:
@@ -319,46 +177,45 @@ class ModelState(ModelStateBase):
 
   def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
                 inputs: dict[str, np.ndarray], prepare_only: bool) -> dict[str, np.ndarray] | None:
-    for key in bufs.keys():
-      ptr = np.frombuffer(bufs[key].data, dtype=np.uint8).ctypes.data
-      yuv_size = self.frame_buf_params[key][3]
-      cache_key = (key, ptr)
-      if cache_key not in self._blob_cache:
-        self._blob_cache[cache_key] = Tensor.from_blob(ptr, (yuv_size,), dtype='uint8', device=self.WARP_DEV)
-      self.full_frames[key] = self._blob_cache[cache_key]
+    self.adapter.copy_frames(bufs)
 
     desire_key = self.desire_key
     inputs[desire_key][0] = 0
-    self.numpy_inputs[desire_key][:] = np.where(inputs[desire_key] - self.prev_desire > .99, inputs[desire_key], 0)
+    desire_target = self.numpy_inputs[desire_key].flat if self.adapter.is_native else self.numpy_inputs[desire_key]
+    desire_target[:] = np.where(inputs[desire_key] - self.prev_desire > .99, inputs[desire_key], 0)
     self.prev_desire[:] = inputs[desire_key]
     for key in ('traffic_convention', 'lateral_control_params', 'action_t'):
       if key in self.numpy_inputs and key in inputs:
         self.numpy_inputs[key][:] = inputs[key]
 
-    road_key = self._road_key
-    wide_key = self._wide_key
-    self.numpy_inputs['tfm'][:, :] = transforms[road_key].reshape(3, 3)
-    self.numpy_inputs['big_tfm'][:, :] = transforms[wide_key].reshape(3, 3)
+    if self.adapter.is_native:
+      for i, key in enumerate(self._vision_input_names):
+        if key in transforms:
+          self.numpy_inputs['tfm'][i] = transforms[key].reshape(3, 3)
+    else:
+      self.numpy_inputs['tfm'][:, :] = transforms[self._road_key].reshape(3, 3)
+      self.numpy_inputs['big_tfm'][:, :] = transforms[self._wide_key].reshape(3, 3)
 
     if prepare_only:
-      self._warp_enqueue(**self.input_queues, frame=self.full_frames[road_key], big_frame=self.full_frames[wide_key])
       return None
 
-    raw_outputs = self._run_policy(**self.input_queues, frame=self.full_frames[road_key], big_frame=self.full_frames[wide_key])
+    raw_outputs = self.adapter.run()
 
     if self._combined_model_type == 'supercombo':
       model_output = raw_outputs.numpy().flatten()
       sliced = {k: model_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
       outputs = self.parser.parse_outputs(sliced)
-      if 'prev_feat' in self.numpy_inputs:
-        self.numpy_inputs['prev_feat'][:] = model_output[self.vision_output_slices['hidden_state']]
+      if 'prev_feat' in self.numpy_inputs and 'hidden_state' in self.vision_output_slices:
+        prev_feat = self.numpy_inputs['prev_feat']
+        (prev_feat.flat if self.adapter.is_native else prev_feat)[:] = model_output[self.vision_output_slices['hidden_state']]
     else:
       vision_output = raw_outputs[0].numpy().flatten()
       vision_sliced = {k: vision_output[np.newaxis, v] for k, v in self.vision_output_slices.items()}
       outputs = self.parser.parse_vision_outputs(vision_sliced)
 
       if 'prev_feat' in self.numpy_inputs and 'hidden_state' in self.vision_output_slices:
-        self.numpy_inputs['prev_feat'][:] = vision_output[self.vision_output_slices['hidden_state']]
+        prev_feat = self.numpy_inputs['prev_feat']
+        (prev_feat.flat if self.adapter.is_native else prev_feat)[:] = vision_output[self.vision_output_slices['hidden_state']]
 
       for i, policy_slices in enumerate(self._policy_slices_list):
         policy_output = raw_outputs[i + 1].numpy().flatten()
@@ -379,11 +236,6 @@ class ModelState(ModelStateBase):
       buf = self.numpy_inputs['prev_desired_curv']
       buf[0, :-1] = buf[0, 1:]
       buf[0, -1, :] = outputs['desired_curvature'][0, :] if not self.mlsim else 0
-
-    # TODO-SP: This is a hack to prevent GPU corruption by calculating in CPU space, it can be removed on next recompile
-    if 'prev_feat' not in self.numpy_inputs and 'feat_q' in self.input_queues:
-      feat_val = self.input_queues['feat_q'].numpy()
-      self.input_queues['feat_q'].assign(feat_val).realize()
 
     return outputs
 
