@@ -312,10 +312,12 @@ class RadarInterface(RadarInterfaceBase):
       if valid:
         azimuth = msg[f"CAN_DET_AZIMUTH_{ii:02d}"]              # rad [-3.1416|3.13964]
         distRate = msg[f"CAN_DET_RANGE_RATE_{ii:02d}"]          # m/s [-128|127.984]
+        amplitude = msg[f"CAN_DET_AMPLITUDE_{ii:02d}"]          # dBsm [-64|63], radar cross section estimate
         dRel = cos(azimuth) * dist                              # m from front of car
         yRel = -sin(azimuth) * dist                             # in car frame's y axis, left is positive
 
-        self.points.append([dRel, yRel * 2, distRate * 2])
+        # BluePilot: the 4th element (RCS) is carried alongside so do_clustering() can expose it
+        self.points.append([dRel, yRel * 2, distRate * 2, amplitude])
 
     # Cluster and publish using stored points once we've cycled through all 4 scan modes
     if headerScanIndex != 3:
@@ -361,10 +363,11 @@ class RadarInterface(RadarInterfaceBase):
         if valid:
           azimuth = msg[f"CAN_DET_AZIMUTH_{ii:02d}_{iii:02d}"]              # rad [-3.1416|3.13964]
           distRate = msg[f"CAN_DET_RANGE_RATE_{ii:02d}_{iii:02d}"]          # m/s [-128|127.984]
+          amplitude = msg[f"CAN_DET_AMPLITUDE_{ii:02d}_{iii:02d}"]          # dBsm [-64|63]
           dRel = cos(azimuth) * dist                                        # m from front of car
           yRel = sin(azimuth) * dist                                        # in car frame's y axis, right is positive
 
-          self.points.append([dRel, yRel * 2, distRate * 2])
+          self.points.append([dRel, yRel * 2, distRate * 2, amplitude])
 
     if headerScanIndex != 3:
       return True
@@ -377,7 +380,9 @@ class RadarInterface(RadarInterfaceBase):
   def do_clustering(self):
     # Cluster points from this cycle against the centroids from the previous cycle
     prev_keys = [[p.dRel, p.yRel * 2, p.vRel * 2] for p in self.clusters]
-    labels = cluster_points(prev_keys, self.points, DELPHI_MRR_CLUSTER_THRESHOLD)
+    # BluePilot: cluster in (range, lateral, relative speed) only - the 4th element is amplitude and
+    # must not contribute to the distance metric
+    labels = cluster_points(prev_keys, [p[:3] for p in self.points], DELPHI_MRR_CLUSTER_THRESHOLD)
 
     points_by_track_id = defaultdict(list)
     for idx, label in enumerate(labels):
@@ -399,6 +404,11 @@ class RadarInterface(RadarInterfaceBase):
       vRel = [p[2] for p in pts]
       vRel = sum(vRel) / len(vRel) / 2
 
+      # BluePilot: strongest reflection in this cluster, i.e. the radar cross-section estimate (dBsm).
+      # A bus/truck reflects far more than a car, and unlike the span this survives an articulated
+      # vehicle being split into separate clusters by the 5 m clustering threshold.
+      rcs = max((p[3] for p in pts if len(p) > 3), default=float('nan'))
+
       # FIXME: creating capnp RadarPoint and accessing attributes are both expensive, so we store a dataclass and reuse the RadarPoint
       self.clusters.append(Cluster(dRel=dRel, yRel=yRel, vRel=vRel, trackId=track_id))
 
@@ -409,6 +419,10 @@ class RadarInterface(RadarInterfaceBase):
       self.pts[idx].yRel = yRel
       self.pts[idx].vRel = vRel
       self.pts[idx].trackId = track_id
+      # BluePilot: RadarPoint has no size field and `yvRel` is never populated on DELPHI_MRR (it is set to
+      # NaN below and nothing in the stack reads RadarPoint.yvRel), so it carries the cluster's radar
+      # cross-section estimate (dBsm). See sunnypilot/selfdrive/controls/adjacent_truckd.py.
+      self.pts[idx].yvRel = float(rcs)
 
     for idx in range(len(points_by_track_id), len(self.pts)):
       del self.pts[idx]

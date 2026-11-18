@@ -4,14 +4,17 @@ from openpilot.common.parameterized import parameterized_class
 
 from cereal import log
 
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import adjust_longitudinal_personality, cycle_longitudinal_personality, get_safe_obstacle_distance, get_stopped_equivalence_factor, get_T_FOLLOW
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import adjust_longitudinal_personality, cycle_longitudinal_personality, get_safe_obstacle_distance_scaled, get_stopped_equivalence_factor, get_T_FOLLOW
 from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 
 
 def desired_follow_distance(v_ego, v_lead, t_follow=None):
   if t_follow is None:
     t_follow = get_T_FOLLOW()
-  return get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
+  # The OCP minimises a cost built around the speed-scaled stop gap, so the steady
+  # state this fork converges to uses the scaled distance. At v_ego = 0 that is
+  # STOP_DISTANCE * STOP_DISTANCE_LOW_FACTOR (2.7 m), not the full STOP_DISTANCE.
+  return get_safe_obstacle_distance_scaled(v_ego, t_follow) - get_stopped_equivalence_factor(v_lead)
 
 def run_following_distance_simulation(v_lead, t_end=100.0, e2e=False, personality=0):
   man = Maneuver(
@@ -47,10 +50,10 @@ class TestFollowingDistance:
 
 
 @pytest.mark.parametrize(("personality", "expected_t_follow"), [
-  (log.LongitudinalPersonality.aggressive, 1.00),
-  (log.LongitudinalPersonality.standard, 1.30),
-  (log.LongitudinalPersonality.steady, 1.50),
-  (log.LongitudinalPersonality.relaxed, 1.70),
+  (log.LongitudinalPersonality.aggressive, 1.25),
+  (log.LongitudinalPersonality.standard, 1.45),
+  (log.LongitudinalPersonality.steady, 1.60),
+  (log.LongitudinalPersonality.relaxed, 1.75),
 ])
 def test_follow_time_gap_uses_saved_personality(personality, expected_t_follow):
   assert get_T_FOLLOW(personality) == pytest.approx(expected_t_follow)

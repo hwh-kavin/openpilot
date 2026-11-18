@@ -52,17 +52,18 @@ class CruiseLayout(Widget):
       description="",
       param="IntelligentCruiseButtonManagement")
 
-    self.bp_long_bypass_toggle = toggle_item_sp(
-      title=tr("Bypass BP Longitudinal Control"),
-      description=tr("Disable BluePilot's follow-aware longitudinal control (lead classification, gas/accel limits, "
-                     "brake/precharge hysteresis). Above ~50 mph with a lead it smooths following; disable to use "
-                     "stock openpilot longitudinal only."),
-      param="disable_BP_long_UI")
-
     self.bp_downhill_comp_toggle = toggle_item_sp(
       title=tr("Disable Downhill Compensation"),
       description=tr("Ignore negative pitch compensation so downhill deceleration is not added."),
       param="disable_downhill_comp_UI")
+
+    self.adj_truck_toggle = toggle_item_sp(
+      title=tr("Avoid Large Vehicles in Adjacent Lanes"),
+      description=tr("Detect large vehicles (trucks, buses) in the adjacent lane and shift the vehicle away "
+                     "from them inside the lane, holding the offset while passing and then returning to the "
+                     "lane centre. Requires a radar that reports track extent. Detection runs in a separate "
+                     "low-priority process, never in the controls loop."),
+      param="AdjacentTruckAvoid")
 
     self.scc_v_toggle = toggle_item_sp(
       title=tr("Smart Cruise Control - Vision"),
@@ -107,8 +108,8 @@ class CruiseLayout(Widget):
     items = [
       self.icbm_toggle,
       self.dec_toggle,
-      self.bp_long_bypass_toggle,
       self.bp_downhill_comp_toggle,
+      self.adj_truck_toggle,
       self.scc_v_toggle,
       self.scc_m_toggle,
       self.custom_acc_toggle,
@@ -195,30 +196,30 @@ class CruiseLayout(Widget):
           self.icbm_toggle.show_description(True)
 
       is_ford = ui_state.CP.brand == "ford"
-      self.bp_long_bypass_toggle.set_visible(is_ford)
       self.bp_downhill_comp_toggle.set_visible(is_ford)
+      self.adj_truck_toggle.set_visible(is_ford)
 
       if has_long or has_icbm:
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.dec_toggle.action_item.set_enabled(has_long)
-        self.bp_long_bypass_toggle.action_item.set_enabled(has_long and is_ford)
         self.bp_downhill_comp_toggle.action_item.set_enabled(has_long and is_ford)
+        self.adj_truck_toggle.action_item.set_enabled(is_ford and ui_state.is_offroad())
         self.scc_v_toggle.action_item.set_enabled(True)
         self.scc_m_toggle.action_item.set_enabled(True)
       else:
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_toggle.action_item.set_enabled(False)
-        self.bp_long_bypass_toggle.action_item.set_enabled(False)
         self.bp_downhill_comp_toggle.action_item.set_enabled(False)
+        self.adj_truck_toggle.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)
     else:
       self.icbm_toggle.action_item.set_enabled(False)
       self.icbm_toggle.set_description(tr(ONROAD_ONLY_DESCRIPTION))
-      self.bp_long_bypass_toggle.set_visible(False)
-      self.bp_long_bypass_toggle.action_item.set_enabled(False)
       self.bp_downhill_comp_toggle.set_visible(False)
       self.bp_downhill_comp_toggle.action_item.set_enabled(False)
+      self.adj_truck_toggle.set_visible(False)
+      self.adj_truck_toggle.action_item.set_enabled(False)
 
   def _apply_custom_acc_description(self, has_long: bool, has_icbm: bool):
     show_custom_acc_desc = False

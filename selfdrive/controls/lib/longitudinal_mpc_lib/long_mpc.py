@@ -63,9 +63,9 @@ FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
-# 低速停车距离缩放（用户需求）：慢速跟停时固定停车余量随车速缩小——
-# 车速趋近 0 时余量约为 2.7m（6.0 * 0.45），≥10 m/s 恢复完整 6.0m，
-# 避免低速跟车停车距离过大；快速减速刹停的均衡距离基本不受影响。
+# 低速停车距离缩放：固定停车余量随车速缩小，避免低速跟停时停车距离过大。
+# 缩放后的余量是 OCP 代价与 test_following_distance 稳态期望值的唯一依据
+# （见 get_stop_distance / get_safe_obstacle_distance_scaled）。
 STOP_DISTANCE_LOW_FACTOR = 0.45
 STOP_DISTANCE_FULL_V = 10.0
 CRUISE_MIN_ACCEL = -1.2
@@ -79,14 +79,19 @@ def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
 
 
 def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
+  # BluePilot parity: bp uses aggressive 1.25 / standard 1.45 / relaxed 1.75.
+  # This fork adds a `steady` step between standard and relaxed.
+  # A longer follow time is what makes a high-speed approach to a stopped lead start
+  # decelerating earlier: it widens the steady-state gap without touching the
+  # transient response (that lives in opendbc/.../ford/longitudinal_ext.py).
   if personality == log.LongitudinalPersonality.aggressive:
-    return 1.00
+    return 1.25
   elif personality == log.LongitudinalPersonality.standard:
-    return 1.30
+    return 1.45
   elif personality == log.LongitudinalPersonality.steady:
-    return 1.50
+    return 1.60
   elif personality == log.LongitudinalPersonality.relaxed:
-    return 1.70
+    return 1.75
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
@@ -175,6 +180,20 @@ def get_stopped_equivalence_factor(v_lead):
 
 def get_safe_obstacle_distance(v_ego, t_follow):
   return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
+
+def get_stop_distance(v_ego):
+  """Float mirror of the low-speed stop-distance scaling used in gen_long_ocp.
+
+  The OCP builds the same expression symbolically with casadi's fmin; keep the two in
+  sync. Exposed so the steady-state gap the planner actually converges to can be
+  computed outside the solver.
+  """
+  return STOP_DISTANCE * (STOP_DISTANCE_LOW_FACTOR +
+                          (1.0 - STOP_DISTANCE_LOW_FACTOR) * min(1.0, v_ego / STOP_DISTANCE_FULL_V))
+
+def get_safe_obstacle_distance_scaled(v_ego, t_follow):
+  """Safe obstacle distance using the speed-scaled stop gap (what the OCP minimises)."""
+  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + get_stop_distance(v_ego)
 
 def gen_long_model():
   model = AcadosModel()

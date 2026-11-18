@@ -51,6 +51,16 @@ EventName = log.OnroadEvent.EventName
 LOCATIOND_REENGAGE_HYSTERESIS = int(0.5 / DT_CTRL)
 # Ford MRR (and similar) scan index freezes in P/R/N; radar + planning need a moment to recover after D
 GEAR_RECOVERY_HOLDOFF = int(2.0 / DT_CTRL)
+
+# modeld lagging detection.
+# modelV2.frameDropPerc is a slow low-pass (RC = 10 model frames = 0.5 s at 20 Hz, i.e. a
+# ~10 s time constant) of the dropped-frame count. A single short camera backlog therefore
+# keeps the percentage above a low threshold for several seconds - longer than the 3 s
+# SOFT_DISABLE timeout - which disengaged openpilot on a harmless one-off hiccup.
+# Require a sustained, meaningful drop rate instead of a single burst's tail.
+MODELD_LAG_DROP_PERC_THRESHOLD = 2.5   # % frames dropped
+MODELD_LAG_DEBOUNCE_FRAMES = int(1.0 / DT_CTRL)  # must stay above threshold for 1 s
+
 ButtonType = car.CarState.ButtonEvent.Type
 SafetyModel = car.CarParams.SafetyModel
 AlertLevel = log.DriverMonitoringState.AlertLevel
@@ -172,6 +182,9 @@ class SelfdriveD(CruiseHelper):
     self.lagging_logged = False
     # BluePilot: one-shot diagnostic for deviceState publishing stalls (hardwared freeze)
     self.ds_stall_logged = False
+    # modeld lag debounce state (see MODELD_LAG_* constants)
+    self.modeld_lag_frames = 0
+    self.modeld_lag_logged = False
 
     self.ignored_processes = {'mapd', }
 
@@ -536,10 +549,22 @@ class SelfdriveD(CruiseHelper):
       self.distance_traveled = 0
     self.distance_traveled += abs(CS.vEgo) * DT_CTRL
 
-    # TODO: fix simulator
-    if not SIMULATION or REPLAY:
-      if self.sm['modelV2'].frameDropPerc > 1:
-        self.events.add(EventName.modeldLagging)
+    # Model lagging: require a sustained drop rate so a single short camera backlog
+    # (which lingers in frameDropPerc for ~10 s) does not blow through the 3 s
+    # SOFT_DISABLE timeout and disengage on a harmless hiccup.
+    model_lagging = (not SIMULATION or REPLAY) and \
+                    self.sm['modelV2'].frameDropPerc > MODELD_LAG_DROP_PERC_THRESHOLD
+    self.modeld_lag_frames = self.modeld_lag_frames + 1 if model_lagging else 0
+
+    if self.modeld_lag_frames > MODELD_LAG_DEBOUNCE_FRAMES:
+      self.events.add(EventName.modeldLagging)
+      if not self.modeld_lag_logged:
+        self.modeld_lag_logged = True
+        cloudlog.event("selfdrived.modeldLagging", frame=self.sm.frame,
+                       frameDropPerc=float(self.sm['modelV2'].frameDropPerc),
+                       modelExecutionTime=float(self.sm['modelV2'].modelExecutionTime), error=True)
+    else:
+      self.modeld_lag_logged = False
 
     # mute canBusMissing event if in Park, as it sometimes may trigger a false alarm with MADS in Paused state
     if CS.gearShifter == car.CarState.GearShifter.park and self.mads.enabled:

@@ -2268,3 +2268,21 @@ msgstr ""
 msgid "🔥 Firehose Mode 🔥"
 msgstr "🔥 Firehose Mode 🔥"
 
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
+msgid "Avoid Large Vehicles in Adjacent Lanes"
+msgstr "Avoid Large Vehicles in Adjacent Lanes"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
+msgid ""
+"Detect large vehicles (trucks, buses) in the adjacent lane and shift the "
+"vehicle away from them inside the lane, holding the offset while passing "
+"and then returning to the lane centre. Requires a radar that reports "
+"track extent. Detection runs in a separate low-priority process, never in "
+"the controls loop."
+msgstr ""
+"Detect large vehicles (trucks, buses) in the adjacent lane and shift the "
+"vehicle away from them inside the lane, holding the offset while passing "
+"and then returning to the lane centre. Requires a radar that reports "
+"track extent. Detection runs in a separate low-priority process, never in "
+"the controls loop."
+

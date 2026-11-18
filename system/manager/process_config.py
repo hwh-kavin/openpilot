@@ -133,6 +133,11 @@ def is_stock_model(started, params, CP: car.CarParams) -> bool:
 def mapd_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
   return bool(os.path.exists(Paths.mapd_root()))
 
+def adjacent_truck_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # BluePilot: standalone adjacent-lane large vehicle detector. Only runs while the user has the
+  # Cruise settings toggle enabled, and only while actually driving.
+  return started and not CP.notCar and params.get_bool("AdjacentTruckAvoid")
+
 def uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
   if not params.get_bool("OnroadUploads"):
     return only_offroad(started, params, CP)
@@ -221,6 +226,10 @@ procs += [
 
   # locationd
   NativeProcess("locationd_llk", "sunnypilot/selfdrive/locationd", ["./locationd"], only_onroad),
+
+  # BluePilot: adjacent-lane large vehicle avoidance. Observation only - it just publishes a
+  # suggestion into Params and is kept entirely off the controls realtime path.
+  PythonProcess("adjacent_truckd", "sunnypilot.selfdrive.controls.adjacent_truckd", adjacent_truck_ready),
 ]
 
 if os.path.exists("./github_runner.sh"):

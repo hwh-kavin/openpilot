@@ -98,13 +98,12 @@ class LongitudinalExt:
     self.STOCK_BRAKE_RELEASE_ACCEL = 0.0    # AccBrkDecel_B_Rq off above this
     self.STOCK_PRE_ACTUATE_ACCEL = -0.06    # AccBrkPrchg_B_Rq on below this
 
-    # Toggles (updated from Params each frame)
+    # BluePilot longitudinal bypass is intentionally fixed off.
     self.disable_BP_long_UI = False
     self.disable_downhill_comp_UI = True
 
   def update_long_params(self, params):
     """Read longitudinal-related Params from the UI. Called each frame."""
-    self.disable_BP_long_UI = params.get_bool("disable_BP_long_UI")
     self.disable_downhill_comp_UI = params.get_bool("disable_downhill_comp_UI")
     # Stock-ACC + OP fusion only runs when explicitly enabled (sp-master260727
     # behavior); otherwise plain OP longitudinal below 15 km/h.

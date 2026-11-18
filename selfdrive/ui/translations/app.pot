@@ -110,10 +110,6 @@ msgstr ""
 msgid "BluePilot Portal is a web-based interface for viewing routes, logs, system metrics, and device settings. Connect to your comma device locally via its IP address (default port 80)."
 msgstr ""
 
-#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
-msgid "Bypass BP Longitudinal Control"
-msgstr ""
-
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/models.py
 msgid "CLEARING..."
 msgstr ""
@@ -144,10 +140,6 @@ msgstr ""
 
 #: ../pythonpath/openpilot/selfdrive/ui/mici/layouts/settings/device.py
 msgid "Device must be registered with the comma.ai backend to pair."
-msgstr ""
-
-#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
-msgid "Disable BluePilot's follow-aware longitudinal control (lead classification, gas/accel limits, brake/precharge hysteresis). Above ~50 mph with a lead it smooths following; disable to use stock openpilot longitudinal only."
 msgstr ""
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
@@ -2916,4 +2908,17 @@ msgstr ""
 
 #: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/mici/layouts/models.py
 msgid "progress"
+msgstr ""
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
+msgid "Avoid Large Vehicles in Adjacent Lanes"
+msgstr ""
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
+msgid ""
+"Detect large vehicles (trucks, buses) in the adjacent lane and shift the "
+"vehicle away from them inside the lane, holding the offset while passing "
+"and then returning to the lane centre. Requires a radar that reports "
+"track extent. Detection runs in a separate low-priority process, never in "
+"the controls loop."
 msgstr ""

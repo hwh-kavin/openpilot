@@ -29,6 +29,7 @@ from tinygrad.device import Device
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.params import Params
+from openpilot.common.param_cache import ParamCache
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import config_realtime_process, DT_MDL
 from openpilot.common.transformations.camera import DEVICE_CAMERAS
@@ -310,12 +311,17 @@ def main(demo=False):
 
   publish_state = PublishState()
   params = Params()
+  # Params.get() hits storage on every call; keep the loop-time reads in RAM.
+  param_cache = ParamCache(params, ttl=30.0)
 
   # setup filter to track dropped frames
   frame_dropped_filter = FirstOrderFilter(0., 10., 1. / model.constants.MODEL_FREQ)
   frame_id = 0
   last_vipc_frame_id = None
   run_count = 0
+  # rate limiting for the dropped-frame log (see the model loop)
+  drop_log_t = 0.0
+  drop_log_suppressed = 0
 
   model_transform_main = np.zeros((3, 3), dtype=np.float32)
   model_transform_extra = np.zeros((3, 3), dtype=np.float32)
@@ -390,12 +396,12 @@ def main(demo=False):
     frame_id = sm["roadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
     if sm.frame % 60 == 0:
-      model.lat_delay = get_lat_delay(params, sm["liveDelay"].lateralDelay)
-      planplus = params.get("PlanplusControl", return_default=True)
+      model.lat_delay = get_lat_delay(param_cache, sm["liveDelay"].lateralDelay)
+      planplus = param_cache.get("PlanplusControl", return_default=True)
       model.PLANPLUS_CONTROL = float(planplus) if planplus is not None else 1.0
-      camera_offset_helper.set_offset(params.get("CameraOffset", return_default=True))
+      camera_offset_helper.set_offset(param_cache.get("CameraOffset", return_default=True))
       try:
-        blendful_enabled = params.get_bool("Blendful")
+        blendful_enabled = param_cache.get_bool("Blendful")
       except Exception:
         blendful_enabled = False
     lat_delay = model.lat_delay + model.LAT_SMOOTH_SECONDS
@@ -429,7 +435,17 @@ def main(demo=False):
     frame_drop_ratio = frames_dropped / (1 + frames_dropped)
     prepare_only = vipc_dropped_frames > 0
     if prepare_only:
-      cloudlog.error(f"skipping model eval. Dropped {vipc_dropped_frames} frames")
+      # Rate-limited: this runs on the realtime modeld thread and swaglog writes
+      # synchronously, so logging every dropped frame while already behind adds latency
+      # (drop -> log -> slower -> more drops). Keep the signal, drop the feedback loop.
+      now = time.monotonic()
+      if now - drop_log_t >= 1.0:
+        cloudlog.error(f"skipping model eval. Dropped {vipc_dropped_frames} frames "
+                       f"({drop_log_suppressed} more drop events in the last {now - drop_log_t:.1f}s)")
+        drop_log_t = now
+        drop_log_suppressed = 0
+      else:
+        drop_log_suppressed += 1
 
     bufs = {name: buf_extra if 'big' in name else buf_main for name in model.vision_input_names}
     transforms = {name: model_transform_extra if 'big' in name else model_transform_main for name in model.vision_input_names}

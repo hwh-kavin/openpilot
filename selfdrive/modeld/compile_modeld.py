@@ -41,6 +41,16 @@ UV_SCALE_MATRIX_INV = np.linalg.inv(UV_SCALE_MATRIX)
 WARP_DEV = os.getenv('WARP_DEV')
 
 
+def _arange(n: int) -> Tensor:
+  """1-D index tensor on the warp device.
+
+  tinygrad dropped the per-call `device` kwarg from Tensor.arange (opset API change), so the
+  tensor is created on the default device and moved afterwards when WARP_DEV is set.
+  """
+  t = Tensor.arange(n)
+  return t if WARP_DEV is None else t.to(WARP_DEV)
+
+
 def make_random_images(keys, shape, device=None):
   return {k: Tensor.randint(shape, low=0, high=256, dtype='uint8', device=device).realize() for k in keys}
 
@@ -49,8 +59,8 @@ def warp_perspective_tinygrad(src_flat, M_inv, dst_shape, src_shape, stride_pad,
   w_dst, h_dst = dst_shape
   h_src, w_src = src_shape
 
-  x = Tensor.arange(w_dst, device=WARP_DEV).reshape(1, w_dst).expand(h_dst, w_dst).reshape(-1)
-  y = Tensor.arange(h_dst, device=WARP_DEV).reshape(h_dst, 1).expand(h_dst, w_dst).reshape(-1)
+  x = _arange(w_dst).reshape(1, w_dst).expand(h_dst, w_dst).reshape(-1)
+  y = _arange(h_dst).reshape(h_dst, 1).expand(h_dst, w_dst).reshape(-1)
 
   # inline 3x3 matmul as elementwise to avoid reduce op (enables fusion with gather)
   src_x = M_inv[0, 0] * x + M_inv[0, 1] * y + M_inv[0, 2]

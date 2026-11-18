@@ -198,8 +198,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // BluePilot Ford HEV telemetry availability flags (written by CarState at startup)
     {"FordPrefHevDataAvailable", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
     {"FordPrefHevBattDataAvailable", {CLEAR_ON_MANAGER_START, BOOL, "0"}},
-    // BluePilot Ford longitudinal toggles (UI)
-    {"disable_BP_long_UI", {PERSISTENT | BACKUP, BOOL, "0"}},
+    // BluePilot Ford longitudinal toggle (UI)
     {"disable_downhill_comp_UI", {PERSISTENT | BACKUP, BOOL, "0"}},
     // BluePilot Ford hands-free cluster message (CAN FD only)
     {"send_hands_free_cluster_msg", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -295,6 +294,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneTurnValue", {PERSISTENT | BACKUP, FLOAT, "19.0"}},
     {"Blendful", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
+
+    // BluePilot: adjacent-lane large vehicle avoidance (computed by the standalone `adjacent_truckd` process,
+    // deliberately kept out of the controls realtime path).
+    {"AdjacentTruckAvoid", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"AdjacentTruckState", {CLEAR_ON_MANAGER_START, JSON}},
 
     {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
     {"MapdVersion", {PERSISTENT, STRING}},

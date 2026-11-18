@@ -5,12 +5,24 @@ import codecs
 import pickle
 from typing import Any
 
-from tinygrad.nn.onnx import OnnxPBParser
+from tinygrad.nn.onnx import Domain, OnnxPBParser
 
 
 class MetadataOnnxPBParser(OnnxPBParser):
   def _parse_ModelProto(self) -> dict:
     obj: dict[str, Any] = {"graph": {"input": [], "output": []}, "metadata_props": []}
+
+    # tinygrad now populates self.opset_imports inside its own _parse_ModelProto, which we override.
+    # Without repeating that pass _parse_NodeProto raises AttributeError on a missing opset_imports.
+    opset_import: list[dict] = []
+    for fid, wire_type in self._parse_message(self.reader.len):
+      if fid == 8:
+        opset_import.append(self._parse_OperatorSetIdProto())
+      else:
+        self.reader.skip_field(wire_type)
+    self.opset_imports = {Domain.from_onnx(x.get("domain")): x.get("version", 1) for x in opset_import}
+    self.reader.seek(0)
+
     for fid, wire_type in self._parse_message(self.reader.len):
       match fid:
         case 7:

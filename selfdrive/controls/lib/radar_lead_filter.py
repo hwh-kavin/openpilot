@@ -6,7 +6,9 @@ MPC 前车参数注入（longitudinal_planner）与停车起步判定（Ford 融
 """
 from dataclasses import dataclass
 
-# 车道收敛：|雷达 yRel + 视觉 y| 横向差 EMA 收敛后超过半车道宽判为相邻车道
+from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA
+
+# 车道收敛：保留原有门槛，减少误判带来的抖动。
 RADAR_LEAD_LANE_TOLERANCE_M = 1.8
 RADAR_LEAD_LANE_EMA = 0.4
 # 测量滤波：dRel/vLead EMA 新数据权重
@@ -39,14 +41,23 @@ def get_vision_lead(sm):
   return None
 
 
-def lead_from_vision(vlead):
-  """视觉模型前车 → FilteredLead（无前车时 status=False）。"""
+def lead_from_vision(vlead, v_ego: float = 0.0):
+  """视觉模型前车 → FilteredLead（无前车时 status=False）。
+
+  与 radard.get_RadarState_from_vision 保持同一语义，否则 MPC 拿到的是“另一种坐标系”：
+  - dRel 换算到雷达坐标系（减去 RADAR_TO_CAMERA）；此前漏减，导致恒定高估 1.52 m 距离
+  - vRel = vLead - v_ego；此前使用 dataclass 默认值 0，相对速度/TTC 类逻辑全部失效
+  - aLeadTau 取 0.3：视觉 lead 的加速度预测衰减比雷达轨迹（1.5）更快
+  """
   if vlead is None:
     return FilteredLead()
-  return FilteredLead(status=True, dRel=float(vlead.x[0]),
-                      vLead=float(vlead.v[0]),
+  v_lead = float(vlead.v[0])
+  return FilteredLead(status=True,
+                      dRel=max(0.0, float(vlead.x[0]) - RADAR_TO_CAMERA),
+                      vRel=v_lead - float(v_ego),
+                      vLead=v_lead,
                       aLeadK=float(vlead.a[0]) if len(vlead.a) > 0 else 0.0,
-                      aLeadTau=1.5, modelProb=float(vlead.prob), radar=False)
+                      aLeadTau=0.3, modelProb=float(vlead.prob), radar=False)
 
 
 class RadarLeadFilter:
@@ -75,6 +86,7 @@ class RadarLeadFilter:
       if self._lane_diff_ema >= RADAR_LEAD_LANE_TOLERANCE_M:
         self._track_id = -1
         return None
+
     if self._track_id != radar_lead.radarTrackId:
       self._track_id = radar_lead.radarTrackId
       self._drel_filt = float(radar_lead.dRel)

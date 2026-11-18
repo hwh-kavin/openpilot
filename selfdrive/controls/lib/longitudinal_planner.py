@@ -155,6 +155,20 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         pass
     use_radar = self._is_ford and self._fusion_enabled_cached and self._radar_lead_active and radar_ok
 
+    # 高速段（>= RADAR_LEAD_EXIT_V_MS）：直接采用 radard 的雷达+视觉融合结果。
+    #
+    # radard 的 match_vision_to_track() 已经在【视觉前车坐标系】下用 dRel/yRel/vRel
+    # 的似然做概率关联 —— 视觉前车是沿模型预测路径给出的，因此这一步等价于
+    # “沿预测路径的车道收敛”，并且 dRel/aLeadK 来自雷达卡尔曼滤波。
+    #
+    # 这里若再用雷达自身扇面的 yRel 做二次横向筛选，会在弯道把真实同车道目标误杀，
+    # 同时丢掉雷达对远处静止车的测距优势 —— 这是高速“到很近才刹车”的主要来源。
+    # 只有雷达未匹配（radard 给的是纯视觉 lead）时，才回退到视觉参数。
+    if not self._radar_lead_active and radar_ok and lead is not None and lead.status and lead.radar:
+      self._mpc_lead_status = True
+      self._mpc_lead_d_rel = float(lead.dRel)
+      return rs
+
     if use_radar and lead is not None and lead.status and lead.radar:
       filt = self._radar_lead_filter.update(lead, get_vision_lead(sm))
       if filt is not None and filt.status:
@@ -162,7 +176,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
         self._mpc_lead_d_rel = float(filt.dRel)
         return _RadarStateCopy(filt, rs.leadTwo)
       # 相邻车道雷达目标/滤波无效：回退视觉 lead；无可靠视觉 lead 视为无前车
-      lead_copy = lead_from_vision(get_vision_lead(sm))
+      lead_copy = lead_from_vision(get_vision_lead(sm), v_ego)
       self._mpc_lead_status = lead_copy.status
       self._mpc_lead_d_rel = float(lead_copy.dRel) if lead_copy.status else float('inf')
       return _RadarStateCopy(lead_copy, rs.leadTwo if radar_ok else FilteredLead())
@@ -170,7 +184,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # 视觉模型前车距离/速度（无可靠视觉 lead 且雷达有效时回退雷达 leadOne 原样保底）
     vlead = get_vision_lead(sm)
     if vlead is not None:
-      lead_copy = lead_from_vision(vlead)
+      lead_copy = lead_from_vision(vlead, v_ego)
       self._mpc_lead_status = lead_copy.status
       self._mpc_lead_d_rel = float(lead_copy.dRel) if lead_copy.status else float('inf')
       return _RadarStateCopy(lead_copy, rs.leadTwo if radar_ok else FilteredLead())

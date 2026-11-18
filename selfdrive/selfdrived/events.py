@@ -720,7 +720,10 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
 
   # Every frame from the camera should be processed by the model. If modeld
   # is not processing frames fast enough they have to be dropped. This alert is
-  # thrown when over 20% of frames are dropped.
+  # thrown when the dropped-frame rate stays above MODELD_LAG_DROP_PERC_THRESHOLD
+  # for a sustained period (see selfdrived.py). modelV2.frameDropPerc is a slow
+  # low-pass, so a single short backlog lingers for seconds - gating on the raw
+  # instantaneous value used to soft-disable on a harmless one-off hiccup.
   EventName.modeldLagging: {
     ET.SOFT_DISABLE: soft_disable_alert("Driving Model Lagging"),
     ET.NO_ENTRY: NoEntryAlert("Driving Model Lagging"),

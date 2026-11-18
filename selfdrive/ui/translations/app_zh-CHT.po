@@ -2431,13 +2431,6 @@ msgstr "自訂"
 msgid "Curvature: Lane Centering PID Gain"
 msgstr "曲率：車道居中 PID 增益"
 
-#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
-msgid "Bypass BP Longitudinal Control"
-msgstr "繞過 BluePilot 縱向控制"
-
-msgid "Disable BluePilot's follow-aware longitudinal control (lead classification, gas/accel limits, brake/precharge hysteresis). Above ~50 mph with a lead it smooths following; disable to use stock openpilot longitudinal only."
-msgstr "停用 BluePilot 的跟車感知縱向控制（前車分類、油門/加速度限制、煞車/預充壓遲滯）。約 50 mph 以上有前車時讓跟車更平順；停用後僅使用 stock openpilot 縱向控制。"
-
 msgid "Disable Downhill Compensation"
 msgstr "停用下坡補償"
 
@@ -2446,4 +2439,20 @@ msgstr "忽略負俯仰補償，使下坡時不額外減速。"
 
 msgid "When enabled, sunnypilot will attempt to manage the built-in cruise control buttons by emulating button presses for limited longitudinal control."
 msgstr "啟用後，sunnypilot 將嘗試透過模擬按鈕按壓來管理內建巡航控制按鍵，以提供有限的縱向控制。"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
+msgid "Avoid Large Vehicles in Adjacent Lanes"
+msgstr "避讓相鄰車道大型車輛"
+
+#: ../pythonpath/openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
+msgid ""
+"Detect large vehicles (trucks, buses) in the adjacent lane and shift the "
+"vehicle away from them inside the lane, holding the offset while passing "
+"and then returning to the lane centre. Requires a radar that reports "
+"track extent. Detection runs in a separate low-priority process, never in "
+"the controls loop."
+msgstr ""
+"識別相鄰車道上的大型車輛（卡車、客車），並在車道內主動向另一側偏移以遠離它們；"
+"並行期間保持偏移，通過後回到車道中心。需要雷達提供目標長度資訊。"
+"偵測在獨立的低優先級進程中運行，不佔用控制迴路。"
 
