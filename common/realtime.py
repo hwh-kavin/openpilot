@@ -35,7 +35,15 @@ def drop_realtime() -> None:
 
 def set_core_affinity(cores: list[int]) -> None:
   if sys.platform == 'linux' and not PC:
-    os.sched_setaffinity(0, cores)
+    try:
+      os.sched_setaffinity(0, cores)
+    except OSError:
+      # BluePilot: the power manager may offline big cores while idle. Never crash over
+      # affinity; fall back to the CPUs this process is already allowed to run on.
+      try:
+        os.sched_setaffinity(0, sorted(os.sched_getaffinity(0)))
+      except OSError:
+        pass
 
 
 def config_realtime_process(cores: int | list[int], priority: int) -> None:

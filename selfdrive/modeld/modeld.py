@@ -93,14 +93,85 @@ def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int
   return Tensor(UOp.from_buffer(view, dtype)).reshape(shape)
 
 
-class ModelState(ModelStateBase):
+class LegacyModelState(ModelStateBase):
   prev_desire: np.ndarray  # for tracking the rising edge of the pulse
 
-  def __init__(self, cam_w: int, cam_h: int, usbgpu: bool = False):
+  def __init__(self, cam_w: int, cam_h: int, usbgpu: bool, jits):
+    ModelStateBase.__init__(self)
+    self.LAT_SMOOTH_SECONDS = LAT_SMOOTH_SECONDS
+    input_devices = get_tg_input_devices(PROCESS_NAME, usbgpu)
+    self.WARP_DEV, self.QUEUE_DEV = input_devices['WARP_DEV'], input_devices['QUEUE_DEV']
+    vision_metadata = jits['metadata']['vision']
+    self.vision_input_shapes = vision_metadata['input_shapes']
+    self.vision_input_names = list(self.vision_input_shapes.keys())
+    self.vision_output_slices = vision_metadata['output_slices']
+
+    policy_metadata = jits['metadata']['on_policy']
+    self.policy_input_shapes = policy_metadata['input_shapes']
+    self.policy_output_slices = policy_metadata['output_slices']
+
+    self.prev_desire = np.zeros(ModelConstants.DESIRE_LEN, dtype=np.float32)
+
+    self.frame_skip = ModelConstants.MODEL_RUN_FREQ // ModelConstants.MODEL_CONTEXT_FREQ
+    self.input_queues, self.npy = make_input_queues(self.vision_input_shapes, self.policy_input_shapes, self.frame_skip, device=self.QUEUE_DEV)
+    self.full_frames: dict[str, Tensor] = {}
+    self._blob_cache: dict[int, Tensor] = {}
+    self.parser = Parser()
+    self.frame_buf_params = {k: get_nv12_info(cam_w, cam_h) for k in ('img', 'big_img')}
+    self.run_policy = jits['run_policy']
+    self.warp_enqueue = jits[(cam_w, cam_h)]
+
+  def slice_outputs(self, model_outputs: np.ndarray, output_slices: dict[str, slice]) -> dict[str, np.ndarray]:
+    return {k: model_outputs[np.newaxis, v] for k, v in output_slices.items()}
+
+  def run(self, bufs: dict[str, VisionBuf], transforms: dict[str, np.ndarray],
+          inputs: dict[str, np.ndarray], prepare_only: bool) -> dict[str, np.ndarray] | None:
+    for key in bufs.keys():
+      ptr = np.frombuffer(bufs[key].data, dtype=np.uint8).ctypes.data
+      yuv_size = self.frame_buf_params[key][3]
+      # There is a ringbuffer of imgs, just cache tensors pointing to all of them
+      cache_key = (key, ptr)
+      if cache_key not in self._blob_cache:
+        self._blob_cache[cache_key] = Tensor.from_blob(ptr, (yuv_size,), dtype='uint8', device=self.WARP_DEV)
+      self.full_frames[key] = self._blob_cache[cache_key]
+
+    # Model decides when action is completed, so desire input is just a pulse triggered on rising edge
+    inputs['desire_pulse'][0] = 0
+    self.npy['desire'][:] = np.where(inputs['desire_pulse'] - self.prev_desire > .99, inputs['desire_pulse'], 0)
+    self.prev_desire[:] = inputs['desire_pulse']
+    self.npy['traffic_convention'][:] = inputs['traffic_convention']
+    self.npy['action_t'][:] = inputs['action_t']
+    self.npy['tfm'][:, :] = transforms['img'][:, :]
+    self.npy['big_tfm'][:, :] = transforms['big_img'][:, :]
+
+    img, big_img = self.warp_enqueue(**{k: self.input_queues[k] for k in WARP_INPUTS}, frame=self.full_frames['img'], big_frame=self.full_frames['big_img'])
+
+    if prepare_only:
+      return None
+
+    vision_output, on_policy_output = self.run_policy(
+      **{k: self.input_queues[k] for k in POLICY_INPUTS}, img=img, big_img=big_img
+    )
+
+    vision_output = vision_output.numpy().flatten()
+    on_policy_output = on_policy_output.numpy().flatten()
+    vision_outputs_dict = self.parser.parse_vision_outputs(self.slice_outputs(vision_output, self.vision_output_slices))
+    policy_outputs_dict = self.parser.parse_policy_outputs(self.slice_outputs(on_policy_output, self.policy_output_slices))
+    combined_outputs_dict = {**vision_outputs_dict, **policy_outputs_dict}
+
+    if SEND_RAW_PRED:
+      combined_outputs_dict['raw_pred'] = np.concatenate([vision_output.copy(), on_policy_output.copy()])
+    return combined_outputs_dict
+
+
+class NativeModelState(ModelStateBase):
+  prev_desire: np.ndarray  # for tracking the rising edge of the pulse
+
+  def __init__(self, cam_w: int, cam_h: int, usbgpu: bool = False, jits=None):
     ModelStateBase.__init__(self)
     self.LAT_SMOOTH_SECONDS = LAT_SMOOTH_SECONDS
     self.LONG_SMOOTH_SECONDS = LONG_SMOOTH_SECONDS
-    jits = load_oob(modeld_pkl_path(False))
+    jits = jits if jits is not None else load_oob(modeld_pkl_path(False))
     self.model_device = jits['input_specs']['new_img'][2]
     self.input_shapes = {name: (shape, np.dtype(dtype)) for name, (shape, dtype, _) in jits['input_specs'].items()}
     self.state_pairs = {name: f'next_{name}' for name in self.input_shapes if f'next_{name}' in jits['metadata']['output_shapes']}
@@ -171,6 +242,19 @@ class ModelState(ModelStateBase):
     if SEND_RAW_PRED:
       outputs_dict['raw_pred'] = model_output.copy()
     return outputs_dict
+
+
+def ModelState(cam_w: int, cam_h: int, usbgpu: bool = False):
+  """Pick the implementation that matches the artifact on disk.
+
+  The build emits the legacy combined artifact (metadata/run_policy) while newer native
+  artifacts expose input_specs/run. Loading the native implementation on the legacy artifact
+  is what raised KeyError: 'new_img' and left the Default model unable to start.
+  """
+  jits = load_oob(modeld_pkl_path(False))
+  if 'input_specs' in jits:
+    return NativeModelState(cam_w, cam_h, usbgpu, jits)
+  return LegacyModelState(cam_w, cam_h, usbgpu, jits)
 
 
 def main(demo=False):

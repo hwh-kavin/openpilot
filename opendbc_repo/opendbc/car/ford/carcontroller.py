@@ -319,9 +319,11 @@ class CarController(CarControllerBase, LateralBaseExt, LateralAngleExt):
   def update(self, CC, CC_SP, CS, now_nanos):
     can_sends = []
 
-    # BluePilot: update lateral SubMaster and runtime params each frame
+    # BluePilot: update the lateral SubMaster every frame; runtime Params are Params disk reads, so refresh
+    # them about once a second instead of on every 100 Hz control frame
     LateralBaseExt.update_sm(self)
-    LateralAngleExt.update_angle_params(self, self.params)
+    if (self.frame % PARAMS_UPDATE_FRAMES) == 0:
+      LateralAngleExt.update_angle_params(self, self.params)
 
     actuators = CC.actuators
     hud_control = CC.hudControl
