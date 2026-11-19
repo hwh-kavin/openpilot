@@ -10,7 +10,8 @@ BluePilot: adjacent-lane large vehicle avoidance daemon.
 This runs as its own low-priority process and is deliberately kept OUT of the controls realtime
 path. It only *observes* `liveTracks` + `modelV2` + `carState` and publishes a suggestion into
 Params; nothing in controlsd/modeld/radard depends on it, so a slow or crashed instance can never
-affect vehicle control.
+affect vehicle control. If it does fail, it clears its own enable toggle and exits cleanly, so the
+manager no longer expects it to run and openpilot engagement is never blocked by it.
 
 Output is written to the `AdjacentTruckState` param (JSON) at 2 Hz. A future consumer (e.g. the
 Ford lateral extension) can pick it up there; wiring the actuator is intentionally out of scope
@@ -24,7 +25,7 @@ import numpy as np
 
 import cereal.messaging as messaging
 from openpilot.common.params import Params
-from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
+from openpilot.common.realtime import DT_MDL, set_core_affinity
 from openpilot.common.swaglog import cloudlog
 
 from openpilot.sunnypilot.selfdrive.controls.lib.adjacent_truck import AdjacentTruckDetector, PHASE_IDLE
@@ -62,10 +63,37 @@ def lane_arrays(model_v2):
 
 
 def main() -> None:
-  # LOW priority: this must never compete with controlsd / modeld / radard for CPU
-  config_realtime_process(4, Priority.LOW)
+  """Run the detector; a failure here must never stop openpilot from engaging.
 
-  params = Params()
+  Any unexpected error clears the enable toggle (the manager then stops this process instead of
+  reporting it as "should be running") and exits cleanly. Without that, a crashed optional daemon
+  stays in managerState as shouldBeRunning=True / running=False, which raises the "Process Not
+  Running" soft-disable and makes openpilot un-engageable.
+  """
+  params: Params | None = None
+  try:
+    params = Params()
+    try:
+      # Observation-only daemon: pin it to a spare core but stay on the default scheduler, so it
+      # can never compete with the controls realtime processes. Best effort - a missing/offline
+      # core is not an error.
+      set_core_affinity([4])
+    except Exception:
+      pass
+    _run(params)
+  except KeyboardInterrupt:
+    raise
+  except Exception:
+    cloudlog.exception("adjacent_truckd failed; clearing AdjacentTruckAvoid so openpilot is unaffected")
+    if params is not None:
+      try:
+        params.put_bool("AdjacentTruckAvoid", False, block=True)
+      except Exception:
+        cloudlog.exception("adjacent_truckd could not clear AdjacentTruckAvoid")
+    raise SystemExit(0)
+
+
+def _run(params: Params) -> None:
   detector = AdjacentTruckDetector()
 
   sm = messaging.SubMaster(['liveTracks', 'modelV2', 'carState', 'carControl'], poll='modelV2')

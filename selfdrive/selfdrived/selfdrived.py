@@ -186,7 +186,9 @@ class SelfdriveD(CruiseHelper):
     self.modeld_lag_frames = 0
     self.modeld_lag_logged = False
 
-    self.ignored_processes = {'mapd', }
+    # Non-critical observation daemons: a dead or failed instance must never block engagement
+    # (openpilot has to work even when an optional feature is broken).
+    self.ignored_processes = {'mapd', 'adjacent_truckd'}
 
     # Determine startup event
     self.startup_event = EventName.startup
