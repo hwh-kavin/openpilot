@@ -59,10 +59,11 @@ class CruiseLayout(Widget):
 
     self.adj_truck_toggle = toggle_item_sp(
       title=tr("Avoid Large Vehicles in Adjacent Lanes"),
-      description=tr("Detect large vehicles (trucks, buses) in the adjacent lane and shift the vehicle away "
-                     "from them inside the lane, holding the offset while passing and then returning to the "
-                     "lane centre. Requires a radar that reports track extent. Detection runs in a separate "
-                     "low-priority process, never in the controls loop."),
+      description=tr("Detect large vehicles (trucks, buses) in the adjacent lane and shift the car gently "
+                     "away from them inside the lane, holding the offset while passing and then returning to "
+                     "the lane centre. Requires a Ford radar that reports track extent. The offset is "
+                     "rate-limited and is dropped during lane changes or whenever the detection is not "
+                     "confident."),
       param="AdjacentTruckAvoid")
 
     self.scc_v_toggle = toggle_item_sp(

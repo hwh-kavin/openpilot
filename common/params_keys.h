@@ -295,8 +295,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Blendful", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
 
-    // BluePilot: adjacent-lane large vehicle avoidance (computed by the standalone `adjacent_truckd` process,
-    // deliberately kept out of the controls realtime path).
+    // BluePilot: adjacent-lane large vehicle avoidance. `adjacent_truckd` publishes the detection into
+    // AdjacentTruckState for logging/UI; controlsd runs the same detector and applies the rate-limited
+    // lateral offset (see sunnypilot/selfdrive/controls/lib/adjacent_truck_avoid.py).
     {"AdjacentTruckAvoid", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"AdjacentTruckState", {CLEAR_ON_MANAGER_START, JSON}},
 

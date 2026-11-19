@@ -7,7 +7,7 @@ from cereal import car, log
 import cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
-from openpilot.common.realtime import config_realtime_process, DT_CTRL, Priority, Ratekeeper
+from openpilot.common.realtime import config_realtime_process, DT_CTRL, DT_MDL, Priority, Ratekeeper
 from openpilot.common.swaglog import cloudlog
 
 from opendbc.car.car_helpers import interfaces
@@ -23,6 +23,7 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+from openpilot.sunnypilot.selfdrive.controls.lib.adjacent_truck_avoid import AdjacentTruckAvoid
 from openpilot.sunnypilot.selfdrive.controls.lib.curvature_lead import apply_curvature_lead, apply_curvature_exit_lead
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
   is_ford_auto_follow_gap, personality_to_bars,
@@ -48,8 +49,8 @@ class Controls(ControlsExt):
     self.CI = interfaces[self.CP.carFingerprint](self.CP, self.CP_SP)
 
     self.sm = messaging.SubMaster(['liveDelay', 'liveParameters', 'liveTorqueParameters', 'modelV2', 'selfdriveState',
-                                   'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'carOutput',
-                                   'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
+                                   'liveCalibration', 'livePose', 'longitudinalPlan', 'lateralManeuverPlan', 'carState', 'liveTracks',
+                                   'carOutput', 'driverMonitoringState', 'onroadEvents', 'driverAssistance', 'liveDelay'] + self.sm_services_ext,
                                   poll='selfdriveState')
     self.pm = messaging.PubMaster(['carControl', 'controlsState'] + self.pm_services_ext)
 
@@ -77,6 +78,13 @@ class Controls(ControlsExt):
     self._ford_auto_follow_gap = is_ford_auto_follow_gap(self.params, self.CP)
     self._ford_auto_follow_gap_time = 0.0
 
+    # BluePilot: adjacent-lane large vehicle offset (opt-in, Ford radar only). Detection runs here
+    # at the liveTracks rate and feeds a rate-limited curvature nudge; any failure falls back to 0.
+    self._adjacent_avoid = AdjacentTruckAvoid()
+    self._adjacent_enabled = False
+    self._adjacent_param_time = 0.0
+    self._adjacent_live_time = 0.0
+
   def update(self):
     self.sm.update(15)
     if self.sm.updated["liveCalibration"]:
@@ -84,6 +92,19 @@ class Controls(ControlsExt):
     if self.sm.updated["livePose"]:
       device_pose = Pose.from_live_pose(self.sm['livePose'])
       self.calibrated_pose = self.pose_calibrator.build_calibrated_pose(device_pose)
+
+    # BluePilot: the adjacent-truck toggle is a Params disk read, so refresh it ~1 Hz, never per frame.
+    if time.monotonic() - self._adjacent_param_time > PARAMS_UPDATE_PERIOD:
+      self._adjacent_param_time = time.monotonic()
+      try:
+        enabled = bool(self.params.get_bool("AdjacentTruckAvoid"))
+      except Exception:
+        enabled = False
+      # The detector's RCS input is a Ford DELPHI_MRR field; on other platforms only the chain
+      # extent is available, so keep the feature off rather than act on half the evidence.
+      self._adjacent_enabled = enabled and self.CP.brand == "ford"
+      if not self._adjacent_enabled:
+        self._adjacent_avoid.reset()
 
   def state_control(self):
     CS = self.sm['carState']
@@ -154,6 +175,28 @@ class Controls(ControlsExt):
     # When lat inactive (incl. HTD pause): snap desired to current wheel curvature so
     # re-engage blends from actual angle — not a rate-limited leftover curve command.
     lat_delay = self.sm["liveDelay"].lateralDelay + LAT_SMOOTH_SECONDS
+
+    # BluePilot: adjacent-lane large vehicle offset. Optional, rate-limited, and dropped whenever
+    # the feature is off, lateral control is inactive, or a lane change is in progress.
+    adj_dk = 0.0
+    try:
+      now = time.monotonic()
+      if self._adjacent_enabled:
+        if self.sm.updated['liveTracks']:
+          self._adjacent_live_time = now
+          self._adjacent_avoid.update(DT_MDL, CS.vEgo, self.sm['liveTracks'].points,
+                                      model_v2.laneLines, model_v2.laneLineProbs,
+                                      CC.enabled and CC.latActive,
+                                      model_v2.meta.laneChangeState != LaneChangeState.off)
+        elif now - self._adjacent_live_time > 0.3:
+          # radar stream went stale (not just a blind flank): drop the offset, do not hold it blind
+          self._adjacent_avoid.disengage()
+      adj_dk = self._adjacent_avoid.curvature(DT_CTRL, CS.vEgo, CC.latActive and self._adjacent_enabled)
+    except Exception:
+      cloudlog.exception("adjacent truck offset failed; ignoring it this frame")
+      self._adjacent_avoid.reset()
+      adj_dk = 0.0
+
     if not CC.latActive:
       self.desired_curvature = float(self.curvature)
       curvature_limited = False
@@ -170,6 +213,9 @@ class Controls(ControlsExt):
         new_desired_curvature = apply_curvature_exit_lead(
           model_v2, CS.vEgo, new_desired_curvature, lat_delay,
         )
+      # BluePilot: gentle in-lane offset away from an adjacent large vehicle (0 unless enabled
+      # and confidently detected; already rate-limited by AdjacentTruckAvoid)
+      new_desired_curvature += adj_dk
       self.desired_curvature, curvature_limited = clip_curvature(
         CS.vEgo, self.desired_curvature, new_desired_curvature, lp.roll)
 

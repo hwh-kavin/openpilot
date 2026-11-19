@@ -8,7 +8,8 @@ BluePilot: adjacent-lane large vehicle (truck) detection for in-lane avoidance.
 
 This module is intentionally free of any cereal/messaging dependency so it can be unit tested in
 isolation and, more importantly, so that nothing here ever runs on the controls realtime path.
-Its only consumer is the standalone `adjacent_truckd` process.
+Its consumers are the standalone `adjacent_truckd` process (state/logging) and controlsd through
+`adjacent_truck_avoid` (the rate-limited lateral offset).
 
 What the sensors actually give us
 ---------------------------------
