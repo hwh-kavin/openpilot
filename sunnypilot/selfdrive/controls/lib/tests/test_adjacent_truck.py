@@ -374,9 +374,9 @@ def test_frame_metrics_ignores_empty_scene():
 
 # ---------------------------------------------------------------------------- regressions
 
-def test_track_loss_holds_from_last_known_distance():
-  """Losing the flank must not pretend the truck is already alongside (D_BLIND); the offset has to
-  keep being held for the distance that was last measured, or it releases while the truck is ahead."""
+def test_track_loss_holds_from_dead_reckoned_distance():
+  """Losing the flank must not pretend the truck is already alongside (D_BLIND): the hold starts
+  from the last measured distance extrapolated with the measured relative speed."""
   det = AdjacentTruckDetector()
   lanes, probs = make_lanes(3.6)
 
@@ -386,13 +386,31 @@ def test_track_loss_holds_from_last_known_distance():
     d_rel += -3.0 * DT
 
   assert det.phase == at.PHASE_APPROACH
-  last_seen = d_rel
+  last_seen = det.last_d_rel
+  v_rel = det.cand.v_rel_f
 
   out = det.update(DT, V_EGO, [], lanes, probs, engaged=True, enabled=True)
   assert out.phase == at.PHASE_HOLD
-  # want = last_seen + ego length + truck length; the old code started from D_BLIND (12 m)
+
+  # d_now = last seen + v_rel * elapsed (v_rel is negative while closing)
+  d_now = last_seen + v_rel * DT
+  length = min(max(det.pass_span * at.TRUCK_LEN_SCALE, at.TRUCK_LEN_MIN), at.TRUCK_LEN_MAX)
+  want = d_now + at.EGO_LENGTH + length
+  cap = abs(v_rel) * at.HOLD_CAP_S
+  assert det.d_rem == pytest.approx(min(max(want, 0.5), cap), rel=1e-6)
   assert det.d_rem > at.D_BLIND + at.EGO_LENGTH + 10.0
-  assert det.d_rem > 0.8 * last_seen
+
+
+def test_lost_distance_uses_relative_speed():
+  """The dead-reckoned distance is d(last seen) + v_rel * elapsed, so a closing or opening
+  neighbour moves the hold length in the right direction."""
+  det = AdjacentTruckDetector()
+  det.last_d_rel = 20.0
+  det.last_d_rel_age = 0.4
+  det.cand.v_rel_f = -3.0  # closing
+  assert det._distance_now() == pytest.approx(18.8)
+  det.cand.v_rel_f = 2.0   # opening
+  assert det._distance_now() == pytest.approx(20.8)
 
 
 def test_pass_span_survives_track_id_churn():

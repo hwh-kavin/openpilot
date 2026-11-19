@@ -104,7 +104,7 @@ CHAIN_VREL = 3.0           # m/s, max relative-speed mismatch inside a chain (tw
 
 # --- pass timing ----------------------------------------------------------------------------
 ARM_D = 48.0               # m, start offsetting once the vehicle is this close
-D_BLIND = 12.0             # m, radar loses the flank around here; freeze and dead-reckon
+D_BLIND = 12.0             # m, radar loses the flank around here; hand-off threshold, not a distance estimate
 EGO_LENGTH = 4.6           # m
 TRUCK_LEN_MIN = 6.0        # m
 TRUCK_LEN_MAX = 18.0       # m
@@ -247,6 +247,8 @@ class AdjacentTruckDetector:
     self.last = Detection()
     # distance of the last frame the neighbour was actually seen (the radar goes blind alongside)
     self.last_d_rel = 0.0
+    # time since that last measurement, used to dead-reckon where the neighbour is now
+    self.last_d_rel_age = 0.0
     # best chain span of this pass, kept across radar track-id churn so the truck length estimate
     # does not collapse when the clusters are renumbered
     self.pass_span = 0.0
@@ -263,6 +265,7 @@ class AdjacentTruckDetector:
     self.prev_d_rel = None
     self.offset_target = 0.0
     self.last_d_rel = 0.0
+    self.last_d_rel_age = 0.0
     self.pass_span = 0.0
     self.pass_side = 0
     self.pass_span_age = 0.0
@@ -379,6 +382,15 @@ class AdjacentTruckDetector:
 
   # -- phase helpers -------------------------------------------------------------------------
 
+  def _distance_now(self) -> float:
+    """Where the neighbour is now, dead-reckoned from its last measurement.
+
+    d(t) = d(last seen) + v_rel * elapsed, with the relative speed frozen from the approach
+    (negative while closing). D_BLIND is only the distance at which the radar loses the flank; it
+    must never be substituted for where the vehicle actually is.
+    """
+    return max(self.last_d_rel + self.cand.v_rel_f * self.last_d_rel_age, 0.0)
+
   def _enter_hold(self, v_ego: float, d_now: float) -> None:
     self.v_truck_frozen = v_ego + self.cand.v_rel_f
     span = max(self.pass_span, self.cand.span_max)
@@ -445,10 +457,12 @@ class AdjacentTruckDetector:
     if hit is None:
       # lost it. If we were already offsetting, the radar just went blind - start predicting.
       if self.phase == PHASE_APPROACH:
-        # The flank became invisible, not the radar stream: dead-reckon from the last distance the
-        # neighbour was actually seen at. Using D_BLIND here would start the hold (and its return)
-        # as if the truck were already alongside, releasing the offset while it is still ahead.
-        self._enter_hold(v_ego, max(self.last_d_rel, D_BLIND))
+        # The flank became invisible, not the radar stream: dead-reckon from the last measured
+        # distance with the relative speed the approach measured. Using D_BLIND here would start
+        # the hold (and its return) as if the truck were already alongside, releasing the offset
+        # while it is still ahead.
+        self.last_d_rel_age += dt
+        self._enter_hold(v_ego, self._distance_now())
         self.last = self._advance_blind(0.0, v_ego)
         return self.last
       self.reset()
@@ -458,6 +472,7 @@ class AdjacentTruckDetector:
     chain_span = self._chain_span(hits, hit.side)
     self._update_candidate(hit, chain_span, dt)
     self.last_d_rel = hit.d_rel
+    self.last_d_rel_age = 0.0
     confirmed = self._confirmed_big(hit, chain_span, v_ego, dt)
 
     # Best span of this pass: keep it across radar re-clustering (track ids churn every cycle), so
@@ -479,7 +494,7 @@ class AdjacentTruckDetector:
     blocked = self._other_side_blocked(hits, v_ego, hit.side)
 
     if confirmed and not blocked and hit.d_rel <= D_BLIND:
-      self._enter_hold(v_ego, D_BLIND)
+      self._enter_hold(v_ego, hit.d_rel)
       self.last = self._advance_blind(0.0, v_ego)
       return self.last
 
