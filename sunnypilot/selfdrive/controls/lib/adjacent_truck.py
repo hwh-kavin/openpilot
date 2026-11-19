@@ -99,6 +99,8 @@ CONFIRM_T = 0.4            # s, must hold before we act
 # adjacent-lane tracks, which we stitch together here.
 CHAIN_GAP = 4.5            # m, max dRel gap between consecutive tracks of the same object
 CHAIN_LATERAL = 0.7        # m, max lateral offset mismatch inside a chain
+CHAIN_VREL = 3.0           # m/s, max relative-speed mismatch inside a chain (two cars travelling at
+                           # clearly different speeds must not be stitched into one "truck")
 
 # --- pass timing ----------------------------------------------------------------------------
 ARM_D = 48.0               # m, start offsetting once the vehicle is this close
@@ -243,6 +245,13 @@ class AdjacentTruckDetector:
     self.prev_d_rel: float | None = None
     self.offset_target = 0.0
     self.last = Detection()
+    # distance of the last frame the neighbour was actually seen (the radar goes blind alongside)
+    self.last_d_rel = 0.0
+    # best chain span of this pass, kept across radar track-id churn so the truck length estimate
+    # does not collapse when the clusters are renumbered
+    self.pass_span = 0.0
+    self.pass_side = 0
+    self.pass_span_age = 0.0
 
   def reset(self) -> None:
     self.cand = _Candidate()
@@ -253,6 +262,10 @@ class AdjacentTruckDetector:
     self.return_t = 0.0
     self.prev_d_rel = None
     self.offset_target = 0.0
+    self.last_d_rel = 0.0
+    self.pass_span = 0.0
+    self.pass_side = 0
+    self.pass_span_age = 0.0
 
   # -- candidate selection -------------------------------------------------------------------
 
@@ -294,14 +307,17 @@ class AdjacentTruckDetector:
     return out
 
   def _chain_span(self, hits, side: int, gap: float | None = None,
-                  lateral_max: float | None = None) -> float:
+                  lateral_max: float | None = None, v_rel_max: float | None = None) -> float:
     """Longitudinal extent of the contiguous run of adjacent-lane tracks on one side.
 
     A single cluster's own extent is capped by the radar's ~5 m clustering threshold, so the length
-    of a long vehicle only becomes visible by stitching consecutive tracks back together.
+    of a long vehicle only becomes visible by stitching consecutive tracks back together. Tracks
+    must also agree on relative speed: two cars in the adjacent lane whose clusters happen to sit
+    within CHAIN_GAP of each other are not one long vehicle.
     """
     gap = CHAIN_GAP if gap is None else gap
     lateral_max = CHAIN_LATERAL if lateral_max is None else lateral_max
+    v_rel_max = CHAIN_VREL if v_rel_max is None else v_rel_max
 
     hs = sorted((h for h in hits if h.side == side), key=lambda h: h.d_rel)
     if not hs:
@@ -310,7 +326,8 @@ class AdjacentTruckDetector:
     best = 0.0
     start = prev = hs[0]
     for h in hs[1:]:
-      if h.d_rel - prev.d_rel <= gap and abs(h.lateral - prev.lateral) <= lateral_max:
+      if h.d_rel - prev.d_rel <= gap and abs(h.lateral - prev.lateral) <= lateral_max \
+         and abs(h.v_rel - prev.v_rel) <= v_rel_max:
         prev = h
       else:
         best = max(best, prev.d_rel - start.d_rel)
@@ -364,7 +381,8 @@ class AdjacentTruckDetector:
 
   def _enter_hold(self, v_ego: float, d_now: float) -> None:
     self.v_truck_frozen = v_ego + self.cand.v_rel_f
-    length = float(np.clip(self.cand.span_max * TRUCK_LEN_SCALE, TRUCK_LEN_MIN, TRUCK_LEN_MAX))
+    span = max(self.pass_span, self.cand.span_max)
+    length = float(np.clip(span * TRUCK_LEN_SCALE, TRUCK_LEN_MIN, TRUCK_LEN_MAX))
     # distance still to cover before the whole ego car is past the whole truck
     want = d_now + EGO_LENGTH + length
     cap = max(0.5, abs(v_ego - self.v_truck_frozen) * HOLD_CAP_S)
@@ -427,7 +445,10 @@ class AdjacentTruckDetector:
     if hit is None:
       # lost it. If we were already offsetting, the radar just went blind - start predicting.
       if self.phase == PHASE_APPROACH:
-        self._enter_hold(v_ego, D_BLIND)
+        # The flank became invisible, not the radar stream: dead-reckon from the last distance the
+        # neighbour was actually seen at. Using D_BLIND here would start the hold (and its return)
+        # as if the truck were already alongside, releasing the offset while it is still ahead.
+        self._enter_hold(v_ego, max(self.last_d_rel, D_BLIND))
         self.last = self._advance_blind(0.0, v_ego)
         return self.last
       self.reset()
@@ -436,7 +457,25 @@ class AdjacentTruckDetector:
 
     chain_span = self._chain_span(hits, hit.side)
     self._update_candidate(hit, chain_span, dt)
+    self.last_d_rel = hit.d_rel
     confirmed = self._confirmed_big(hit, chain_span, v_ego, dt)
+
+    # Best span of this pass: keep it across radar re-clustering (track ids churn every cycle), so
+    # the hold length does not collapse to a single cluster's 4-5 m. A different object on the same
+    # side starts a new pass; a long evidence gap drops the stale span.
+    if confirmed:
+      if self.pass_side not in (0, hit.side):
+        self.pass_span = chain_span
+      else:
+        self.pass_span = max(self.pass_span, chain_span)
+      self.pass_side = hit.side
+      self.pass_span_age = 0.0
+    else:
+      self.pass_span_age += dt
+      if self.pass_span_age > 2.0:
+        self.pass_span = 0.0
+        self.pass_side = 0
+
     blocked = self._other_side_blocked(hits, v_ego, hit.side)
 
     if confirmed and not blocked and hit.d_rel <= D_BLIND:

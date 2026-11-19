@@ -81,8 +81,10 @@ def test_release_returns_to_zero():
     av.curvature(DT100, V_EGO, True)
   assert av.offset < -0.35
 
-  # truck gone: target drops to zero and both the offset and the curvature delta release
-  for _ in range(400):
+  # truck gone: target drops to zero and both the offset and the curvature delta release.
+  # The hold now runs from the last-seen distance, so allow enough frames for it to finish.
+  dk = 0.0
+  for _ in range(900):
     av.update(DT20, V_EGO, [], *lanes(), engaged=True, lane_change=False)
     dk = av.curvature(DT100, V_EGO, True)
 

@@ -370,3 +370,77 @@ def test_frame_metrics_reports_both_sides():
 def test_frame_metrics_ignores_empty_scene():
   lanes, probs = make_lanes(3.6)
   assert at.frame_metrics([], lanes, probs, V_EGO) == {}
+
+
+# ---------------------------------------------------------------------------- regressions
+
+def test_track_loss_holds_from_last_known_distance():
+  """Losing the flank must not pretend the truck is already alongside (D_BLIND); the offset has to
+  keep being held for the distance that was last measured, or it releases while the truck is ahead."""
+  det = AdjacentTruckDetector()
+  lanes, probs = make_lanes(3.6)
+
+  d_rel = 40.0
+  for _ in range(20):
+    det.update(DT, V_EGO, chain_pts(d_rel, 3.6, -3.0, 30.0), lanes, probs, engaged=True, enabled=True)
+    d_rel += -3.0 * DT
+
+  assert det.phase == at.PHASE_APPROACH
+  last_seen = d_rel
+
+  out = det.update(DT, V_EGO, [], lanes, probs, engaged=True, enabled=True)
+  assert out.phase == at.PHASE_HOLD
+  # want = last_seen + ego length + truck length; the old code started from D_BLIND (12 m)
+  assert det.d_rem > at.D_BLIND + at.EGO_LENGTH + 10.0
+  assert det.d_rem > 0.8 * last_seen
+
+
+def test_pass_span_survives_track_id_churn():
+  """The radar re-clusters every cycle. Once a 12 m chain has been measured, a short single-cluster
+  frame with a brand-new track id must not wipe the pass span (it is the truck-length estimate)."""
+  det = AdjacentTruckDetector()
+  lanes, probs = make_lanes(3.6)
+
+  d_rel = 40.0
+  for _ in range(20):
+    det.update(DT, V_EGO, chain_pts(d_rel, 3.6, -3.0, 30.0, track_id=100), lanes, probs, engaged=True, enabled=True)
+    d_rel += -3.0 * DT
+  assert det.pass_span == pytest.approx(12.0)
+
+  # re-clustered as one short piece with a new id, still inside the trusted RCS range
+  for _ in range(12):
+    det.update(DT, V_EGO, chain_pts(20.0, 3.6, -3.0, 30.0, n=1, track_id=500), lanes, probs,
+               engaged=True, enabled=True)
+
+  assert det.cand.span_max < at.SPAN_BIG
+  assert det.pass_span == pytest.approx(12.0)
+
+
+def test_enter_hold_uses_pass_span_not_cluster_span():
+  """At the hand-off the last visible cluster can be short; the hold length must come from the pass
+  span, otherwise the offset is released while the truck is still alongside."""
+  det = AdjacentTruckDetector()
+  det.pass_span = 12.0
+  det.cand.span_max = 0.0
+  det.cand.v_rel_f = -3.0
+
+  det._enter_hold(V_EGO, at.D_BLIND)
+
+  # want = D_BLIND + EGO_LENGTH + clip(12 * 1.2, 6, 18) = 31 m
+  assert det.d_rem >= at.D_BLIND + at.EGO_LENGTH + 10.0
+
+
+def test_chain_requires_matching_relative_speed():
+  """Two adjacent-lane cars travelling at clearly different speeds must not be stitched into one
+  long vehicle just because their clusters happen to be close together."""
+  det = AdjacentTruckDetector()
+  lanes, probs = make_lanes(3.6)
+  pts = [track(40.0, 3.6, -3.0, NO_RCS, 1), track(36.0, 3.6, -3.0, NO_RCS, 2),
+         track(32.0, 3.6, -9.0, NO_RCS, 3), track(28.0, 3.6, -9.0, NO_RCS, 4)]
+
+  out = None
+  for _ in range(20):
+    out = det.update(DT, V_EGO, pts, lanes, probs, engaged=True, enabled=True)
+
+  assert not out.active
+  assert out.phase == at.PHASE_IDLE
