@@ -28,21 +28,12 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL, set_core_affinity
 from openpilot.common.swaglog import cloudlog
 
-from openpilot.sunnypilot.selfdrive.controls.lib.adjacent_truck import AdjacentTruckDetector, PHASE_IDLE
+from openpilot.sunnypilot.selfdrive.controls.lib.adjacent_truck import (
+  AdjacentTruckDetector, PHASE_IDLE, points_from_live_tracks,
+)
 
 PUBLISH_PERIOD = 0.5   # s, a Param write is a syscall - 2 Hz is plenty for a consumer
 TOGGLE_PERIOD = 1.0    # s, re-read the enable flag; the manager also gates process start on it
-
-
-def points_from_live_tracks(live_tracks) -> list[tuple]:
-  """(trackId, dRel, yRel, vRel, rcs).
-
-  `rcs` rides in RadarPoint.yvRel: the Ford DELPHI_MRR interface stores the cluster's peak
-  CAN_DET_AMPLITUDE (dBsm) there because RadarPoint has no size field and yvRel is otherwise unused
-  (always NaN). On radars that do not populate it the value is NaN and the detector falls back to
-  the longitudinal extent of the track chain alone.
-  """
-  return [(p.trackId, p.dRel, p.yRel, p.vRel, p.yvRel) for p in live_tracks.points]
 
 
 def lane_arrays(model_v2):

@@ -165,7 +165,7 @@ class _Hit:
 
 
 def lane_reference(lane_lines, lane_probs, distance: float):
-  """Return (center, width) of the ego lane at `distance`, or None if it cannot be trusted."""
+  """Return (center, width) in radar coordinates, or None if lane lines cannot be trusted."""
   if lane_lines is None or lane_probs is None:
     return None
 
@@ -190,11 +190,17 @@ def lane_reference(lane_lines, lane_probs, distance: float):
   if not (np.isfinite(left) and np.isfinite(right)):
     return None
 
-  width = left - right
+  # Model lane lines use right-positive y; radar yRel uses left-positive y.
+  width = right - left
   if width <= 0.5:  # lines crossed or garbage
     return None
 
-  return 0.5 * (left + right), float(np.clip(width, *LANE_WIDTH_CLIP))
+  return -0.5 * (left + right), float(np.clip(width, *LANE_WIDTH_CLIP))
+
+
+def points_from_live_tracks(live_tracks) -> list[tuple]:
+  """Convert Cap'n Proto radar points; yvRel carries Ford RCS when available."""
+  return [(p.trackId, p.dRel, p.yRel, p.vRel, p.yvRel) for p in live_tracks.points]
 
 
 def frame_metrics(points, lane_lines, lane_probs, v_ego: float, gap_sweep=None) -> dict[int, dict]:

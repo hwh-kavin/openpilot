@@ -5,11 +5,15 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from openpilot.sunnypilot.selfdrive.controls.lib import adjacent_truck as at
-from openpilot.sunnypilot.selfdrive.controls.lib.adjacent_truck import AdjacentTruckDetector, lane_reference
+from openpilot.sunnypilot.selfdrive.controls.lib.adjacent_truck import (
+  AdjacentTruckDetector, lane_reference, points_from_live_tracks,
+)
 
 DT = 0.05               # 20 Hz, same as liveTracks
 V_EGO = 25.0            # m/s
@@ -18,13 +22,18 @@ CHAIN_SPACING = 4.0     # m, how the radar splits one long object into consecuti
 
 
 def make_lanes(width: float = 3.6, n: int = 21, x_max: float = 100.0):
-  """Straight lane, ego centred, y positive to the left (openpilot model frame)."""
+  """Straight lane in model coordinates, where positive y points to the right."""
   x = np.linspace(0.0, x_max, n)
-  return np.vstack([x, np.full(n, width / 2), np.full(n, -width / 2)]), [1.0, 1.0, 1.0, 1.0]
+  return np.vstack([x, np.full(n, -width / 2), np.full(n, width / 2)]), [1.0, 1.0, 1.0, 1.0]
 
 
 def track(d_rel, y_rel, v_rel, rcs=NO_RCS, track_id=7):
   return (track_id, d_rel, y_rel, v_rel, rcs)
+
+
+def test_points_from_live_tracks_adapts_capnp_records():
+  point = SimpleNamespace(trackId=7, dRel=30.0, yRel=3.6, vRel=-2.0, yvRel=25.0)
+  assert points_from_live_tracks(SimpleNamespace(points=[point])) == [(7, 30.0, 3.6, -2.0, 25.0)]
 
 
 def chain_pts(d_front, y_rel, v_rel, rcs, n=4, spacing=CHAIN_SPACING, track_id=100):
@@ -54,6 +63,15 @@ def test_lane_reference_sane():
   center, width = lane_reference(lanes, probs, 30.0)
   assert center == pytest.approx(0.0, abs=1e-9)
   assert width == pytest.approx(3.6, abs=1e-9)
+
+
+def test_lane_reference_converts_model_y_to_radar_coordinates():
+  lanes, probs = make_lanes(3.6)
+  lanes[1] -= 1.0
+  lanes[2] -= 1.0
+  center, width = lane_reference(lanes, probs, 30.0)
+  assert center == pytest.approx(1.0)
+  assert width == pytest.approx(3.6)
 
 
 def test_lane_reference_rejects_low_confidence():

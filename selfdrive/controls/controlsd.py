@@ -23,6 +23,7 @@ from openpilot.selfdrive.locationd.helpers import PoseCalibrator, Pose
 
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.controls.controlsd_ext import ControlsExt
+from openpilot.sunnypilot.selfdrive.controls.lib.adjacent_truck import points_from_live_tracks
 from openpilot.sunnypilot.selfdrive.controls.lib.adjacent_truck_avoid import AdjacentTruckAvoid
 from openpilot.sunnypilot.selfdrive.controls.lib.curvature_lead import apply_curvature_lead, apply_curvature_exit_lead
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
@@ -184,7 +185,7 @@ class Controls(ControlsExt):
       if self._adjacent_enabled:
         if self.sm.updated['liveTracks']:
           self._adjacent_live_time = now
-          self._adjacent_avoid.update(DT_MDL, CS.vEgo, self.sm['liveTracks'].points,
+          self._adjacent_avoid.update(DT_MDL, CS.vEgo, points_from_live_tracks(self.sm['liveTracks']),
                                       model_v2.laneLines, model_v2.laneLineProbs,
                                       CC.enabled and CC.latActive,
                                       model_v2.meta.laneChangeState != LaneChangeState.off)
